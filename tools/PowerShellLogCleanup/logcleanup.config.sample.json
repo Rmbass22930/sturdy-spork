@@ -1,0 +1,34 @@
+{
+  "Global": {
+    "RetentionDays": 30,
+    "Recurse": true,
+    "Extensions": [".log", ".txt"],
+    "ExcludePatterns": ["*.keep.*"],
+    "MinFileSizeMB": 0
+  },
+  "Targets": [
+    {
+      "Server": "APP-SVR01",
+      "Paths": [
+        {
+          "Path": "C:\\Logs\\AppA",
+          "RetentionDays": 14,
+          "IncludeExtensions": [".log"],
+          "ExcludePatterns": ["*-pinned.log"]
+        }
+      ]
+    },
+    {
+      "Server": "localhost",
+      "Paths": [
+        {
+          "Path": "D:\\IISLogs",
+          "RetentionDays": 7,
+          "Recurse": true,
+          "IncludeExtensions": [".log"],
+          "MinFileSizeMB": 1
+        }
+      ]
+    }
+  ]
+}

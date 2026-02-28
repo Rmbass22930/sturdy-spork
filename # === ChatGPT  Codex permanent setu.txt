@@ -1,0 +1,22 @@
+# === ChatGPT / Codex permanent setup ===
+
+# Default model (change here when a new version comes out)
+$global:CODEX_MODEL = "gpt-5.3-codex"
+
+function cx {
+    param(
+        [Parameter(ValueFromRemainingArguments=$true)]
+        [string[]]$Args
+    )
+
+    $cwd = (Get-Location).Path
+
+    codex `
+        -C $cwd `
+        -m $global:CODEX_MODEL `
+        exec `
+        --skip-git-repo-check `
+        @Args
+}
+
+Set-Alias cx cx -Force

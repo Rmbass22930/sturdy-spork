@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>BallisticTarget Environmentals + Geo (iOS Companion)</title>
+    <style>
+        :root {
+            color-scheme: light dark;
+            --bg: #f5f5f5;
+            --card: #ffffff;
+            --text: #222;
+            --accent: #2563eb;
+            --error: #b91c1c;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            margin: 0;
+            padding: 0;
+            background: var(--bg);
+            color: var(--text);
+        }
+        main {
+            max-width: 700px;
+            margin: 0 auto;
+            padding: 24px 16px 48px;
+        }
+        h1, h2 {
+            margin: 0 0 0.6em;
+            font-weight: 600;
+        }
+        .card {
+            background: var(--card);
+            border-radius: 16px;
+            padding: 20px;
+            box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+            margin-bottom: 20px;
+        }
+        label {
+            font-size: 0.9rem;
+            font-weight: 600;
+            display: block;
+            margin-bottom: 4px;
+        }
+        input, select, textarea {
+            width: 100%;
+            border-radius: 10px;
+            border: 1px solid #cbd5f5;
+            padding: 10px 12px;
+            font-size: 1rem;
+            box-sizing: border-box;
+            margin-bottom: 14px;
+            background: rgba(255,255,255,0.9);
+        }
+        textarea {
+            min-height: 120px;
+            resize: vertical;
+        }
+        button {
+            border: none;
+            border-radius: 999px;
+            padding: 11px 18px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            cursor: pointer;
+            background: var(--accent);
+            color: #fff;
+            transition: opacity 0.2s ease;
+        }
+        button.secondary {
+            background: transparent;
+            color: var(--accent);
+            border: 1px solid rgba(37, 99, 235, 0.5);
+        }
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .btn-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+        .status {
+            font-size: 0.9rem;
+            margin-top: 8px;
+        }
+        .status.error {
+            color: var(--error);
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px 18px;
+        }
+        .grid > div {
+            display: flex;
+            flex-direction: column;
+        }
+        .note {
+            font-size: 0.95rem;
+            color: #475569;
+            margin-bottom: 16px;
+        }
+        .pill {
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 12px;
+            border-radius: 999px;
+            background: rgba(37,99,235,0.12);
+            font-size: 0.85rem;
+            margin-right: 6px;
+        }
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg: #0f172a;
+                --card: #111827;
+                --text: #f8fafc;
+                --accent: #60a5fa;
+                --error: #f87171;
+            }
+            input, select, textarea {
+                background: rgba(15,23,42,0.6);
+                border-color: rgba(148,163,184,0.4);
+                color: #f8fafc;
+            }
+        }
+    </style>
+</head>
+<body>
+<main>
+    <section class="card">
+        <div class="pill">Designed for iPhone &amp; iPad Safari</div>
+        <h1>Environmentals + Geo (iOS Companion)</h1>
+        <p class="note">
+            Capture location, temperature, and wind data from your phone, then copy or send the generated
+            <code>config.json</code> back to the BallisticTarget desktop folder.
+        </p>
+    </section>
+
+    <section class="card">
+        <h2>Map Provider &amp; Location</h2>
+        <div>
+            <label for="provider">Maps Provider</label>
+            <select id="provider">
+                <option>Google Maps</option>
+                <option>Apple Maps</option>
+            </select>
+        </div>
+        <div>
+            <label for="location">Location Name (optional)</label>
+            <input id="location" placeholder="Example: Ranch South Berm">
+        </div>
+        <div class="grid">
+            <div>
+                <label for="lat">Latitude</label>
+                <input id="lat" inputmode="decimal" placeholder="32.1234">
+            </div>
+            <div>
+                <label for="lon">Longitude</label>
+                <input id="lon" inputmode="decimal" placeholder="-95.4321">
+            </div>
+        </div>
+    </section>
+
+    <section class="card">
+        <h2>Paste Maps Link</h2>
+        <label for="maps-link">Google/Apple Maps share link or "lat, lon"</label>
+        <textarea id="maps-link" placeholder="https://maps.apple.com/?ll=32.1234,-95.4321"></textarea>
+        <div class="btn-row">
+            <button id="extract-btn" type="button">Extract Lat/Lon</button>
+            <button id="open-provider-btn" class="secondary" type="button">Open Maps Provider</button>
+            <button id="geo-btn" class="secondary" type="button">Use Phone GPS</button>
+            <button id="weather-btn" type="button">Fetch Weather + Altitude</button>
+        </div>
+        <p class="note">Turn off VPN on the phone before sharing links for the most accurate coordinates.</p>
+    </section>
+
+    <section class="card">
+        <h2>Environmentals</h2>
+        <div class="grid">
+            <div>
+                <label for="temp">Temperature (°F)</label>
+                <input id="temp" inputmode="decimal" placeholder="59">
+            </div>
+            <div>
+                <label for="altitude">Altitude (ft)</label>
+                <input id="altitude" inputmode="decimal" placeholder="450">
+            </div>
+            <div>
+                <label for="wind-speed">Wind Speed (mph)</label>
+                <input id="wind-speed" inputmode="decimal" placeholder="0">
+            </div>
+            <div>
+                <label for="wind-dir">Wind Direction (deg FROM)</label>
+                <input id="wind-dir" inputmode="decimal" placeholder="0">
+            </div>
+            <div>
+                <label for="wind-gust">Wind Gust (mph)</label>
+                <input id="wind-gust" inputmode="decimal" placeholder="0">
+            </div>
+        </div>
+    </section>
+
+    <section class="card">
+        <h2>Config Preview</h2>
+        <textarea id="preview" readonly spellcheck="false"></textarea>
+        <div class="btn-row" aria-live="polite">
+            <button id="copy-btn" type="button">Copy JSON</button>
+            <button id="share-btn" class="secondary" type="button">Share/Save…</button>
+            <button id="download-btn" type="button">Download config.json</button>
+        </div>
+        <p class="note">
+            After saving, AirDrop, email, or text the file to your desktop. Drop it inside
+            <code>ballilstic target calulator\config.json</code> and reload BallisticTarget.
+        </p>
+        <div id="status" class="status" role="status"></div>
+    </section>
+</main>
+
+<script>
+    const $ = (id) => document.getElementById(id);
+
+    const fields = {
+        provider: $("provider"),
+        location: $("location"),
+        lat: $("lat"),
+        lon: $("lon"),
+        mapsLink: $("maps-link"),
+        temp: $("temp"),
+        altitude: $("altitude"),
+        windSpeed: $("wind-speed"),
+        windDir: $("wind-dir"),
+        windGust: $("wind-gust"),
+        preview: $("preview"),
+        status: $("status"),
+    };
+
+    const toFloat = (value, fallback = null) => {
+        const num = parseFloat(value);
+        return Number.isFinite(num) ? num : fallback;
+    };
+
+    async function fetchJson(url, opts = {}) {
+        const resp = await fetch(url, opts);
+        if (!resp.ok) {
+            throw new Error(`HTTP ${resp.status}`);
+        }
+        return resp.json();
+    }
+
+    function loadFromStorage() {
+        try {
+            const raw = localStorage.getItem("bt-env-ios");
+            if (!raw) return;
+            const data = JSON.parse(raw);
+            Object.entries(data).forEach(([key, val]) => {
+                if (fields[key]) fields[key].value = val ?? "";
+            });
+        } catch (error) {
+            console.warn("Storage load failed", error);
+        }
+    }
+
+    function persistToStorage() {
+        const data = {
+            provider: fields.provider.value,
+            location: fields.location.value,
+            lat: fields.lat.value,
+            lon: fields.lon.value,
+            temp: fields.temp.value,
+            altitude: fields.altitude.value,
+            windSpeed: fields.windSpeed.value,
+            windDir: fields.windDir.value,
+            windGust: fields.windGust.value,
+        };
+        try {
+            localStorage.setItem("bt-env-ios", JSON.stringify(data));
+        } catch (error) {
+            console.warn("Storage save failed", error);
+        }
+    }
+
+    function latLonFromText(text) {
+        if (!text) return [null, null];
+        const direct = text.match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
+        if (direct) return [parseFloat(direct[1]), parseFloat(direct[2])];
+        const at = text.match(/\/@(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/);
+        if (at) return [parseFloat(at[1]), parseFloat(at[2])];
+        try {
+            const url = new URL(text);
+            for (const key of ["q", "ll", "query", "daddr"]) {
+                const val = url.searchParams.get(key);
+                if (!val) continue;
+                const cand = val.match(/(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/);
+                if (cand) return [parseFloat(cand[1]), parseFloat(cand[2])];
+            }
+        } catch (_) {
+            /* ignore */
+        }
+        return [null, null];
+    }
+
+    function makeConfig() {
+        const latValue = fields.lat.value.trim();
+        const lonValue = fields.lon.value.trim();
+        const config = {
+            map_provider: fields.provider.value || "Google Maps",
+            location_name: fields.location.value.trim(),
+            lat: latValue ? toFloat(latValue) : null,
+            lon: lonValue ? toFloat(lonValue) : null,
+            temp_F: toFloat(fields.temp.value, 59) ?? 59.0,
+            altitude_ft: toFloat(fields.altitude.value, 0) ?? 0.0,
+            wind_speed_mph: toFloat(fields.windSpeed.value, 0) ?? 0.0,
+            wind_dir_deg: toFloat(fields.windDir.value, 0) ?? 0.0,
+            wind_gust_mph: toFloat(fields.windGust.value, 0) ?? 0.0,
+        };
+        return config;
+    }
+
+    function refreshPreview() {
+        const config = makeConfig();
+        fields.preview.value = JSON.stringify(config, null, 2);
+    }
+
+    function setStatus(msg, isError = false) {
+        fields.status.textContent = msg;
+        fields.status.classList.toggle("error", isError);
+    }
+
+    function handleExtract() {
+        const [lat, lon] = latLonFromText(fields.mapsLink.value.trim());
+        if (lat === null || lon === null) {
+            setStatus("Could not extract coordinates from that link.", true);
+            return;
+        }
+        fields.lat.value = lat.toFixed(6);
+        fields.lon.value = lon.toFixed(6);
+        persistToStorage();
+        refreshPreview();
+        setStatus(`Extracted latitude ${lat.toFixed(6)}, longitude ${lon.toFixed(6)}.`);
+    }
+
+    async function handleWeatherFetch() {
+        const lat = toFloat(fields.lat.value);
+        const lon = toFloat(fields.lon.value);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+            setStatus("Enter latitude and longitude first.", true);
+            return;
+        }
+        setStatus("Fetching weather + altitude…");
+        try {
+            const params = new URLSearchParams({
+                latitude: lat,
+                longitude: lon,
+                current: "temperature_2m,wind_speed_10m,wind_direction_10m,wind_gusts_10m",
+                wind_speed_unit: "mph",
+                temperature_unit: "fahrenheit",
+                timezone: "auto",
+            });
+            const weatherUrl = `https://api.open-meteo.com/v1/forecast?${params.toString()}`;
+            const weatherData = await fetchJson(weatherUrl);
+            const current = weatherData.current || {};
+            if (Number.isFinite(current.temperature_2m)) {
+                fields.temp.value = Number(current.temperature_2m).toFixed(1);
+            }
+            if (Number.isFinite(current.wind_speed_10m)) {
+                fields.windSpeed.value = Number(current.wind_speed_10m).toFixed(1);
+            }
+            if (Number.isFinite(current.wind_direction_10m)) {
+                fields.windDir.value = Number(current.wind_direction_10m).toFixed(0);
+            }
+            if (Number.isFinite(current.wind_gusts_10m)) {
+                fields.windGust.value = Number(current.wind_gusts_10m).toFixed(1);
+            }
+
+            // elevation via Open-Meteo elevation endpoint
+            const elevationUrl = `https://api.open-meteo.com/v1/elevation?latitude=${lat}&longitude=${lon}`;
+            let elevationData;
+            try {
+                elevationData = await fetchJson(elevationUrl);
+            } catch (err) {
+                const topoUrl = `https://api.opentopodata.org/v1/aster30m?locations=${lat.toFixed(6)},${lon.toFixed(6)}`;
+                elevationData = await fetchJson(topoUrl);
+            }
+            if (elevationData) {
+                let meters = null;
+                if (Array.isArray(elevationData.elevation) && elevationData.elevation.length) {
+                    meters = elevationData.elevation[0];
+                } else if (Array.isArray(elevationData.results) && elevationData.results.length) {
+                    meters = elevationData.results[0].elevation;
+                }
+                if (Number.isFinite(meters)) {
+                    fields.altitude.value = (Number(meters) * 3.28084).toFixed(0);
+                }
+            }
+
+            persistToStorage();
+            refreshPreview();
+            setStatus("Weather + altitude updated.");
+        } catch (error) {
+            console.error(error);
+            setStatus("Could not fetch weather/elevation.", true);
+        }
+    }
+
+    function downloadConfig() {
+        const blob = new Blob([fields.preview.value], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "config.json";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        setStatus("Downloaded config.json—AirDrop or email it to your PC.");
+    }
+
+    async function copyConfig() {
+        try {
+            await navigator.clipboard.writeText(fields.preview.value);
+            setStatus("Copied JSON to clipboard. Paste it into BallisticTarget's config.json.");
+        } catch (error) {
+            setStatus("Clipboard unavailable; use Download or Share instead.", true);
+        }
+    }
+
+    async function shareConfig() {
+        if (!navigator.share) {
+            downloadConfig();
+            return;
+        }
+        try {
+            const file = new File([fields.preview.value], "config.json", { type: "application/json" });
+            await navigator.share({
+                title: "BallisticTarget config.json",
+                text: "Environmentals export for BallisticTarget",
+                files: [file],
+            });
+            setStatus("Shared config.json.");
+        } catch (error) {
+            if (error.name !== "AbortError") {
+                console.error(error);
+                setStatus("Sharing failed; try Download instead.", true);
+            }
+        }
+    }
+
+    function openProvider() {
+        const provider = fields.provider.value.toLowerCase();
+        const url = provider.includes("apple")
+            ? "https://maps.apple.com/"
+            : "https://maps.google.com/";
+        window.open(url, "_blank");
+    }
+
+    function usePhoneGps() {
+        if (!navigator.geolocation) {
+            setStatus("Geolocation unavailable in this browser.", true);
+            return;
+        }
+        setStatus("Requesting phone GPS…");
+        navigator.geolocation.getCurrentPosition(
+            (pos) => {
+                const { latitude, longitude } = pos.coords;
+                fields.lat.value = latitude.toFixed(6);
+                fields.lon.value = longitude.toFixed(6);
+                persistToStorage();
+                refreshPreview();
+                setStatus("GPS coordinates captured.");
+            },
+            (err) => {
+                console.warn(err);
+                setStatus("Could not read GPS (permission denied?).", true);
+            },
+            { enableHighAccuracy: true, timeout: 10000 }
+        );
+    }
+
+    document.querySelectorAll("input, select, textarea")
+        .forEach((el) => el.addEventListener("input", () => {
+            persistToStorage();
+            refreshPreview();
+        }));
+
+    $("extract-btn").addEventListener("click", handleExtract);
+    $("weather-btn").addEventListener("click", handleWeatherFetch);
+    $("download-btn").addEventListener("click", downloadConfig);
+    $("copy-btn").addEventListener("click", copyConfig);
+    $("share-btn").addEventListener("click", shareConfig);
+    $("open-provider-btn").addEventListener("click", openProvider);
+    $("geo-btn").addEventListener("click", usePhoneGps);
+
+    loadFromStorage();
+    refreshPreview();
+    setStatus("Ready. Fill out the fields, then copy, share, or download the config.");
+</script>
+</body>
+</html>

@@ -1,0 +1,137 @@
+[
+  {
+    "name": "S1_Baseline_Noise",
+    "claim_class": "Artifact check",
+    "observed_excess_w": 0.08,
+    "combined_uncertainty_w": 0.22,
+    "min_margin_w": 0.50,
+    "nuclear_evidence_present": false,
+    "independent_replication": false
+  },
+  {
+    "name": "S2_Small_Heat_No_Replication",
+    "claim_class": "Excess heat",
+    "observed_excess_w": 1.30,
+    "combined_uncertainty_w": 0.35,
+    "min_margin_w": 1.00,
+    "nuclear_evidence_present": true,
+    "independent_replication": false
+  },
+  {
+    "name": "S3_Heat_No_Nuclear",
+    "claim_class": "Excess heat",
+    "observed_excess_w": 2.20,
+    "combined_uncertainty_w": 0.40,
+    "min_margin_w": 1.20,
+    "nuclear_evidence_present": false,
+    "independent_replication": false
+  },
+  {
+    "name": "S4_Rate_Enhancement_Replicated",
+    "claim_class": "Rate enhancement",
+    "observed_excess_w": 0.90,
+    "combined_uncertainty_w": 0.25,
+    "min_margin_w": 0.70,
+    "nuclear_evidence_present": false,
+    "independent_replication": true
+  },
+  {
+    "name": "S5_Net_Energy_Claim_Replicated",
+    "claim_class": "Net energy gain",
+    "observed_excess_w": 5.00,
+    "combined_uncertainty_w": 0.80,
+    "min_margin_w": 3.00,
+    "nuclear_evidence_present": true,
+    "independent_replication": true
+  },
+  {
+    "name": "S6_Net_Energy_No_Replication",
+    "claim_class": "Net energy gain",
+    "observed_excess_w": 4.20,
+    "combined_uncertainty_w": 0.90,
+    "min_margin_w": 3.00,
+    "nuclear_evidence_present": true,
+    "independent_replication": false
+  },
+  {
+    "name": "S7_Rate_Enhancement_Weak_Margin",
+    "claim_class": "Rate enhancement",
+    "observed_excess_w": 0.40,
+    "combined_uncertainty_w": 0.20,
+    "min_margin_w": 0.70,
+    "nuclear_evidence_present": false,
+    "independent_replication": true
+  },
+  {
+    "name": "S8_Artifact_Replicated_Noise",
+    "claim_class": "Artifact check",
+    "observed_excess_w": 0.15,
+    "combined_uncertainty_w": 0.15,
+    "min_margin_w": 0.50,
+    "nuclear_evidence_present": false,
+    "independent_replication": true
+  },
+  {
+    "name": "S9_Excess_Heat_High_SNR_Replicated",
+    "claim_class": "Excess heat",
+    "observed_excess_w": 3.10,
+    "combined_uncertainty_w": 0.45,
+    "min_margin_w": 1.50,
+    "nuclear_evidence_present": true,
+    "independent_replication": true
+  },
+  {
+    "name": "S10_Excess_Heat_Borderline",
+    "claim_class": "Excess heat",
+    "observed_excess_w": 1.01,
+    "combined_uncertainty_w": 0.50,
+    "min_margin_w": 1.00,
+    "nuclear_evidence_present": true,
+    "independent_replication": false
+  },
+  {
+    "name": "S11_Net_Energy_Missing_Nuclear",
+    "claim_class": "Net energy gain",
+    "observed_excess_w": 6.00,
+    "combined_uncertainty_w": 1.00,
+    "min_margin_w": 3.00,
+    "nuclear_evidence_present": false,
+    "independent_replication": true
+  },
+  {
+    "name": "S12_Rate_Enhancement_Not_Replicated",
+    "claim_class": "Rate enhancement",
+    "observed_excess_w": 1.20,
+    "combined_uncertainty_w": 0.30,
+    "min_margin_w": 0.70,
+    "nuclear_evidence_present": false,
+    "independent_replication": false
+  },
+  {
+    "name": "S13_Artifact_False_Positive_Check",
+    "claim_class": "Artifact check",
+    "observed_excess_w": 0.65,
+    "combined_uncertainty_w": 0.25,
+    "min_margin_w": 0.50,
+    "nuclear_evidence_present": false,
+    "independent_replication": false
+  },
+  {
+    "name": "S14_Excess_Heat_Replicated_Low_SNR",
+    "claim_class": "Excess heat",
+    "observed_excess_w": 1.60,
+    "combined_uncertainty_w": 0.90,
+    "min_margin_w": 1.50,
+    "nuclear_evidence_present": true,
+    "independent_replication": true
+  },
+  {
+    "name": "S15_Net_Energy_Strong_All_Gates",
+    "claim_class": "Net energy gain",
+    "observed_excess_w": 8.00,
+    "combined_uncertainty_w": 0.70,
+    "min_margin_w": 3.00,
+    "nuclear_evidence_present": true,
+    "independent_replication": true
+  }
+]

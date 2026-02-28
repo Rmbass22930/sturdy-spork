@@ -1,0 +1,31 @@
+BallisticTarget MOA Target Instructions
+====================================
+
+Zero First
+- Confirm a clean zero at the distance you entered in BallisticTarget (50 yd default).
+- Fire a 3-5 round group on the 50 yd dot with turrets at zero to verify print scale and rifle alignment.
+
+Using The Colored Dots
+1. Note the "Hold XX.XX MOA" caption below the dot for the distance you plan to shoot (100/200/300/400 yd).
+2. Dial that MOA value on your elevation turret *or* keep turrets at zero and hold the matching MOA hash mark on your reticle over the dot.
+3. Aim directly at the colored dot. Each dot is exactly 1.00 MOA in diameter at its labeled yard line, so the dot center equals point of impact when the hold is correct.
+4. Fire a confirming group. Impacts should land in the center crosshair; record the observed offset versus the printed hold.
+
+Wind
+- Dial or hold wind as required for conditions. The dots account for elevation only; input your wind in the app if you want a calculated suggestion.
+
+Range Validation Plan
+- Bring at least five rounds per distance plus a stable rest.
+- Shoot and record in order: 100, 200, 300, 400 yd (or whatever lines your range has).
+- After each string circle the group, jot the actual impact location, and reset turrets to zero before moving on.
+- Feed any consistent offsets back into BallisticTarget (adjust muzzle velocity, BC, or sight height) then regenerate the target.
+
+Scope Movement Quick Reference
+- Dialing: rotate the elevation turret up the printed MOA (example: +1.75 MOA for 200 yd) and aim at the dot.
+- Holding: leave the turret at zero, place the appropriate MOA hash mark on the dot (example: 6 MOA hash for a "Hold 6.10 MOA" at 300 yd) and break the shot while keeping the center crosshair steady above the dot.
+
+Printing Tips
+- Always print at 100% ("actual size" in the dialog). Scaling will break the MOA geometry.
+- Keep the sheet flat on the backer and mark each group to compare with the table on PDF page 2.
+
+Adjust, reprint, and reconfirm any time ammo lot, suppressor setup, or environment changes more than ~15 °F or 2,000 ft from the printed data.

@@ -1,0 +1,6 @@
+Set-Location "G:\BallisticTarget\src"
+notepad "G:\BallisticTarget\src\BallisticTargetGUI.py"
+import json
+import os
+import re
+import webbrowser

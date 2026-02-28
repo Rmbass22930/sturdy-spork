@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>BallisticTarget (iOS Companion)</title>
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
+    <link rel="manifest" href="ballistictarget-manifest.json">
+    <link rel="apple-touch-icon" href="icons/bt-512.png">
+    <style>
+        :root {
+            color-scheme: light dark;
+            --bg: #0f172a;
+            --card: #111827;
+            --text: #e2e8f0;
+            --muted: #94a3b8;
+            --accent: #38bdf8;
+            --accent-2: #f97316;
+            --border: rgba(148,163,184,0.4);
+        }
+        body {
+            font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+            margin: 0;
+            background: var(--bg);
+            color: var(--text);
+        }
+        main {
+            max-width: 1040px;
+            margin: 0 auto;
+            padding: 24px 16px 48px;
+        }
+        h1, h2 {
+            margin: 0 0 0.5em;
+            font-weight: 600;
+        }
+        .card {
+            background: var(--card);
+            border-radius: 18px;
+            padding: 20px;
+            margin-bottom: 18px;
+            box-shadow: 0 20px 40px rgba(15,23,42,0.35);
+        }
+        label {
+            display: block;
+            font-size: 0.85rem;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+        input, select, textarea {
+            width: 100%;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            background: rgba(15,23,42,0.7);
+            color: var(--text);
+            padding: 10px 12px;
+            font-size: 1rem;
+            margin-bottom: 12px;
+            box-sizing: border-box;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px 18px;
+        }
+        button {
+            border: none;
+            border-radius: 999px;
+            padding: 11px 20px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            cursor: pointer;
+            background: var(--accent);
+            color: #0f172a;
+            transition: opacity 0.2s ease;
+        }
+        button.secondary {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text);
+        }
+        button.danger {
+            background: #f87171;
+            color: #0f172a;
+        }
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .btn-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 14px;
+        }
+        canvas {
+            width: 100%;
+            max-width: 816px;
+            background: #fff;
+            border-radius: 8px;
+            border: 1px solid rgba(15,23,42,0.2);
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.95rem;
+        }
+        th, td {
+            border: 1px solid var(--border);
+            padding: 6px 10px;
+            text-align: center;
+        }
+        th {
+            font-weight: 600;
+            background: rgba(148,163,184,0.12);
+        }
+        .status {
+            margin-top: 8px;
+            font-size: 0.9rem;
+            color: var(--muted);
+        }
+        .pill {
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 12px;
+            border-radius: 999px;
+            background: rgba(56,189,248,0.2);
+            font-size: 0.85rem;
+            color: var(--accent);
+            margin-bottom: 8px;
+        }
+        @media (max-width: 600px) {
+            .btn-row {
+                flex-direction: column;
+            }
+        }
+    </style>
+</head>
+<body>
+<main>
+    <section class="card">
+        <div class="pill">Runs locally in Safari (iPhone / iPad)</div>
+        <h1>BallisticTarget Calculator (iOS Companion)</h1>
+        <p class="status">
+            Enter rifle + ammo data, then generate a printable target + ballistic table. Print/share from the iPad and drop the PDF/PNG back onto the desktop folder if needed.
+        </p>
+    </section>
+
+    <section class="card">
+        <h2>Inputs</h2>
+        <div class="grid">
+            <div>
+                <label for="rifle">Rifle Model</label>
+                <input id="rifle" placeholder="PSA PA-10 18in">
+            </div>
+            <div>
+                <label for="ammo">Ammunition</label>
+                <input id="ammo" placeholder="Hornady Superformance .308 165gr SST">
+            </div>
+            <div>
+                <label for="velocity">Muzzle Velocity (fps)</label>
+                <input id="velocity" inputmode="decimal" placeholder="2840">
+            </div>
+            <div>
+                <label for="bc">Ballistic Coefficient (G1)</label>
+                <input id="bc" inputmode="decimal" placeholder="0.447">
+            </div>
+            <div>
+                <label for="sight-height">Sight Height (in)</label>
+                <input id="sight-height" inputmode="decimal" placeholder="2.6">
+            </div>
+            <div>
+                <label for="zero-range">Zero Range (yd)</label>
+                <input id="zero-range" inputmode="decimal" placeholder="50">
+            </div>
+            <div>
+                <label for="temp">Temperature (°F)</label>
+                <input id="temp" inputmode="decimal" placeholder="59">
+            </div>
+            <div>
+                <label for="altitude">Altitude (ft)</label>
+                <input id="altitude" inputmode="decimal" placeholder="0">
+            </div>
+            <div>
+                <label for="wind-speed">Wind Speed (mph)</label>
+                <input id="wind-speed" inputmode="decimal" placeholder="0">
+            </div>
+            <div>
+                <label for="wind-dir">Wind Direction (deg FROM)</label>
+                <input id="wind-dir" inputmode="decimal" placeholder="0">
+            </div>
+            <div>
+                <label for="wind-gust">Wind Gust (mph)</label>
+                <input id="wind-gust" inputmode="decimal" placeholder="0">
+            </div>
+        </div>
+        <div class="btn-row">
+            <button id="generate-btn" type="button">Generate Target</button>
+            <button id="print-btn" class="secondary" type="button">Print / Share Target</button>
+            <button id="download-btn" type="button">Download PNG</button>
+            <button id="copy-table-btn" class="secondary" type="button">Copy Table Text</button>
+            <button id="reset-btn" class="danger" type="button">Reset Inputs</button>
+        </div>
+        <div id="status" class="status"></div>
+    </section>
+
+    <section class="card">
+        <h2>Preview</h2>
+        <canvas id="target-canvas" width="816" height="1056" aria-label="Printable target preview"></canvas>
+    </section>
+
+    <section class="card">
+        <h2>Ballistic Table</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Yards</th>
+                    <th>Drop (in)</th>
+                    <th>Drop (MOA)</th>
+                    <th>Velocity @ Range (fps)</th>
+                    <th>Time of Flight (sec)</th>
+                    <th>Launch Angle (deg)</th>
+                </tr>
+            </thead>
+            <tbody id="ballistic-table-body">
+                <tr><td colspan="6" style="text-align:center;color:var(--muted);">Press "Generate Target" to compute data.</td></tr>
+            </tbody>
+        </table>
+    </section>
+
+    <section class="card">
+        <h2>Saving Targets Locally</h2>
+        <ol style="line-height:1.5">
+            <li>Open the <strong>Files</strong> app → <strong>On My iPad</strong> → tap the “…” menu → <strong>New Folder</strong> → name it <strong>BallisticTargetOutput</strong>.</li>
+            <li>In Safari, after tapping <strong>Download PNG</strong>, tap the download icon → the file → <strong>Share</strong> → <strong>Save to Files</strong>.</li>
+            <li>Select <strong>On My iPad &gt; BallisticTargetOutput</strong> and tap <strong>Save</strong>. Safari remembers the last location, so future saves go there automatically.</li>
+            <li>Need to move files back to desktop? Plug in a portable SSD or use AirDrop/Email from the Files app.</li>
+        </ol>
+    </section>
+</main>
+
+<script>
+    const $ = (id) => document.getElementById(id);
+    const inputs = {
+        rifle: $("rifle"),
+        ammo: $("ammo"),
+        velocity: $("velocity"),
+        bc: $("bc"),
+        sightHeight: $("sight-height"),
+        zeroRange: $("zero-range"),
+        temp: $("temp"),
+        altitude: $("altitude"),
+        windSpeed: $("wind-speed"),
+        windDir: $("wind-dir"),
+        windGust: $("wind-gust"),
+    };
+    const statusEl = $("status");
+    const tableBody = $("ballistic-table-body");
+    const canvas = $("target-canvas");
+    const ctx = canvas.getContext("2d");
+    const STORAGE_KEY = "bt-ios-main";
+    const MOA_AT_100Y = 1.047;
+    const DOT_MOA = 1.0;
+    const PX_PER_IN = (canvas.width / 8.5 + canvas.height / 11) / 2;
+    const DOT_X_MM = {
+        50: 35,
+        100: 150,
+        200: 35,
+        300: 170,
+        400: 105,
+    };
+    const DOT_AREA_TOP_MM = 55;
+    const DOT_AREA_BOTTOM_MM = 250;
+    const DEFAULT_RANGES = [50, 100, 200, 300, 400];
+
+    const defaultState = {
+        rifle: "PSA PA-10 18in",
+        ammo: "Hornady Superformance .308 165gr SST",
+        velocity: "2840",
+        bc: "0.447",
+        sightHeight: "2.6",
+        zeroRange: "50",
+        temp: "59",
+        altitude: "0",
+        windSpeed: "0",
+        windDir: "0",
+        windGust: "0",
+    };
+
+    function setStatus(message, isError = false) {
+        statusEl.textContent = message;
+        statusEl.style.color = isError ? "#f87171" : "var(--muted)";
+    }
+
+    function loadState() {
+        try {
+            const raw = localStorage.getItem(STORAGE_KEY);
+            if (!raw) {
+                Object.entries(defaultState).forEach(([key, val]) => {
+                    inputs[key].value = val;
+                });
+                return;
+            }
+            const data = JSON.parse(raw);
+            Object.entries({ ...defaultState, ...data }).forEach(([key, val]) => {
+                inputs[key].value = val ?? "";
+            });
+        } catch (err) {
+            console.warn("Load failed", err);
+        }
+    }
+
+    function saveState() {
+        const data = {};
+        Object.entries(inputs).forEach(([key, el]) => {
+            data[key] = el.value;
+        });
+        try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+        } catch (err) {
+            console.warn("Save failed", err);
+        }
+    }
+
+    function resetInputs() {
+        Object.entries(defaultState).forEach(([key, val]) => {
+            inputs[key].value = val;
+        });
+        saveState();
+        setStatus("Inputs reset to defaults.");
+    }
+
+    function toFloat(value, fallback = 0) {
+        const num = parseFloat(value);
+        return Number.isFinite(num) ? num : fallback;
+    }
+
+    function mmToPx(mm) {
+        return (mm / 25.4) * PX_PER_IN;
+    }
+
+    function moaDiameterInches(distanceYd, moaValue = DOT_MOA) {
+        return MOA_AT_100Y * (distanceYd / 100) * moaValue;
+    }
+
+    function dropToMoa(dropInches, distanceYd) {
+        const denom = moaDiameterInches(distanceYd, 1);
+        return denom > 0 ? dropInches / denom : 0;
+    }
+
+    function mapDropToMm(dropValue, minDrop, maxDrop) {
+        if (!Number.isFinite(dropValue)) {
+            return (DOT_AREA_TOP_MM + DOT_AREA_BOTTOM_MM) / 2;
+        }
+        if (Math.abs(maxDrop - minDrop) < 1e-6) {
+            return (DOT_AREA_TOP_MM + DOT_AREA_BOTTOM_MM) / 2;
+        }
+        const norm = (dropValue - minDrop) / (maxDrop - minDrop);
+        return DOT_AREA_TOP_MM + norm * (DOT_AREA_BOTTOM_MM - DOT_AREA_TOP_MM);
+    }
+
+    function calculateAirDensityRatio(altitudeFt, tempF) {
+        const tempC = (tempF - 32) * (5 / 9);
+        const altitudeM = altitudeFt * 0.3048;
+        const pressure = 101325 * Math.pow(1 - 2.25577e-5 * altitudeM, 5.25588);
+        const density = pressure / (287.05 * (tempC + 273.15));
+        return density / 1.225;
+    }
+
+    function calculateBallistics(rangeYd, state) {
+        const G_FTPS2 = 32.174;
+        const rangeFt = rangeYd * 3.0;
+        const rhoRatio = calculateAirDensityRatio(state.altitude, state.temp);
+
+        const bc = Math.max(state.bc, 0.05);
+        const v0 = Math.max(state.velocity, 1);
+
+        const k = 0.00035 * rhoRatio / bc;
+        const velRange = Math.max(v0 * Math.exp(-k * rangeYd), 1);
+        const vAvg = (v0 + velRange) / 2;
+        const tof = rangeFt / vAvg;
+        const dropIn = 0.5 * G_FTPS2 * (tof ** 2) * 12.0;
+
+        const zeroFt = Math.max(state.zeroRange * 3.0, 1);
+        const sightHeightFt = state.sightHeight / 12.0;
+
+        const velZero = Math.max(v0 * Math.exp(-k * state.zeroRange), 1);
+        const vAvgZero = (v0 + velZero) / 2;
+        const tofZero = zeroFt / vAvgZero;
+        const dropZeroFt = 0.5 * G_FTPS2 * (tofZero ** 2);
+        const tanTheta = (sightHeightFt + dropZeroFt) / zeroFt;
+        const angleDeg = Math.atan(tanTheta) * (180 / Math.PI);
+
+        return {
+            yards: rangeYd,
+            drop: dropIn,
+            velocity: velRange,
+            tof,
+            angle: angleDeg,
+        };
+    }
+
+    function gatherState() {
+        return {
+            rifle: inputs.rifle.value.trim() || defaultState.rifle,
+            ammo: inputs.ammo.value.trim() || defaultState.ammo,
+            velocity: toFloat(inputs.velocity.value, parseFloat(defaultState.velocity)),
+            bc: toFloat(inputs.bc.value, parseFloat(defaultState.bc)),
+            sightHeight: toFloat(inputs.sightHeight.value, parseFloat(defaultState.sightHeight)),
+            zeroRange: toFloat(inputs.zeroRange.value, parseFloat(defaultState.zeroRange)),
+            temp: toFloat(inputs.temp.value, parseFloat(defaultState.temp)),
+            altitude: toFloat(inputs.altitude.value, parseFloat(defaultState.altitude)),
+            windSpeed: toFloat(inputs.windSpeed.value, 0),
+            windDir: toFloat(inputs.windDir.value, 0),
+            windGust: toFloat(inputs.windGust.value, 0),
+        };
+    }
+
+    function updateTable(rows) {
+        tableBody.innerHTML = "";
+        rows.forEach((row) => {
+            const tr = document.createElement("tr");
+            tr.innerHTML = `
+                <td>${row.yards}</td>
+                <td>${row.drop.toFixed(2)}</td>
+                <td>${row.dropMoa.toFixed(2)}</td>
+                <td>${row.velocity.toFixed(0)}</td>
+                <td>${row.tof.toFixed(3)}</td>
+                <td>${row.angle.toFixed(3)}</td>
+            `;
+            tableBody.appendChild(tr);
+        });
+    }
+
+    function drawTarget(rows, state) {
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        ctx.fillStyle = "#000";
+        ctx.textAlign = "center";
+        ctx.font = "bold 28px 'Segoe UI', sans-serif";
+        ctx.fillText(`BallisticTarget: ${state.rifle}`, canvas.width / 2, 50);
+        ctx.font = "20px 'Segoe UI', sans-serif";
+        ctx.fillText(state.ammo, canvas.width / 2, 80);
+        ctx.fillText(
+            `MV ${state.velocity.toFixed(0)} fps | BC ${state.bc.toFixed(3)} | Sight ${state.sightHeight.toFixed(2)} in | Zero ${state.zeroRange.toFixed(0)} yd`,
+            canvas.width / 2,
+            105
+        );
+        ctx.fillText(
+            `Temp ${state.temp.toFixed(0)} F | Alt ${state.altitude.toFixed(0)} ft | Wind ${state.windSpeed.toFixed(1)} mph @ ${state.windDir.toFixed(0)}° (FROM) | Gust ${state.windGust.toFixed(1)} mph`,
+            canvas.width / 2,
+            130
+        );
+
+        const rowByYard = Object.fromEntries(rows.map((row) => [row.yards, row]));
+        const dropValues = rows.map((row) => row.dropMoa);
+        const minDrop = dropValues.length ? Math.min(...dropValues) : 0;
+        const maxDrop = dropValues.length ? Math.max(...dropValues) : 0;
+        const dotColors = {
+            50: "#f43f5e",
+            100: "#60a5fa",
+            200: "#34d399",
+            300: "#f97316",
+            400: "#c084fc",
+        };
+        const yardLines = DEFAULT_RANGES;
+        const dotBottoms = [];
+
+        ctx.textAlign = "center";
+
+        yardLines.forEach((yards) => {
+            const row = rowByYard[yards];
+            const xMm = DOT_X_MM[yards];
+            if (!row || typeof xMm === "undefined") {
+                return;
+            }
+            const radiusPx = Math.max((moaDiameterInches(yards, DOT_MOA) * PX_PER_IN) / 2, mmToPx(3));
+            const cx = mmToPx(xMm);
+            const cy = mmToPx(mapDropToMm(row.dropMoa, minDrop, maxDrop));
+            ctx.fillStyle = dotColors[yards];
+            ctx.beginPath();
+            ctx.arc(cx, cy, radiusPx, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.strokeStyle = "rgba(255,255,255,0.88)";
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(cx - radiusPx, cy);
+            ctx.lineTo(cx + radiusPx, cy);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(cx, cy - radiusPx);
+            ctx.lineTo(cx, cy + radiusPx);
+            ctx.stroke();
+
+            ctx.fillStyle = "#111";
+            ctx.beginPath();
+            ctx.arc(cx, cy, 6, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.fillStyle = "#0f172a";
+            ctx.font = "bold 22px 'Segoe UI'";
+            ctx.fillText(`${yards} yd | Hold ${row.dropMoa.toFixed(2)} MOA`, cx, cy + radiusPx + 28);
+            dotBottoms.push(cy + radiusPx);
+        });
+
+        const maxBottom = dotBottoms.length ? Math.max(...dotBottoms) : 320;
+        const legendY = Math.min(canvas.height - 60, maxBottom + 40);
+        ctx.fillStyle = "#111";
+        ctx.font = "18px 'Segoe UI'";
+        ctx.fillText(
+            "Dots = true 1-MOA diameter; vertical spacing follows the hold (MOA) needed at that distance.",
+            canvas.width / 2,
+            legendY
+        );
+        ctx.font = "16px 'Segoe UI'";
+        ctx.fillText(
+            "Dial/hold the captioned value, aim at the dot, and impacts should land at the center crosshair.",
+            canvas.width / 2,
+            legendY + 26
+        );
+    }
+
+    function copyTable(rows) {
+        const header = "Yds\tDrop(in)\tDrop(MOA)\tVel(fps)\tTOF(s)\tAngle(deg)";
+        const lines = rows.map(
+            (row) =>
+                `${row.yards}\t${row.drop.toFixed(2)}\t${row.dropMoa.toFixed(2)}\t${row.velocity.toFixed(0)}\t${row.tof.toFixed(
+                    3
+                )}\t${row.angle.toFixed(3)}`
+        );
+        const payload = [header, ...lines].join("\n");
+        navigator.clipboard.writeText(payload).then(
+            () => setStatus("Ballistic table copied to clipboard."),
+            () => setStatus("Clipboard unavailable; take a screenshot or download target instead.", true)
+        );
+    }
+
+    function downloadPNG() {
+        canvas.toBlob((blob) => {
+            if (!blob) return;
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = "BallisticTarget_iOS.png";
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            setStatus("PNG downloaded.");
+        }, "image/png");
+    }
+
+    function printCanvas() {
+        const dataUrl = canvas.toDataURL("image/png");
+        const html = `
+<!DOCTYPE html>
+<html>
+<head><title>BallisticTarget Print</title></head>
+<body style="margin:0;">
+    <img src="${dataUrl}" style="width:100%;max-width:816px;display:block;margin:0 auto;">
+    <script>window.onload=function(){setTimeout(()=>window.print(),300);};</script>
+</body>
+</html>`;
+        const win = window.open("");
+        if (win) {
+            win.document.write(html);
+            win.document.close();
+        } else {
+            setStatus("Pop-up blocked. Allow pop-ups or use Download PNG.", true);
+        }
+    }
+
+    function buildRows(state, ranges = DEFAULT_RANGES) {
+        return ranges.map((range) => {
+            const result = calculateBallistics(range, state);
+            return { ...result, dropMoa: dropToMoa(result.drop, range) };
+        });
+    }
+
+    function generateTarget() {
+        const state = gatherState();
+        if (!Number.isFinite(state.velocity) || state.velocity <= 0) {
+            setStatus("Enter a valid muzzle velocity.", true);
+            return;
+        }
+
+        saveState();
+
+        const rows = buildRows(state);
+        updateTable(rows);
+        drawTarget(rows, state);
+        setStatus("Target updated. Use Print or Download to export.");
+        return rows;
+    }
+
+    document.querySelectorAll("input").forEach((el) => {
+        el.addEventListener("input", () => {
+            saveState();
+        });
+    });
+
+    $("generate-btn").addEventListener("click", () => {
+        generateTarget();
+    });
+    $("print-btn").addEventListener("click", () => {
+        generateTarget();
+        printCanvas();
+    });
+    $("download-btn").addEventListener("click", () => {
+        const rows = generateTarget();
+        if (Array.isArray(rows)) {
+            downloadPNG();
+        }
+    });
+    $("copy-table-btn").addEventListener("click", () => {
+        const rows = generateTarget();
+        if (Array.isArray(rows)) {
+            copyTable(rows);
+        }
+    });
+    $("reset-btn").addEventListener("click", resetInputs);
+
+    loadState();
+    const initialState = gatherState();
+    const initialRows = buildRows(initialState);
+    updateTable(initialRows);
+    drawTarget(initialRows, initialState);
+    setStatus("Ready. Adjust values and tap Generate Target.");
+
+    if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+            navigator.serviceWorker.register('bt-service-worker.js').catch((err) => {
+                console.warn('Service worker registration failed:', err);
+            });
+        });
+    }
+</script>
+</body>
+</html>

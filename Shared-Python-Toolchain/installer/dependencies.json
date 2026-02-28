@@ -1,0 +1,16 @@
+[
+  {
+    "name": "Cloudflare WARP",
+    "winget_id": "Cloudflare.WARP",
+    "winget_args": [
+      "--silent"
+    ]
+  },
+  {
+    "name": "Tor Browser",
+    "winget_id": "TorProject.TorBrowser",
+    "winget_args": [
+      "--silent"
+    ]
+  }
+]

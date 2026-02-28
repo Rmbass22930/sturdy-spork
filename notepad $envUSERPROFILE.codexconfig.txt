@@ -1,0 +1,1 @@
+notepad $env:USERPROFILE\.codex\config.toml

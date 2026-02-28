@@ -1,0 +1,11 @@
+{
+  "map_provider": "Google Maps",
+  "location_name": "",
+  "lat": null,
+  "lon": null,
+  "temp_F": 59.0,
+  "altitude_ft": 0.0,
+  "wind_speed_mph": 0.0,
+  "wind_dir_deg": 0.0,
+  "wind_gust_mph": 0.0
+}

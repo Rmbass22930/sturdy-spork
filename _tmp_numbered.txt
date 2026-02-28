@@ -1,0 +1,770 @@
+    1: #!/usr/bin/env python3
+    2: """VPNGuard 2 standalone viewer protection utility.
+    3: 
+    4: The original VPNGuard focused on parsing SSH/web logs to detect hacking
+    5: attempts.  VPNGuard 2 is designed for creators streaming on MyFreeCams and
+    6: Chaturbate who need a local companion that continuously looks up viewer IP
+    7: addresses, detects VPN/proxy usage, and applies permanent Windows Firewall
+    8: blocks on abusive viewers.  The program stores per-model configuration,
+    9: fetches viewer rosters from JSON feeds or HTTPS endpoints, and can run in the
+   10: background while broadcast software is open.
+   11: """
+   12: 
+   13: from __future__ import annotations
+   14: 
+   15: import dataclasses
+   16: import ipaddress
+   17: import json
+   18: import os
+   19: import platform
+   20: import subprocess
+   21: import threading
+   22: import time
+   23: from dataclasses import dataclass, field
+   24: from pathlib import Path
+   25: from typing import Dict, Iterable, List, NamedTuple, Optional, Tuple
+   26: 
+   27: import requests
+   28: 
+   29: PROGRAM_NAME = "VPNGuard 2"
+   30: STATE_FILE = os.environ.get("VPN_GUARD_STATE", "./vpnguard2_state.json")
+   31: IP_LOOKUP_URL = "http://ip-api.com/json/{ip}?fields=status,proxy,hosting,query,country,isp"
+   32: DEFAULT_POLL_SECONDS = 45
+   33: LOOKUP_CACHE_SECONDS = 3600
+   34: SUPPORTED_SITES = ("myfreecams", "chaturbate", "onlyfans")
+   35: 
+   36: 
+   37: class ConnectorError(RuntimeError):
+   38:     pass
+   39: 
+   40: 
+   41: class FeedUnavailableError(ConnectorError):
+   42:     pass
+   43: 
+   44: 
+   45: @dataclass
+   46: class ModelProfile:
+   47:     site: str
+   48:     handle: str
+   49:     display_name: str = ""
+   50:     viewer_feed: Optional[str] = None
+   51:     tags: List[str] = field(default_factory=list)
+   52:     auto_block_vpn: bool = True
+   53:     metadata: Dict[str, str] = field(default_factory=dict)
+   54: 
+   55:     def __post_init__(self):
+   56:         self.site = self.site.lower()
+   57:         self.handle = self.handle.strip()
+   58: 
+   59:     @property
+   60:     def key(self) -> str:
+   61:         return f"{self.site}:{self.handle}".lower()
+   62: 
+   63:     def to_dict(self) -> Dict[str, object]:
+   64:         return {
+   65:             "site": self.site,
+   66:             "handle": self.handle,
+   67:             "display_name": self.display_name,
+   68:             "viewer_feed": self.viewer_feed,
+   69:             "tags": list(self.tags),
+   70:             "auto_block_vpn": self.auto_block_vpn,
+   71:             "metadata": dict(self.metadata),
+   72:         }
+   73: 
+   74:     @classmethod
+   75:     def from_dict(cls, data: Dict[str, object]) -> "ModelProfile":
+   76:         return cls(
+   77:             site=str(data.get("site", "")).lower(),
+   78:             handle=str(data.get("handle", "")),
+   79:             display_name=str(data.get("display_name", "")),
+   80:             viewer_feed=data.get("viewer_feed"),
+   81:             tags=list(data.get("tags", [])),
+   82:             auto_block_vpn=bool(data.get("auto_block_vpn", True)),
+   83:             metadata=dict(data.get("metadata", {})),
+   84:         )
+   85: 
+   86: 
+   87: @dataclass
+   88: class ViewerRecord:
+   89:     username: str
+   90:     ip_address: str
+   91:     source: str
+   92:     flags: List[str] = field(default_factory=list)
+   93:     metadata: Dict[str, str] = field(default_factory=dict)
+   94: 
+   95: 
+   96: class IPInfo(NamedTuple):
+   97:     ip: str
+   98:     is_vpn: bool
+   99:     country: str
+  100:     isp: str
+  101: 
+  102: 
+  103: class BaseConnector:
+  104:     site: str = "generic"
+  105:     friendly_name: str = "Generic"
+  106: 
+  107:     def fetch_viewers(self, profile: ModelProfile) -> List[ViewerRecord]:
+  108:         raise NotImplementedError
+  109: 
+  110: 
+  111: class JSONFeedConnector(BaseConnector):
+  112:     viewer_keys: Tuple[str, ...] = ("viewers",)
+  113: 
+  114:     def fetch_viewers(self, profile: ModelProfile) -> List[ViewerRecord]:
+  115:         feed = self._resolve_feed(profile)
+  116:         if not feed:
+  117:             raise FeedUnavailableError(
+  118:                 f"No viewer feed configured for {profile.site}:{profile.handle}."
+  119:             )
+  120:         payload = self._load_payload(feed)
+  121:         rows = self._extract_rows(payload)
+  122:         viewers: List[ViewerRecord] = []
+  123:         for row in rows:
+  124:             record = self._row_to_viewer(row, feed)
+  125:             if record:
+  126:                 viewers.append(record)
+  127:         return viewers
+  128: 
+  129:     def _resolve_feed(self, profile: ModelProfile) -> Optional[str]:
+  130:         if profile.viewer_feed:
+  131:             return profile.viewer_feed
+  132:         default_path = Path("feeds") / f"{profile.site}_{profile.handle}.json"
+  133:         if default_path.exists():
+  134:             return str(default_path)
+  135:         return None
+  136: 
+  137:     def _load_payload(self, feed: str):
+  138:         if feed.startswith(("http://", "https://")):
+  139:             resp = requests.get(feed, timeout=15)
+  140:             resp.raise_for_status()
+  141:             try:
+  142:                 return resp.json()
+  143:             except ValueError as exc:
+  144:                 raise FeedUnavailableError(f"Feed at {feed} is not valid JSON") from exc
+  145:         path = Path(feed).expanduser()
+  146:         if not path.exists():
+  147:             raise FeedUnavailableError(f"Feed file not found: {path}")
+  148:         text = path.read_text(encoding="utf-8")
+  149:         return json.loads(text)
+  150: 
+  151:     def _extract_rows(self, payload) -> List[object]:
+  152:         if isinstance(payload, list):
+  153:             return payload
+  154:         if isinstance(payload, dict):
+  155:             for key in self.viewer_keys:
+  156:                 value = payload.get(key)
+  157:                 if isinstance(value, list):
+  158:                     return value
+  159:             data_value = payload.get("data")
+  160:             if isinstance(data_value, list):
+  161:                 return data_value
+  162:         return []
+  163: 
+  164:     def _row_to_viewer(self, row, source: str) -> Optional[ViewerRecord]:
+  165:         username: Optional[str] = None
+  166:         ip_address: Optional[str] = None
+  167:         flags: List[str] = []
+  168:         metadata: Dict[str, str] = {}
+  169: 
+  170:         if isinstance(row, dict):
+  171:             username = row.get("username") or row.get("user") or row.get("handle")
+  172:             ip_address = row.get("ip") or row.get("ip_address") or row.get("address")
+  173:             flags_raw = row.get("flags") or row.get("labels") or []
+  174:             if isinstance(flags_raw, str):
+  175:                 flags = [flags_raw]
+  176:             elif isinstance(flags_raw, list):
+  177:                 flags = [str(f) for f in flags_raw]
+  178:             for key in ("notes", "reason", "country", "isp"):
+  179:                 if key in row:
+  180:                     metadata[key] = str(row[key])
+  181:         elif isinstance(row, (list, tuple)) and len(row) >= 2:
+  182:             username = str(row[0])
+  183:             ip_address = str(row[1])
+  184:             if len(row) >= 3 and row[2]:
+  185:                 flags = [str(row[2])]
+  186:         else:
+  187:             return None
+  188: 
+  189:         if not username or not ip_address:
+  190:             return None
+  191:         return ViewerRecord(
+  192:             username=str(username).strip(),
+  193:             ip_address=str(ip_address).strip(),
+  194:             source=source,
+  195:             flags=flags,
+  196:             metadata=metadata,
+  197:         )
+  198: 
+  199: 
+  200: class MyFreeCamsConnector(JSONFeedConnector):
+  201:     site = "myfreecams"
+  202:     friendly_name = "MyFreeCams"
+  203:     viewer_keys = ("viewers", "members", "users", "data")
+  204: 
+  205: 
+  206: class ChaturbateConnector(JSONFeedConnector):
+  207:     site = "chaturbate"
+  208:     friendly_name = "Chaturbate"
+  209:     viewer_keys = ("chatters", "viewers", "users", "data")
+  210: 
+  211: 
+  212: class OnlyFansConnector(JSONFeedConnector):
+  213:     site = "onlyfans"
+  214:     friendly_name = "OnlyFans"
+  215:     viewer_keys = ("viewers", "subscribers", "fans", "users", "data")
+  216: 
+  217: 
+  218: class GuardState:
+  219:     def __init__(self, state_file: str):
+  220:         self.state_file = Path(state_file)
+  221:         self.lock = threading.Lock()
+  222:         self.models: Dict[str, ModelProfile] = {}
+  223:         self.blocked_ips: Dict[str, Dict[str, object]] = {}
+  224:         self.blocked_viewers: Dict[str, Dict[str, object]] = {}
+  225:         self.allow_ips: set[str] = set()
+  226: 
+  227:     def load(self):
+  228:         if not self.state_file.exists():
+  229:             return
+  230:         try:
+  231:             raw = json.loads(self.state_file.read_text(encoding="utf-8"))
+  232:         except Exception as exc:
+  233:             print(f"[WARN] Failed to read state: {exc}")
+  234:             return
+  235:         for key, value in raw.get("models", {}).items():
+  236:             try:
+  237:                 profile = ModelProfile.from_dict(value)
+  238:                 self.models[key.lower()] = profile
+  239:             except Exception as exc:
+  240:                 print(f"[WARN] Skipping invalid model entry {key}: {exc}")
+  241:         self.blocked_ips = dict(raw.get("blocked_ips", {}))
+  242:         self.blocked_viewers = dict(raw.get("blocked_viewers", {}))
+  243:         self.allow_ips = set(raw.get("allow_ips", []))
+  244: 
+  245:     def save(self):
+  246:         payload = {
+  247:             "models": {key: profile.to_dict() for key, profile in self.models.items()},
+  248:             "blocked_ips": self.blocked_ips,
+  249:             "blocked_viewers": self.blocked_viewers,
+  250:             "allow_ips": sorted(self.allow_ips),
+  251:         }
+  252:         self.state_file.parent.mkdir(parents=True, exist_ok=True)
+  253:         self.state_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+  254: 
+  255:     def list_models(self) -> List[ModelProfile]:
+  256:         return sorted(self.models.values(), key=lambda p: (p.site, p.handle))
+  257: 
+  258:     def get_model(self, site: str, handle: str) -> Optional[ModelProfile]:
+  259:         key = f"{site}:{handle}".lower()
+  260:         return self.models.get(key)
+  261: 
+  262:     def upsert_model(self, profile: ModelProfile):
+  263:         with self.lock:
+  264:             self.models[profile.key] = profile
+  265:             self.save()
+  266: 
+  267:     def remove_model(self, site: str, handle: str) -> bool:
+  268:         key = f"{site}:{handle}".lower()
+  269:         with self.lock:
+  270:             if key in self.models:
+  271:                 self.models.pop(key)
+  272:                 self.save()
+  273:                 return True
+  274:         return False
+  275: 
+  276:     def record_blocked_viewer(self, key: str, record: Dict[str, object]):
+  277:         with self.lock:
+  278:             self.blocked_viewers[key] = record
+  279:             self.save()
+  280: 
+  281:     def record_blocked_ip(self, ip: str, record: Dict[str, object]):
+  282:         with self.lock:
+  283:             self.blocked_ips[ip] = record
+  284:             self.save()
+  285: 
+  286:     def unrecord_ip(self, ip: str):
+  287:         with self.lock:
+  288:             if self.blocked_ips.pop(ip, None) is not None:
+  289:                 self.save()
+  290: 
+  291: 
+  292: class VPNGuard2:
+  293:     def __init__(self, state_file: str = STATE_FILE):
+  294:         self.state = GuardState(state_file)
+  295:         self.state.load()
+  296:         self.lookup_cache: Dict[str, Tuple[float, Optional[IPInfo]]] = {}
+  297:         self.poll_thread: Optional[threading.Thread] = None
+  298:         self.poll_stop = threading.Event()
+  299:         self.active_site: Optional[str] = None
+  300:         self.site_initialized = False
+  301:         self.connectors: Dict[str, BaseConnector] = {
+  302:             "myfreecams": MyFreeCamsConnector(),
+  303:             "chaturbate": ChaturbateConnector(),
+  304:             "onlyfans": OnlyFansConnector(),
+  305:         }
+  306: 
+  307:     # ---------------- CLI helpers ----------------
+  308:     def cmd_loop(self):
+  309:         print(f"{PROGRAM_NAME} ready. Type 'help' for commands.")
+  310:         self.ensure_site_selected()
+  311:         while True:
+  312:             try:
+  313:                 raw = input("> ").strip()
+  314:             except (EOFError, KeyboardInterrupt):
+  315:                 raw = "quit"
+  316:             if not raw:
+  317:                 continue
+  318:             parts = raw.split()
+  319:             cmd = parts[0].lower()
+  320: 
+  321:             if cmd in {"quit", "exit"}:
+  322:                 self.stop_poll()
+  323:                 print("Stopping...")
+  324:                 break
+  325:             if cmd == "help":
+  326:                 self.print_help()
+  327:                 continue
+  328:             if cmd == "status":
+  329:                 self.print_status()
+  330:                 continue
+  331:             if cmd == "site":
+  332:                 desired = parts[1].lower() if len(parts) >= 2 else None
+  333:                 self.prompt_site_selection(desired)
+  334:                 continue
+  335:             if cmd == "start":
+  336:                 interval = DEFAULT_POLL_SECONDS
+  337:                 if len(parts) > 1:
+  338:                     try:
+  339:                         interval = max(10, float(parts[1]))
+  340:                     except ValueError:
+  341:                         print("Invalid interval; using default.")
+  342:                 self.start_poll(interval)
+  343:                 continue
+  344:             if cmd == "stop":
+  345:                 self.stop_poll()
+  346:                 continue
+  347:             if cmd == "scan":
+  348:                 self.scan_once()
+  349:                 continue
+  350:             if cmd == "models":
+  351:                 self.handle_model_command(parts[1:])
+  352:                 continue
+  353:             if cmd == "block-ip" and len(parts) >= 2:
+  354:                 reason = " ".join(parts[2:]) if len(parts) > 2 else "manual"
+  355:                 self.block_ip(parts[1], reason, context=None)
+  356:                 continue
+  357:             if cmd == "block-viewer" and len(parts) >= 4:
+  358:                 site, handle, viewer = parts[1], parts[2], parts[3]
+  359:                 reason = " ".join(parts[4:]) if len(parts) > 4 else "manual"
+  360:                 self.block_viewer_manual(site, handle, viewer, reason)
+  361:                 continue
+  362:             if cmd == "unblock" and len(parts) >= 2:
+  363:                 self.unblock_ip(parts[1])
+  364:                 continue
+  365:             if cmd == "allow-ip" and len(parts) >= 2:
+  366:                 self.state.allow_ips.add(parts[1])
+  367:                 self.state.save()
+  368:                 print(f"[ALLOW] {parts[1]}")
+  369:                 continue
+  370:             if cmd == "allow-list":
+  371:                 if not self.state.allow_ips:
+  372:                     print("No allow-listed IPs.")
+  373:                 else:
+  374:                     for ip in sorted(self.state.allow_ips):
+  375:                         print(f"  {ip}")
+  376:                 continue
+  377:             if cmd == "blocked":
+  378:                 self.print_blocked()
+  379:                 continue
+  380:             if cmd == "lookup" and len(parts) >= 2:
+  381:                 info = self.lookup_ip(parts[1])
+  382:                 if info:
+  383:                     status = "VPN/Proxy" if info.is_vpn else "Residential"
+  384:                     print(f"{parts[1]} -> {status} ({info.country}, {info.isp})")
+  385:                 else:
+  386:                     print("Lookup failed")
+  387:                 continue
+  388: 
+  389:             print("Unknown command. Type 'help' for assistance.")
+  390: 
+  391:     def ensure_site_selected(self):
+  392:         if not self.site_initialized:
+  393:             self.prompt_site_selection()
+  394: 
+  395:     def prompt_site_selection(self, initial: Optional[str] = None):
+  396:         while True:
+  397:             if initial is not None:
+  398:                 choice = initial.strip().lower()
+  399:                 initial = None
+  400:             else:
+  401:                 choice = (
+  402:                     input(
+  403:                         "Select site to monitor "
+  404:                         f"({', '.join(SUPPORTED_SITES)} or 'all'): "
+  405:                     )
+  406:                     .strip()
+  407:                     .lower()
+  408:                 )
+  409:             if not choice or choice == "all":
+  410:                 self.active_site = None
+  411:                 print("Monitoring all configured sites.")
+  412:                 self.site_initialized = True
+  413:                 return
+  414:             if choice in SUPPORTED_SITES:
+  415:                 self.active_site = choice
+  416:                 print(f"Monitoring only {choice}.")
+  417:                 self.site_initialized = True
+  418:                 return
+  419:             print("Invalid site. Try again.")
+  420: 
+  421:     def handle_model_command(self, args: List[str]):
+  422:         if not args:
+  423:             print("Usage: models [list|add|remove|feed|toggle]")
+  424:             return
+  425:         sub = args[0].lower()
+  426:         if sub == "list":
+  427:             self.list_models()
+  428:         elif sub == "add" and len(args) >= 3:
+  429:             site = args[1].lower()
+  430:             handle = args[2]
+  431:             if site not in SUPPORTED_SITES:
+  432:                 print(f"Unsupported site '{site}'. Supported: {', '.join(SUPPORTED_SITES)}")
+  433:                 return
+  434:             display = " ".join(args[3:]) if len(args) > 3 else handle
+  435:             profile = ModelProfile(site=site, handle=handle, display_name=display)
+  436:             self.state.upsert_model(profile)
+  437:             print(f"[MODEL] Added {site}:{handle}")
+  438:         elif sub == "remove" and len(args) >= 3:
+  439:             if self.state.remove_model(args[1], args[2]):
+  440:                 print("Model removed.")
+  441:             else:
+  442:                 print("Model not found.")
+  443:         elif sub == "feed" and len(args) >= 4:
+  444:             site, handle = args[1], args[2]
+  445:             profile = self.state.get_model(site, handle)
+  446:             if not profile:
+  447:                 print("Model not found.")
+  448:                 return
+  449:             profile.viewer_feed = " ".join(args[3:])
+  450:             self.state.upsert_model(profile)
+  451:             print(f"[MODEL] Updated feed for {site}:{handle}")
+  452:         elif sub == "toggle" and len(args) >= 4:
+  453:             site, handle, flag = args[1], args[2], args[3]
+  454:             profile = self.state.get_model(site, handle)
+  455:             if not profile:
+  456:                 print("Model not found.")
+  457:                 return
+  458:             if flag == "vpn":
+  459:                 profile.auto_block_vpn = not profile.auto_block_vpn
+  460:                 self.state.upsert_model(profile)
+  461:                 state = "on" if profile.auto_block_vpn else "off"
+  462:                 print(f"Auto VPN blocking {state} for {site}:{handle}")
+  463:             else:
+  464:                 print("Only 'vpn' flag is supported right now.")
+  465:         else:
+  466:             print("Usage: models [list|add|remove|feed|toggle]")
+  467: 
+  468:     def start_poll(self, interval: float):
+  469:         if not self.state.models:
+  470:             print("Add at least one model before starting the poll loop.")
+  471:             return
+  472:         self.ensure_site_selected()
+  473:         if self.poll_thread and self.poll_thread.is_alive():
+  474:             print("Polling already running.")
+  475:             return
+  476:         self.poll_stop.clear()
+  477:         self.poll_thread = threading.Thread(
+  478:             target=self._poll_loop, args=(interval,), daemon=True
+  479:         )
+  480:         self.poll_thread.start()
+  481:         print(f"Polling every {interval:.0f}s. Use 'stop' to halt.")
+  482: 
+  483:     def stop_poll(self):
+  484:         if self.poll_thread and self.poll_thread.is_alive():
+  485:             self.poll_stop.set()
+  486:             self.poll_thread.join(timeout=2.0)
+  487:             print("Polling stopped.")
+  488: 
+  489:     def _poll_loop(self, interval: float):
+  490:         while not self.poll_stop.is_set():
+  491:             self.scan_once()
+  492:             waited = 0.0
+  493:             while waited < interval and not self.poll_stop.is_set():
+  494:                 time.sleep(0.5)
+  495:                 waited += 0.5
+  496: 
+  497:     # ---------------- Core logic ----------------
+  498:     def scan_once(self):
+  499:         models = self.state.list_models()
+  500:         if not models:
+  501:             print("No models configured. Use 'models add' first.")
+  502:             return
+  503:         self.ensure_site_selected()
+  504:         if self.active_site:
+  505:             models = [m for m in models if m.site == self.active_site]
+  506:             if not models:
+  507:                 print("No models configured for the selected site.")
+  508:                 return
+  509:         for profile in models:
+  510:             connector = self.connectors.get(profile.site)
+  511:             if not connector:
+  512:                 print(f"[WARN] No connector for {profile.site}")
+  513:                 continue
+  514:             try:
+  515:                 viewers = connector.fetch_viewers(profile)
+  516:             except FeedUnavailableError as exc:
+  517:                 print(f"[FEED] {exc}")
+  518:                 continue
+  519:             except Exception as exc:  # unexpected connector failure
+  520:                 print(f"[ERROR] Connector failure for {profile.site}:{profile.handle}: {exc}")
+  521:                 continue
+  522:             if not viewers:
+  523:                 print(f"[SCAN] {profile.display_name or profile.handle}: no viewers retrieved.")
+  524:                 continue
+  525:             blocked = 0
+  526:             for viewer in viewers:
+  527:                 blocked += 1 if self.process_viewer(profile, viewer) else 0
+  528:             print(
+  529:                 f"[SCAN] {profile.display_name or profile.handle}: {len(viewers)} viewers, {blocked} blocked"
+  530:             )
+  531: 
+  532:     def process_viewer(self, profile: ModelProfile, viewer: ViewerRecord) -> bool:
+  533:         ip = viewer.ip_address.strip()
+  534:         try:
+  535:             ipaddress.ip_address(ip)
+  536:         except ValueError:
+  537:             print(f"[SKIP] Invalid IP for {viewer.username}: {ip}")
+  538:             return False
+  539:         if ip in self.state.allow_ips:
+  540:             return False
+  541:         viewer_key = self._viewer_key(profile.site, profile.handle, viewer.username)
+  542:         if viewer_key in self.state.blocked_viewers:
+  543:             return False
+  544:         if ip in self.state.blocked_ips:
+  545:             return False
+  546:         info = self.lookup_ip(ip)
+  547:         should_block = False
+  548:         reasons: List[str] = []
+  549:         if info and info.is_vpn and profile.auto_block_vpn:
+  550:             should_block = True
+  551:             reasons.append("VPN/proxy detected")
+  552:         for flag in viewer.flags:
+  553:             if flag and flag.lower() in {"abuse", "harassment", "ban", "offensive"}:
+  554:                 should_block = True
+  555:                 reasons.append(f"flag:{flag}")
+  556:         if should_block:
+  557:             reason_text = ", ".join(reasons) if reasons else "auto"
+  558:             self.block_viewer(profile, viewer, reason_text, info)
+  559:             return True
+  560:         return False
+  561: 
+  562:     def _viewer_key(self, site: str, handle: str, username: str) -> str:
+  563:         return f"{site}:{handle}:{username}".lower()
+  564: 
+  565:     def block_viewer(self, profile: ModelProfile, viewer: ViewerRecord, reason: str, info: Optional[IPInfo]):
+  566:         blocked = self.block_ip(
+  567:             viewer.ip_address,
+  568:             reason,
+  569:             context={
+  570:                 "site": profile.site,
+  571:                 "handle": profile.handle,
+  572:                 "viewer": viewer.username,
+  573:             },
+  574:         )
+  575:         record = {
+  576:             "site": profile.site,
+  577:             "handle": profile.handle,
+  578:             "viewer": viewer.username,
+  579:             "reason": reason,
+  580:             "timestamp": time.time(),
+  581:             "ip": viewer.ip_address,
+  582:             "flags": viewer.flags,
+  583:         }
+  584:         if info:
+  585:             record["ip_info"] = {
+  586:                 "country": info.country,
+  587:                 "isp": info.isp,
+  588:                 "is_vpn": info.is_vpn,
+  589:             }
+  590:         key = self._viewer_key(profile.site, profile.handle, viewer.username)
+  591:         self.state.record_blocked_viewer(key, record)
+  592:         if blocked:
+  593:             print(
+  594:                 f"[BLOCK] {viewer.username}@{profile.handle} ({viewer.ip_address}) -> {reason}"
+  595:             )
+  596:         else:
+  597:             print(f"[NOTE] Viewer {viewer.username} recorded without firewall change.")
+  598: 
+  599:     def block_viewer_manual(self, site: str, handle: str, username: str, reason: str):
+  600:         profile = self.state.get_model(site, handle)
+  601:         if not profile:
+  602:             print("Model not found.")
+  603:             return
+  604:         ip = input("Enter IP to block: ").strip()
+  605:         viewer = ViewerRecord(username=username, ip_address=ip, source="manual")
+  606:         self.block_viewer(profile, viewer, reason, self.lookup_ip(ip))
+  607: 
+  608:     def block_ip(self, ip: str, reason: str, context: Optional[Dict[str, str]]):
+  609:         ip = ip.strip()
+  610:         try:
+  611:             ipaddress.ip_address(ip)
+  612:         except ValueError:
+  613:             print(f"[ERR] Cannot block invalid IP {ip}")
+  614:             return False
+  615:         if ip in self.state.allow_ips:
+  616:             print(f"[INFO] {ip} is allow-listed; skipping")
+  617:             return False
+  618:         if ip in self.state.blocked_ips:
+  619:             return False
+  620:         success = self.firewall_block(ip)
+  621:         record = {
+  622:             "reason": reason,
+  623:             "timestamp": time.time(),
+  624:             "context": context or {},
+  625:         }
+  626:         if not success:
+  627:             record["firewall"] = "failed"
+  628:         self.state.record_blocked_ip(ip, record)
+  629:         return success
+  630: 
+  631:     def unblock_ip(self, ip: str):
+  632:         self.state.unrecord_ip(ip)
+  633:         self.firewall_unblock(ip)
+  634:         print(f"[UNBLOCK] {ip}")
+  635: 
+  636:     def firewall_block(self, ip: str) -> bool:
+  637:         system = platform.system().lower()
+  638:         try:
+  639:             if "windows" in system:
+  640:                 cmd = [
+  641:                     "netsh",
+  642:                     "advfirewall",
+  643:                     "firewall",
+  644:                     "add",
+  645:                     "rule",
+  646:                     f"name=VPNGuard2_{ip}",
+  647:                     "dir=in",
+  648:                     "action=block",
+  649:                     f"remoteip={ip}",
+  650:                 ]
+  651:                 subprocess.run(cmd, check=False, capture_output=True, text=True)
+  652:             else:
+  653:                 subprocess.run(["ufw", "deny", "from", ip], check=False, capture_output=True, text=True)
+  654:             return True
+  655:         except Exception as exc:
+  656:             print(f"[WARN] Firewall update failed for {ip}: {exc}")
+  657:             return False
+  658: 
+  659:     def firewall_unblock(self, ip: str):
+  660:         system = platform.system().lower()
+  661:         try:
+  662:             if "windows" in system:
+  663:                 subprocess.run(
+  664:                     [
+  665:                         "netsh",
+  666:                         "advfirewall",
+  667:                         "firewall",
+  668:                         "delete",
+  669:                         "rule",
+  670:                         f"name=VPNGuard2_{ip}",
+  671:                     ],
+  672:                     check=False,
+  673:                     capture_output=True,
+  674:                     text=True,
+  675:                 )
+  676:             else:
+  677:                 subprocess.run(["ufw", "delete", "deny", "from", ip], check=False, capture_output=True, text=True)
+  678:         except Exception as exc:
+  679:             print(f"[WARN] Failed to remove firewall rule for {ip}: {exc}")
+  680: 
+  681:     def lookup_ip(self, ip: str) -> Optional[IPInfo]:
+  682:         now = time.time()
+  683:         cached = self.lookup_cache.get(ip)
+  684:         if cached and now - cached[0] < LOOKUP_CACHE_SECONDS:
+  685:             return cached[1]
+  686:         try:
+  687:             resp = requests.get(IP_LOOKUP_URL.format(ip=ip), timeout=6)
+  688:             data = resp.json()
+  689:             if data.get("status") != "success":
+  690:                 info = None
+  691:             else:
+  692:                 info = IPInfo(
+  693:                     ip=ip,
+  694:                     is_vpn=bool(data.get("proxy") or data.get("hosting")),
+  695:                     country=str(data.get("country", "")),
+  696:                     isp=str(data.get("isp", "")),
+  697:                 )
+  698:         except Exception:
+  699:             info = None
+  700:         self.lookup_cache[ip] = (now, info)
+  701:         return info
+  702: 
+  703:     # ---------------- Display helpers ----------------
+  704:     def print_status(self):
+  705:         print("\n--- STATUS ---")
+  706:         print(f"Models: {len(self.state.models)}")
+  707:         print(f"Blocked IPs: {len(self.state.blocked_ips)}")
+  708:         print(f"Blocked viewers: {len(self.state.blocked_viewers)}")
+  709:         print(f"Allow-listed IPs: {len(self.state.allow_ips)}")
+  710:         site_text = self.active_site or "all"
+  711:         print(f"Active site filter: {site_text}")
+  712:         if self.poll_thread and self.poll_thread.is_alive():
+  713:             print("Polling: running")
+  714:         else:
+  715:             print("Polling: stopped")
+  716:         print("---------------\n")
+  717: 
+  718:     def list_models(self):
+  719:         models = self.state.list_models()
+  720:         if not models:
+  721:             print("No models configured.")
+  722:             return
+  723:         for profile in models:
+  724:             print(
+  725:                 f"- {profile.site}:{profile.handle} -> feed={profile.viewer_feed or 'unset'}, VPN-block={'on' if profile.auto_block_vpn else 'off'}"
+  726:             )
+  727: 
+  728:     def print_blocked(self):
+  729:         if not self.state.blocked_ips:
+  730:             print("No blocked IPs yet.")
+  731:             return
+  732:         for ip, record in sorted(self.state.blocked_ips.items()):
+  733:             ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(record.get("timestamp", 0)))
+  734:             reason = record.get("reason", "?")
+  735:             ctx = record.get("context", {})
+  736:             ctx_text = f" {ctx}" if ctx else ""
+  737:             print(f"- {ip} [{ts}] {reason}{ctx_text}")
+  738: 
+  739:     def print_help(self):
+  740:         print(
+  741:             "Commands:\n"
+  742:             "  help                    Show this help\n"
+  743:             "  status                  Print current snapshot\n"
+  744:             "  site [name|all]         Set active site filter\n"
+  745:             "  models list             List configured models\n"
+  746:             "  models add <site> <handle> [display]   Add a model\n"
+  747:             "  models feed <site> <handle> <path|url> Set viewer feed source\n"
+  748:             "  models remove <site> <handle>          Remove a model\n"
+  749:             "  models toggle <site> <handle> vpn      Toggle VPN auto block\n"
+  750:             "  start [seconds]          Begin continuous polling\n"
+  751:             "  stop                     Stop polling\n"
+  752:             "  scan                     Run one immediate scan\n"
+  753:             "  block-ip <ip> [reason]   Manually block IP\n"
+  754:             "  block-viewer <site> <handle> <viewer> [reason]\n"
+  755:             "  unblock <ip>             Remove firewall rule\n"
+  756:             "  allow-ip <ip>            Add allow-list entry\n"
+  757:             "  allow-list               Show allow list\n"
+  758:             "  blocked                  Show blocked IPs\n"
+  759:             "  lookup <ip>              Manual IP lookup\n"
+  760:             "  quit                     Exit"
+  761:         )
+  762: 
+  763: 
+  764: def main():
+  765:     guard = VPNGuard2()
+  766:     guard.cmd_loop()
+  767: 
+  768: 
+  769: if __name__ == "__main__":
+  770:     main()
