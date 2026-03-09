@@ -49,6 +49,11 @@ from web_ballistics import (
     fetch_ammo_data,
     fetch_rifle_data,
 )
+from geo_weather import (
+    extract_lat_lon_from_text as shared_extract_lat_lon_from_text,
+    fetch_elevation_feet,
+    fetch_weather_from_services,
+)
 
 HTTP_USER_AGENT = "BallisticTarget/2026.02 (support@ballistictarget.app)"
 DEFAULT_HTTP_HEADERS = {
@@ -133,27 +138,7 @@ def _ms_to_mph(value: float | None) -> float | None:
 
 
 def extract_lat_lon_from_text(text: str) -> tuple[float | None, float | None]:
-    """
-    Parse either a raw "lat, lon" pair or a Google/Apple Maps style share URL.
-    Returns (lat, lon) or (None, None) if parsing fails.
-    """
-    raw = (text or "").strip()
-    if not raw:
-        return None, None
-    manual = re.match(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$", raw)
-    if manual:
-        return float(manual.group(1)), float(manual.group(2))
-    at_pattern = re.search(r"/@(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)", raw)
-    if at_pattern:
-        return float(at_pattern.group(1)), float(at_pattern.group(2))
-    q_pattern = re.search(r"[?&](?:q|ll)=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)", raw)
-    if q_pattern:
-        return float(q_pattern.group(1)), float(q_pattern.group(2))
-    apple_pattern = re.search(r"loc=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)", raw)
-    if apple_pattern:
-        return float(apple_pattern.group(1)), float(apple_pattern.group(2))
-    return None, None
-
+    return shared_extract_lat_lon_from_text(text)
 def get_app_root() -> Path:
     """
     Portable root:
@@ -2849,97 +2834,19 @@ def load_env_from_geo_config() -> dict:
 
 
 def fetch_weather(lat: float, lon: float) -> dict:
-    base = "https://api.open-meteo.com/v1/forecast"
-    params = urllib.parse.urlencode(
-        {
-            "latitude": lat,
-            "longitude": lon,
-            "current": "temperature_2m,wind_speed_10m,wind_direction_10m,wind_gusts_10m",
-            "wind_speed_unit": "mph",
-            "temperature_unit": "fahrenheit",
-            "timezone": "auto",
-        }
+    return fetch_weather_from_services(
+        lat,
+        lon,
+        fetch_json_fn=_fetch_json,
+        weather_cache=WEATHER_CACHE,
     )
-    url = f"{base}?{params}"
-    data = _fetch_json(url)
-    if data:
-        cur = data.get("current") or {}
-        result = {
-            "temp_F": float(cur.get("temperature_2m")) if cur.get("temperature_2m") is not None else None,
-            "wind_speed_mph": float(cur.get("wind_speed_10m")) if cur.get("wind_speed_10m") is not None else None,
-            "wind_dir_deg": float(cur.get("wind_direction_10m")) if cur.get("wind_direction_10m") is not None else None,
-            "wind_gust_mph": float(cur.get("wind_gusts_10m")) if cur.get("wind_gusts_10m") is not None else None,
-            "source": "open-meteo",
-        }
-        WEATHER_CACHE.remember(lat, lon, result)
-        return result
-
-    fallback_url = f"https://api.met.no/weatherapi/locationforecast/2.0/compact?lat={lat:.4f}&lon={lon:.4f}"
-    fallback = _fetch_json(fallback_url, extra_headers=METNO_HEADERS, timeout=12)
-    if fallback:
-        try:
-            times = fallback.get("properties", {}).get("timeseries") or []
-            latest = times[0]
-            details = latest.get("data", {}).get("instant", {}).get("details", {})
-            temp = details.get("air_temperature")
-            speed = _ms_to_mph(details.get("wind_speed"))
-            gust = _ms_to_mph(details.get("wind_speed_of_gust"))
-            direction = details.get("wind_from_direction")
-            result = {
-                "temp_F": float(temp) if temp is not None else None,
-                "wind_speed_mph": speed,
-                "wind_dir_deg": float(direction) if direction is not None else None,
-                "wind_gust_mph": gust,
-                "source": "met.no",
-            }
-            WEATHER_CACHE.remember(lat, lon, result)
-            return result
-        except Exception:
-            pass
-
-    cached, age = WEATHER_CACHE.fetch(lat, lon)
-    if cached:
-        cached.setdefault("source", "cache")
-        cached["stale_minutes"] = round((age or 0) / 60.0, 1)
-        cached["stale"] = True
-        return cached
-
-    return {"temp_F": None, "wind_speed_mph": None, "wind_dir_deg": None, "wind_gust_mph": None, "source": "unavailable"}
-
-
 def fetch_elevation(lat: float, lon: float) -> float | None:
-    base = "https://api.open-meteo.com/v1/elevation"
-    params = urllib.parse.urlencode({"latitude": lat, "longitude": lon})
-    url = f"{base}?{params}"
-    data = _fetch_json(url)
-    if data:
-        elevations = data.get("elevation")
-        if isinstance(elevations, list) and elevations:
-            meters = elevations[0]
-            try:
-                value = float(meters) * 3.28084
-                ELEVATION_CACHE.remember(lat, lon, {"value": value})
-                return value
-            except Exception:
-                return None
-
-    fallback_url = f"https://api.opentopodata.org/v1/aster30m?locations={lat:.6f},{lon:.6f}"
-    fallback = _fetch_json(fallback_url, timeout=12)
-    if fallback:
-        results = fallback.get("results")
-        if isinstance(results, list) and results:
-            meters = results[0].get("elevation")
-            if meters is not None:
-                try:
-                    value = float(meters) * 3.28084
-                    ELEVATION_CACHE.remember(lat, lon, {"value": value})
-                    return value
-                except Exception:
-                    return None
-    cached, _age = ELEVATION_CACHE.fetch(lat, lon)
-    if cached and cached.get("value") is not None:
-        return cached.get("value")
-    return None
+    return fetch_elevation_feet(
+        lat,
+        lon,
+        fetch_json_fn=_fetch_json,
+        elevation_cache=ELEVATION_CACHE,
+    )
 def _mean(values: list[float]) -> float | None:
     return sum(values) / len(values) if values else None
 
@@ -3950,6 +3857,7 @@ class App(tk.Tk):
         self._web_data_stale = True
         self._auto_fetch_job: Optional[str] = None
         self._suppress_auto_fetch = False
+        self._web_fetch_thread: threading.Thread | None = None
         self.vars["rifle"].trace_add("write", self._on_weapon_field_change)
         self.vars["rifle_brand"].trace_add("write", self._on_rifle_parts_change)
         self.vars["rifle_model"].trace_add("write", self._on_rifle_parts_change)
@@ -4421,6 +4329,9 @@ class App(tk.Tk):
         )
 
     def fetch_weather_from_api(self):
+        if getattr(self, "_weather_fetch_thread", None) and self._weather_fetch_thread.is_alive():
+            messagebox.showinfo("Weather", "Weather fetch already running.")
+            return
         cfg = load_env_from_geo_config()
         lat = cfg.get("lat")
         lon = cfg.get("lon")
@@ -4437,8 +4348,17 @@ class App(tk.Tk):
             messagebox.showerror("Invalid location", "Latitude/longitude in config are invalid. Re-save them in the Geo tool.")
             return
 
-        weather = fetch_weather(lat_val, lon_val)
-        elevation = fetch_elevation(lat_val, lon_val)
+        self.status.set("Fetching weather and elevation...")
+
+        def worker() -> None:
+            weather = fetch_weather(lat_val, lon_val)
+            elevation = fetch_elevation(lat_val, lon_val)
+            self.after(0, lambda: self._on_weather_fetch_complete(cfg, weather, elevation))
+
+        self._weather_fetch_thread = threading.Thread(target=worker, daemon=True)
+        self._weather_fetch_thread.start()
+
+    def _on_weather_fetch_complete(self, cfg: dict[str, Any], weather: dict[str, Any], elevation: float | None) -> None:
         updated = []
         if weather["temp_F"] is not None:
             self.vars["temp"].set(f"{weather['temp_F']:.1f}")
@@ -4473,8 +4393,10 @@ class App(tk.Tk):
             freshness = "cached" if weather.get("stale") else "live"
             if weather.get("stale_minutes") is not None:
                 freshness += f" (~{weather['stale_minutes']:.1f} min old)"
+            self.status.set(f"Updated weather via {source}.")
             messagebox.showinfo("Weather Updated", f"Updated via {source} ({freshness}): {', '.join(updated)}")
         else:
+            self.status.set("Weather providers returned no usable data.")
             if weather.get("stale"):
                 messagebox.showwarning(
                     "Cached Weather",
@@ -4484,35 +4406,46 @@ class App(tk.Tk):
                 messagebox.showwarning("No data", "Weather providers did not return usable data.")
 
     def on_pull_web_data(self):
-        self._fetch_and_apply_web_data(silent=False)
+        self._start_web_fetch_async(silent=False)
 
-    def _fetch_and_apply_web_data(self, silent: bool = True) -> bool:
-        rifle = self.vars["rifle"].get().strip()
-        ammo = self.vars["ammo"].get().strip()
-        if not rifle and not ammo:
-            if not silent:
-                messagebox.showwarning("Missing info", "Enter a rifle or ammunition description first.")
+    def _lookup_web_data(self, rifle: str, ammo: str) -> dict[str, Any]:
+        ammo_data: AmmoWebData | None = None
+        rifle_data: RifleWebData | None = None
+        ammo_error = None
+        rifle_error = None
+        if ammo:
+            try:
+                ammo_data = fetch_ammo_data(ammo)
+            except (urllib.error.URLError, ValueError) as exc:
+                ammo_error = str(exc)
+        if rifle:
+            try:
+                rifle_data = fetch_rifle_data(rifle)
+            except (urllib.error.URLError, ValueError) as exc:
+                rifle_error = str(exc)
+        return {
+            "ammo_data": ammo_data,
+            "rifle_data": rifle_data,
+            "ammo_error": ammo_error,
+            "rifle_error": rifle_error,
+        }
+
+    def _apply_web_lookup_result(self, lookup: dict[str, Any], *, silent: bool, rifle: str, ammo: str) -> bool:
+        current_rifle = self.vars["rifle"].get().strip()
+        current_ammo = self.vars["ammo"].get().strip()
+        if current_rifle != rifle or current_ammo != ammo:
+            self._web_data_stale = True
+            self.status.set("Rifle/ammo changed during lookup. Refreshing again...")
+            self._schedule_web_auto_fetch(delay_ms=150)
             return False
-        self.status.set("Fetching rifle/ammo data...")
-        self.update_idletasks()
-        self._clear_auto_fetch_job()
+
         previous_guard = self._suppress_auto_fetch
         self._suppress_auto_fetch = True
         try:
-            ammo_data: AmmoWebData | None = None
-            rifle_data: RifleWebData | None = None
-            ammo_error = None
-            rifle_error = None
-            if ammo:
-                try:
-                    ammo_data = fetch_ammo_data(ammo)
-                except (urllib.error.URLError, ValueError) as exc:
-                    ammo_error = str(exc)
-            if rifle:
-                try:
-                    rifle_data = fetch_rifle_data(rifle)
-                except (urllib.error.URLError, ValueError) as exc:
-                    rifle_error = str(exc)
+            ammo_data = lookup.get("ammo_data")
+            rifle_data = lookup.get("rifle_data")
+            ammo_error = lookup.get("ammo_error")
+            rifle_error = lookup.get("rifle_error")
             if not ammo_data and not rifle_data:
                 self.status.set("Error.")
                 self.web_status.set("Web data fetch failed.")
@@ -4537,13 +4470,13 @@ class App(tk.Tk):
             barrel_current = self.vars["barrel_length"].get().strip()
             if rifle_data and rifle_data.barrel_length_in and not barrel_current:
                 self.vars["barrel_length"].set(f"{rifle_data.barrel_length_in:.2f}")
-                applied.append(f"Barrel {rifle_data.barrel_length_in:.2f}\" (web)")
+                applied.append(f'Barrel {rifle_data.barrel_length_in:.2f}" (web)')
 
             twist_current = self.vars["twist_rate"].get().strip()
             if rifle_data and rifle_data.twist_rate_in and not twist_current:
                 twist_label = f"1:{rifle_data.twist_rate_in:.2f}".rstrip("0").rstrip(".")
                 self.vars["twist_rate"].set(twist_label)
-                applied.append(f"Twist {twist_label}\" (reference)")
+                applied.append(f'Twist {twist_label}" (reference)')
 
             twist_report = None
             if ammo_data:
@@ -4601,6 +4534,44 @@ class App(tk.Tk):
         finally:
             self._suppress_auto_fetch = previous_guard
 
+    def _start_web_fetch_async(self, *, silent: bool) -> bool:
+        rifle = self.vars["rifle"].get().strip()
+        ammo = self.vars["ammo"].get().strip()
+        if not rifle and not ammo:
+            if not silent:
+                messagebox.showwarning("Missing info", "Enter a rifle or ammunition description first.")
+            return False
+        if self._web_fetch_thread and self._web_fetch_thread.is_alive():
+            if not silent:
+                messagebox.showinfo("Web Data", "Lookup already running.")
+            return False
+        self._clear_auto_fetch_job()
+        self.status.set("Fetching rifle/ammo data...")
+        self.update_idletasks()
+
+        def worker() -> None:
+            lookup = self._lookup_web_data(rifle, ammo)
+            self.after(0, lambda: self._finish_web_fetch_async(lookup, silent=silent, rifle=rifle, ammo=ammo))
+
+        self._web_fetch_thread = threading.Thread(target=worker, daemon=True)
+        self._web_fetch_thread.start()
+        return True
+
+    def _finish_web_fetch_async(self, lookup: dict[str, Any], *, silent: bool, rifle: str, ammo: str) -> None:
+        self._apply_web_lookup_result(lookup, silent=silent, rifle=rifle, ammo=ammo)
+
+    def _fetch_and_apply_web_data(self, silent: bool = True) -> bool:
+        rifle = self.vars["rifle"].get().strip()
+        ammo = self.vars["ammo"].get().strip()
+        if not rifle and not ammo:
+            if not silent:
+                messagebox.showwarning("Missing info", "Enter a rifle or ammunition description first.")
+            return False
+        self.status.set("Fetching rifle/ammo data...")
+        self.update_idletasks()
+        self._clear_auto_fetch_job()
+        lookup = self._lookup_web_data(rifle, ammo)
+        return self._apply_web_lookup_result(lookup, silent=silent, rifle=rifle, ammo=ammo)
 
     def _requires_auto_fill(self, value: str) -> bool:
         text = (value or "").strip()
@@ -4747,10 +4718,9 @@ class App(tk.Tk):
             ammo = self.vars["ammo"].get().strip()
             if (not rifle and not ammo) or not self._web_data_stale:
                 return
-            success = self._fetch_and_apply_web_data(silent=True)
-            self._web_data_stale = not success
-            if success:
-                self.web_status.set("Web data refreshed automatically.")
+            started = self._start_web_fetch_async(silent=True)
+            if started:
+                self.web_status.set("Refreshing web data automatically...")
 
         try:
             self._auto_fetch_job = self.after(delay_ms, _run)
@@ -4790,19 +4760,19 @@ class App(tk.Tk):
             twist_text = self.vars["twist_rate"].get()
             need_auto_data = self._needs_web_data(velocity_text, bc_text)
             if need_auto_data:
-                fetched = self._fetch_and_apply_web_data(silent=True)
-                velocity_text = self.vars["velocity"].get()
-                bc_text = self.vars["bc"].get()
-                if not fetched:
-                    raise ValueError("Web lookup failed; adjust rifle/ammo description and try Pull Rifle + Ammo again.")
-                errors = []
+                started = self._start_web_fetch_async(silent=True)
+                if started:
+                    self.web_status.set("Refreshing web data before generation...")
+                    self.status.set("Waiting for rifle/ammo web data. Generate again when refresh completes.")
+                missing = []
                 if self._requires_auto_fill(velocity_text):
-                    errors.append("muzzle velocity")
+                    missing.append("muzzle velocity")
                 if self._requires_auto_fill(bc_text):
-                    errors.append("G1 BC")
-                if errors:
-                    missing = ", ".join(errors)
-                    raise ValueError(f"Missing web data for: {missing}. Try refining the rifle/ammo input and pull again.")
+                    missing.append("G1 BC")
+                detail = ", ".join(missing) if missing else "required rifle/ammo fields"
+                raise ValueError(
+                    f"Missing {detail}. A web lookup has been started in the background; click Generate again after it finishes, or enter the values manually."
+                )
             barrel_text = self.vars["barrel_length"].get().strip()
             twist_text = self.vars["twist_rate"].get().strip()
             velocity = _to_float(velocity_text, "Muzzle Velocity (fps)")
@@ -6543,4 +6513,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
 
