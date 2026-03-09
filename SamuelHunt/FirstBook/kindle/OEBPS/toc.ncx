@@ -1,0 +1,197 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE ncx PUBLIC "-//NISO//DTD ncx 2005-1//EN" "http://www.daisy.org/z3986/2005/ncx-2005-1.dtd">
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+  <head>
+    <meta name="dtb:uid" content="urn:uuid:146ecf49-57fc-4c06-becd-2ba556f33c9b" />
+    <meta name="dtb:depth" content="1" />
+    <meta name="dtb:totalPageCount" content="0" />
+    <meta name="dtb:maxPageNumber" content="0" />
+  </head>
+  <docTitle><text>Hunt Line</text></docTitle>
+  <navMap>
+    <navPoint id="navPoint-1" playOrder="1">
+      <navLabel><text>1. Hamra Static</text></navLabel>
+      <content src="manuscript.xhtml#1-hamra-static" />
+    </navPoint>
+    <navPoint id="navPoint-2" playOrder="2">
+      <navLabel><text>2. Threads in the Atmosphere</text></navLabel>
+      <content src="manuscript.xhtml#2-threads-in-the-atmosphere" />
+    </navPoint>
+    <navPoint id="navPoint-3" playOrder="3">
+      <navLabel><text>3. Leyla’s Gambit</text></navLabel>
+      <content src="manuscript.xhtml#3-leyla-s-gambit" />
+    </navPoint>
+    <navPoint id="navPoint-4" playOrder="4">
+      <navLabel><text>Interlude 01 – Maya Trask Briefing</text></navLabel>
+      <content src="manuscript.xhtml#interlude-01-maya-trask-briefing" />
+    </navPoint>
+    <navPoint id="navPoint-5" playOrder="5">
+      <navLabel><text>4. Convoy of Dust</text></navLabel>
+      <content src="manuscript.xhtml#4-convoy-of-dust" />
+    </navPoint>
+    <navPoint id="navPoint-6" playOrder="6">
+      <navLabel><text>5. Perimeter Equation</text></navLabel>
+      <content src="manuscript.xhtml#5-perimeter-equation" />
+    </navPoint>
+    <navPoint id="navPoint-7" playOrder="7">
+      <navLabel><text>Interlude 02 – Maverick’s Broadcast</text></navLabel>
+      <content src="manuscript.xhtml#interlude-02-maverick-s-broadcast" />
+    </navPoint>
+    <navPoint id="navPoint-8" playOrder="8">
+      <navLabel><text>6. Ghost Adviser</text></navLabel>
+      <content src="manuscript.xhtml#6-ghost-adviser" />
+    </navPoint>
+    <navPoint id="navPoint-9" playOrder="9">
+      <navLabel><text>Interlude 03 – Leyla’s Ledger</text></navLabel>
+      <content src="manuscript.xhtml#interlude-03-leyla-s-ledger" />
+    </navPoint>
+    <navPoint id="navPoint-10" playOrder="10">
+      <navLabel><text>7. Noura’s Choice</text></navLabel>
+      <content src="manuscript.xhtml#7-noura-s-choice" />
+    </navPoint>
+    <navPoint id="navPoint-11" playOrder="11">
+      <navLabel><text>8. Asset Denial</text></navLabel>
+      <content src="manuscript.xhtml#8-asset-denial" />
+    </navPoint>
+    <navPoint id="navPoint-12" playOrder="12">
+      <navLabel><text>9. Dune Pursuit</text></navLabel>
+      <content src="manuscript.xhtml#9-dune-pursuit" />
+    </navPoint>
+    <navPoint id="navPoint-13" playOrder="13">
+      <navLabel><text>10. Desert Extraction</text></navLabel>
+      <content src="manuscript.xhtml#10-desert-extraction" />
+    </navPoint>
+    <navPoint id="navPoint-14" playOrder="14">
+      <navLabel><text>Interlude 04 – Noura’s Equation</text></navLabel>
+      <content src="manuscript.xhtml#interlude-04-noura-s-equation" />
+    </navPoint>
+    <navPoint id="navPoint-15" playOrder="15">
+      <navLabel><text>11. Tartus Drift</text></navLabel>
+      <content src="manuscript.xhtml#11-tartus-drift" />
+    </navPoint>
+    <navPoint id="navPoint-16" playOrder="16">
+      <navLabel><text>12. Boarding Weather</text></navLabel>
+      <content src="manuscript.xhtml#12-boarding-weather" />
+    </navPoint>
+    <navPoint id="navPoint-17" playOrder="17">
+      <navLabel><text>13. Thermite Sea</text></navLabel>
+      <content src="manuscript.xhtml#13-thermite-sea" />
+    </navPoint>
+    <navPoint id="navPoint-18" playOrder="18">
+      <navLabel><text>14. Ghost Debrief</text></navLabel>
+      <content src="manuscript.xhtml#14-ghost-debrief" />
+    </navPoint>
+    <navPoint id="navPoint-19" playOrder="19">
+      <navLabel><text>15. Fault Lines</text></navLabel>
+      <content src="manuscript.xhtml#15-fault-lines" />
+    </navPoint>
+    <navPoint id="navPoint-20" playOrder="20">
+      <navLabel><text>16. Trident Array</text></navLabel>
+      <content src="manuscript.xhtml#16-trident-array" />
+    </navPoint>
+    <navPoint id="navPoint-21" playOrder="21">
+      <navLabel><text>17. Ghost Rail</text></navLabel>
+      <content src="manuscript.xhtml#17-ghost-rail" />
+    </navPoint>
+    <navPoint id="navPoint-22" playOrder="22">
+      <navLabel><text>18. Freeport Siege</text></navLabel>
+      <content src="manuscript.xhtml#18-freeport-siege" />
+    </navPoint>
+    <navPoint id="navPoint-23" playOrder="23">
+      <navLabel><text>Interlude 05 – Maverick’s Broadcast Control</text></navLabel>
+      <content src="manuscript.xhtml#interlude-05-maverick-s-broadcast-control" />
+    </navPoint>
+    <navPoint id="navPoint-24" playOrder="24">
+      <navLabel><text>19. Public Burn</text></navLabel>
+      <content src="manuscript.xhtml#19-public-burn" />
+    </navPoint>
+    <navPoint id="navPoint-25" playOrder="25">
+      <navLabel><text>Interlude 06 – Elena’s Memo</text></navLabel>
+      <content src="manuscript.xhtml#interlude-06-elena-s-memo" />
+    </navPoint>
+    <navPoint id="navPoint-26" playOrder="26">
+      <navLabel><text>20. Sea Glass Endgame</text></navLabel>
+      <content src="manuscript.xhtml#20-sea-glass-endgame" />
+    </navPoint>
+    <navPoint id="navPoint-27" playOrder="27">
+      <navLabel><text>Interlude 07 – Royal Court Bulletin</text></navLabel>
+      <content src="manuscript.xhtml#interlude-07-royal-court-bulletin" />
+    </navPoint>
+    <navPoint id="navPoint-28" playOrder="28">
+      <navLabel><text>21. Atlas Vectors</text></navLabel>
+      <content src="manuscript.xhtml#21-atlas-vectors" />
+    </navPoint>
+    <navPoint id="navPoint-29" playOrder="29">
+      <navLabel><text>22. Mirage Convoy</text></navLabel>
+      <content src="manuscript.xhtml#22-mirage-convoy" />
+    </navPoint>
+    <navPoint id="navPoint-30" playOrder="30">
+      <navLabel><text>23. Nouakchott Signal</text></navLabel>
+      <content src="manuscript.xhtml#23-nouakchott-signal" />
+    </navPoint>
+    <navPoint id="navPoint-31" playOrder="31">
+      <navLabel><text>Interlude 08 – Markarian’s Field Order</text></navLabel>
+      <content src="manuscript.xhtml#interlude-08-markarian-s-field-order" />
+    </navPoint>
+    <navPoint id="navPoint-32" playOrder="32">
+      <navLabel><text>24. Gwadar Ghosts</text></navLabel>
+      <content src="manuscript.xhtml#24-gwadar-ghosts" />
+    </navPoint>
+    <navPoint id="navPoint-33" playOrder="33">
+      <navLabel><text>25. Azraq Line</text></navLabel>
+      <content src="manuscript.xhtml#25-azraq-line" />
+    </navPoint>
+    <navPoint id="navPoint-34" playOrder="34">
+      <navLabel><text>Interlude 09 – Coalition Comment Stream (Excerpt)</text></navLabel>
+      <content src="manuscript.xhtml#interlude-09-coalition-comment-stream-excerpt" />
+    </navPoint>
+    <navPoint id="navPoint-35" playOrder="35">
+      <navLabel><text>26. Atlas Relay</text></navLabel>
+      <content src="manuscript.xhtml#26-atlas-relay" />
+    </navPoint>
+    <navPoint id="navPoint-36" playOrder="36">
+      <navLabel><text>27. Signal Mirror</text></navLabel>
+      <content src="manuscript.xhtml#27-signal-mirror" />
+    </navPoint>
+    <navPoint id="navPoint-37" playOrder="37">
+      <navLabel><text>Interlude 10 – SOCOM SITREP (Extract)</text></navLabel>
+      <content src="manuscript.xhtml#interlude-10-socom-sitrep-extract" />
+    </navPoint>
+    <navPoint id="navPoint-38" playOrder="38">
+      <navLabel><text>28. Atlas Gate</text></navLabel>
+      <content src="manuscript.xhtml#28-atlas-gate" />
+    </navPoint>
+    <navPoint id="navPoint-39" playOrder="39">
+      <navLabel><text>Interlude 11 – Coalition Portal Highlights</text></navLabel>
+      <content src="manuscript.xhtml#interlude-11-coalition-portal-highlights" />
+    </navPoint>
+    <navPoint id="navPoint-40" playOrder="40">
+      <navLabel><text>29. BOHICA Ridge</text></navLabel>
+      <content src="manuscript.xhtml#29-bohica-ridge" />
+    </navPoint>
+    <navPoint id="navPoint-41" playOrder="41">
+      <navLabel><text>Epilogue – Cedar Crown Lives</text></navLabel>
+      <content src="manuscript.xhtml#epilogue-cedar-crown-lives" />
+    </navPoint>
+    <navPoint id="navPoint-42" playOrder="42">
+      <navLabel><text>Appendix A – Cedar Coalition Dossier</text></navLabel>
+      <content src="manuscript.xhtml#appendix-a-cedar-coalition-dossier" />
+    </navPoint>
+    <navPoint id="navPoint-43" playOrder="43">
+      <navLabel><text>Appendix B – Acronym &amp; Gear Glossary</text></navLabel>
+      <content src="manuscript.xhtml#appendix-b-acronym-gear-glossary" />
+    </navPoint>
+    <navPoint id="navPoint-44" playOrder="44">
+      <navLabel><text>Appendix C – Field Notes &amp; Threads</text></navLabel>
+      <content src="manuscript.xhtml#appendix-c-field-notes-threads" />
+    </navPoint>
+    <navPoint id="navPoint-45" playOrder="45">
+      <navLabel><text>Appendix D – Kit Plates &amp; Map Callouts</text></navLabel>
+      <content src="manuscript.xhtml#appendix-d-kit-plates-map-callouts" />
+    </navPoint>
+    <navPoint id="navPoint-46" playOrder="46">
+      <navLabel><text>Printing Notes</text></navLabel>
+      <content src="manuscript.xhtml#printing-notes" />
+    </navPoint>
+  </navMap>
+</ncx>

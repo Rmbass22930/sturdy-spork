@@ -4,6 +4,10 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>BallisticTarget (iOS Companion)</title>
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
+    <link rel="manifest" href="ballistictarget-manifest.json">
+    <link rel="apple-touch-icon" href="icons/bt-512.png">
     <style>
         :root {
             color-scheme: light dark;
@@ -212,15 +216,26 @@
                 <tr>
                     <th>Yards</th>
                     <th>Drop (in)</th>
+                    <th>Drop (MOA)</th>
                     <th>Velocity @ Range (fps)</th>
                     <th>Time of Flight (sec)</th>
                     <th>Launch Angle (deg)</th>
                 </tr>
             </thead>
             <tbody id="ballistic-table-body">
-                <tr><td colspan="5" style="text-align:center;color:var(--muted);">Press "Generate Target" to compute data.</td></tr>
+                <tr><td colspan="6" style="text-align:center;color:var(--muted);">Press "Generate Target" to compute data.</td></tr>
             </tbody>
         </table>
+    </section>
+
+    <section class="card">
+        <h2>Saving Targets Locally</h2>
+        <ol style="line-height:1.5">
+            <li>Open the <strong>Files</strong> app → <strong>On My iPad</strong> → tap the “…” menu → <strong>New Folder</strong> → name it <strong>BallisticTargetOutput</strong>.</li>
+            <li>In Safari, after tapping <strong>Download PNG</strong>, tap the download icon → the file → <strong>Share</strong> → <strong>Save to Files</strong>.</li>
+            <li>Select <strong>On My iPad &gt; BallisticTargetOutput</strong> and tap <strong>Save</strong>. Safari remembers the last location, so future saves go there automatically.</li>
+            <li>Need to move files back to desktop? Plug in a portable SSD or use AirDrop/Email from the Files app.</li>
+        </ol>
     </section>
 </main>
 
@@ -244,6 +259,19 @@
     const canvas = $("target-canvas");
     const ctx = canvas.getContext("2d");
     const STORAGE_KEY = "bt-ios-main";
+    const MOA_AT_100Y = 1.047;
+    const DOT_MOA = 1.0;
+    const PX_PER_IN = (canvas.width / 8.5 + canvas.height / 11) / 2;
+    const DOT_X_MM = {
+        50: 35,
+        100: 150,
+        200: 35,
+        300: 170,
+        400: 105,
+    };
+    const DOT_AREA_TOP_MM = 55;
+    const DOT_AREA_BOTTOM_MM = 250;
+    const DEFAULT_RANGES = [50, 100, 200, 300, 400];
 
     const defaultState = {
         rifle: "PSA PA-10 18in",
@@ -258,6 +286,8 @@
         windDir: "0",
         windGust: "0",
     };
+    let lastVisibleRows = [];
+    let lastExcludedDistances = [];
 
     function setStatus(message, isError = false) {
         statusEl.textContent = message;
@@ -305,6 +335,19 @@
     function toFloat(value, fallback = 0) {
         const num = parseFloat(value);
         return Number.isFinite(num) ? num : fallback;
+    }
+
+    function mmToPx(mm) {
+        return (mm / 25.4) * PX_PER_IN;
+    }
+
+    function moaDiameterInches(distanceYd, moaValue = DOT_MOA) {
+        return MOA_AT_100Y * (distanceYd / 100) * moaValue;
+    }
+
+    function dropToMoa(dropInches, distanceYd) {
+        const denom = moaDiameterInches(distanceYd, 1);
+        return denom > 0 ? dropInches / denom : 0;
     }
 
     function calculateAirDensityRatio(altitudeFt, tempF) {
@@ -371,6 +414,7 @@
             tr.innerHTML = `
                 <td>${row.yards}</td>
                 <td>${row.drop.toFixed(2)}</td>
+                <td>${row.dropMoa.toFixed(2)}</td>
                 <td>${row.velocity.toFixed(0)}</td>
                 <td>${row.tof.toFixed(3)}</td>
                 <td>${row.angle.toFixed(3)}</td>
@@ -400,32 +444,55 @@
             130
         );
 
-        const circles = [
-            { yards: 50, x: 0.23, y: 0.23, color: "#f43f5e" },
-            { yards: 100, x: 0.67, y: 0.23, color: "#60a5fa" },
-            { yards: 200, x: 0.23, y: 0.53, color: "#34d399" },
-            { yards: 300, x: 0.67, y: 0.53, color: "#f97316" },
-            { yards: 400, x: 0.45, y: 0.78, color: "#c084fc" },
-        ];
-        const circleSize = 220;
+        const rowByYard = Object.fromEntries(rows.map((row) => [row.yards, row]));
+        const dotColors = {
+            50: "#f43f5e",
+            100: "#60a5fa",
+            200: "#34d399",
+            300: "#f97316",
+            400: "#c084fc",
+        };
+        const yardLines = DEFAULT_RANGES;
+        const dotBottoms = [];
+        const visibleRows = [];
+        const excludedDistances = [];
+        const mmPerMoaAtZero = Math.max(moaDiameterInches(Math.max(state.zeroRange, 1), DOT_MOA) * 25.4, 0.5);
 
-        circles.forEach((target) => {
-            const cx = target.x * canvas.width;
-            const cy = target.y * canvas.height;
-            ctx.fillStyle = target.color;
+        ctx.textAlign = "center";
+
+        yardLines.forEach((yards) => {
+            const row = rowByYard[yards];
+            const xMm = DOT_X_MM[yards];
+            if (!row || typeof xMm === "undefined") {
+                return;
+            }
+            const radiusMm = Math.max(moaDiameterInches(yards, DOT_MOA) * 25.4 / 2, 3);
+            const radiusPx = Math.max(mmToPx(radiusMm), mmToPx(3));
+            const cx = mmToPx(xMm);
+            let centerMm = DOT_AREA_TOP_MM + row.dropMoa * mmPerMoaAtZero;
+            const minCenterMm = DOT_AREA_TOP_MM + radiusMm;
+            if (centerMm < minCenterMm) {
+                centerMm = minCenterMm;
+            }
+            if (centerMm + radiusMm > DOT_AREA_BOTTOM_MM) {
+                excludedDistances.push(yards);
+                return;
+            }
+            const cy = mmToPx(centerMm);
+            ctx.fillStyle = dotColors[yards];
             ctx.beginPath();
-            ctx.arc(cx, cy, circleSize / 2, 0, Math.PI * 2);
+            ctx.arc(cx, cy, radiusPx, 0, Math.PI * 2);
             ctx.fill();
 
-            ctx.strokeStyle = "rgba(255,255,255,0.8)";
+            ctx.strokeStyle = "rgba(255,255,255,0.88)";
             ctx.lineWidth = 2;
             ctx.beginPath();
-            ctx.moveTo(cx - circleSize / 2, cy);
-            ctx.lineTo(cx + circleSize / 2, cy);
+            ctx.moveTo(cx - radiusPx, cy);
+            ctx.lineTo(cx + radiusPx, cy);
             ctx.stroke();
             ctx.beginPath();
-            ctx.moveTo(cx, cy - circleSize / 2);
-            ctx.lineTo(cx, cy + circleSize / 2);
+            ctx.moveTo(cx, cy - radiusPx);
+            ctx.lineTo(cx, cy + radiusPx);
             ctx.stroke();
 
             ctx.fillStyle = "#111";
@@ -433,48 +500,51 @@
             ctx.arc(cx, cy, 6, 0, Math.PI * 2);
             ctx.fill();
 
-            ctx.fillStyle = "#111";
+            ctx.fillStyle = "#0f172a";
             ctx.font = "bold 22px 'Segoe UI'";
-            ctx.fillText(`${target.yards} yd`, cx, cy + circleSize / 2 + 28);
+            ctx.fillText(`${yards} yd | Hold ${row.dropMoa.toFixed(2)} MOA`, cx, cy + radiusPx + 28);
+            dotBottoms.push(cy + radiusPx);
+            visibleRows.push(row);
         });
 
-        ctx.fillStyle = "#000";
-        ctx.font = "bold 22px 'Segoe UI'";
-        ctx.textAlign = "left";
-        ctx.fillText("Ballistic Table", 40, canvas.height - 250);
+        const maxBottom = dotBottoms.length ? Math.max(...dotBottoms) : 320;
+        const legendY = Math.min(canvas.height - 60, maxBottom + 40);
+        ctx.fillStyle = "#111";
+        ctx.font = "18px 'Segoe UI'";
+        ctx.fillText(
+            "Dots = true 1-MOA diameter; vertical spacing follows the hold (MOA) needed at that distance.",
+            canvas.width / 2,
+            legendY
+        );
         ctx.font = "16px 'Segoe UI'";
-
-        const headers = ["Yds", "Drop (in)", "Vel (fps)", "TOF (s)", "Angle (deg)"];
-        const columnWidths = [70, 150, 160, 140, 150];
-        let xPos = 40;
-        const baseY = canvas.height - 220;
-
-        headers.forEach((h, idx) => {
-            ctx.fillText(h, xPos, baseY);
-            xPos += columnWidths[idx];
-        });
-
-        rows.forEach((row, rowIdx) => {
-            let colX = 40;
-            const y = baseY + 30 + rowIdx * 28;
-            const values = [
-                row.yards,
-                row.drop.toFixed(2),
-                row.velocity.toFixed(0),
-                row.tof.toFixed(3),
-                row.angle.toFixed(3),
-            ];
-            values.forEach((val, idx) => {
-                ctx.fillText(val, colX, y);
-                colX += columnWidths[idx];
-            });
-        });
+        ctx.fillText(
+            "Dial/hold the captioned value, aim at the dot, and impacts should land at the center crosshair.",
+            canvas.width / 2,
+            legendY + 26
+        );
+        if (excludedDistances.length > 0) {
+            ctx.font = "italic 15px 'Segoe UI'";
+            ctx.fillStyle = "#475569";
+            ctx.fillText(
+                `Omitted distances that need more than one sheet: ${excludedDistances.join(", ")}.`,
+                canvas.width / 2,
+                legendY + 48
+            );
+        }
+        return { visibleRows, excludedDistances };
     }
 
     function copyTable(rows) {
-        const header = "Yds\tDrop(in)\tVel(fps)\tTOF(s)\tAngle(deg)";
-        const lines = rows.map((row) =>
-            `${row.yards}\t${row.drop.toFixed(2)}\t${row.velocity.toFixed(0)}\t${row.tof.toFixed(3)}\t${row.angle.toFixed(3)}`
+        if (!rows || rows.length === 0) {
+            setStatus("Generate a target first.", true);
+            return;
+        }
+        const header = "Yds\tDrop(in)\tDrop(MOA)\tVel(fps)\tTOF(s)\tAngle(deg)";
+        const lines = rows.map(
+            (row) =>
+                `${row.yards}\t${row.drop.toFixed(2)}\t${row.dropMoa.toFixed(2)}\t${row.velocity.toFixed(0)}\t${row.tof.toFixed(
+                    3
+                )}\t${row.angle.toFixed(3)}`
         );
         const payload = [header, ...lines].join("\n");
         navigator.clipboard.writeText(payload).then(
@@ -518,6 +588,13 @@
         }
     }
 
+    function buildRows(state, ranges = DEFAULT_RANGES) {
+        return ranges.map((range) => {
+            const result = calculateBallistics(range, state);
+            return { ...result, dropMoa: dropToMoa(result.drop, range) };
+        });
+    }
+
     function generateTarget() {
         const state = gatherState();
         if (!Number.isFinite(state.velocity) || state.velocity <= 0) {
@@ -527,12 +604,21 @@
 
         saveState();
 
-        const ranges = [50, 100, 200, 300, 400];
-        const rows = ranges.map((range) => calculateBallistics(range, state));
-        updateTable(rows);
-        drawTarget(rows, state);
-        setStatus("Target updated. Use Print or Download to export.");
-        return rows;
+        const rows = buildRows(state);
+        const result = drawTarget(rows, state);
+        const visibleRows = result.visibleRows.length ? result.visibleRows : rows;
+        updateTable(visibleRows);
+        lastVisibleRows = visibleRows;
+        lastExcludedDistances = result.excludedDistances;
+        if (result.excludedDistances.length > 0) {
+            setStatus(
+                `Target updated. Omitted distances needing more than one sheet: ${result.excludedDistances.join(", ")}.`,
+                false
+            );
+        } else {
+            setStatus("Target updated. Use Print or Download to export.");
+        }
+        return visibleRows;
     }
 
     document.querySelectorAll("input").forEach((el) => {
@@ -555,7 +641,7 @@
         }
     });
     $("copy-table-btn").addEventListener("click", () => {
-        const rows = generateTarget();
+        const rows = lastVisibleRows.length ? lastVisibleRows : generateTarget();
         if (Array.isArray(rows)) {
             copyTable(rows);
         }
@@ -563,10 +649,22 @@
     $("reset-btn").addEventListener("click", resetInputs);
 
     loadState();
-    const initialRows = [50, 100, 200, 300, 400].map((range) => calculateBallistics(range, gatherState()));
-    updateTable(initialRows);
-    drawTarget(initialRows, gatherState());
+    const initialState = gatherState();
+    const initialRows = buildRows(initialState);
+    const initialResult = drawTarget(initialRows, initialState);
+    const initialVisible = initialResult.visibleRows.length ? initialResult.visibleRows : initialRows;
+    updateTable(initialVisible);
+    lastVisibleRows = initialVisible;
+    lastExcludedDistances = initialResult.excludedDistances;
     setStatus("Ready. Adjust values and tap Generate Target.");
+
+    if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+            navigator.serviceWorker.register('bt-service-worker.js').catch((err) => {
+                console.warn('Service worker registration failed:', err);
+            });
+        });
+    }
 </script>
 </body>
 </html>

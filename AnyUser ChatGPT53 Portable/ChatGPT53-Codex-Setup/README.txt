@@ -1,6 +1,7 @@
 ChatGPT 5.3 Codex Setup (Windows)
 
 Important (required):
+- Run setup with Administrator privileges (UAC prompt appears automatically). Decline = setup stops.
 - You must be logged into ChatGPT/OpenAI before using Codex.
 - Each user must sign in with their own ChatGPT account.
 

@@ -7,6 +7,7 @@ Install
 3. App installs to:
    %USERPROFILE%\Desktop\ballilstic target calulator
 4. Shortcuts are created on Desktop and Start Menu.
+5. If an older install exists, the script backs up your `output` folder, wipes every other file, and leaves `output` in place so saved targets stay on disk during the clean reinstall.
 
 What is included
 - BallisticTarget GUI executable.
@@ -19,10 +20,11 @@ What is included
 - Output and logs folders created at install time.
 - Desktop output folder:
   %USERPROFILE%\Desktop\ballilstic target calulator\output
+- Saved targets now live directly under the `output` folder. The installer migrates any legacy files from `output\targets` automatically.
 - Optional compatibility folder:
   %USERPROFILE%\Desktop\ballilstic target calulator\output\targets
 
 Uninstall
-- Run `%USERPROFILE%\Desktop\ballilstic target calulator\Uninstall.cmd`
+- Run `%USERPROFILE%\Desktop\ballilstic target calulator\Uninstall.exe`
   or the "Uninstall Ballistic Target Calculator" Start Menu shortcut.
 - Uninstall keeps `config.json`, `output`, and `logs` by default.

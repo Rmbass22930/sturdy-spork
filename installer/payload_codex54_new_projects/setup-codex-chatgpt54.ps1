@@ -85,6 +85,40 @@ function Assert-PythonReady {
   }
 }
 
+function Resolve-DesktopPath {
+  param([string]$Path)
+
+  if ([string]::IsNullOrWhiteSpace($Path)) {
+    return $null
+  }
+
+  try {
+    New-Item -ItemType Directory -Force -Path $Path | Out-Null
+    return (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path
+  } catch {
+    Write-Info "Skipping desktop target $Path: $($_.Exception.Message)"
+    return $null
+  }
+}
+
+function Lock-DesktopShortcut {
+  param([string]$ShortcutPath)
+
+  if ([string]::IsNullOrWhiteSpace($ShortcutPath)) {
+    return
+  }
+
+  try {
+    if (-not (Test-Path -LiteralPath $ShortcutPath)) { return }
+    $current = [System.IO.File]::GetAttributes($ShortcutPath)
+    if (($current -band [System.IO.FileAttributes]::ReadOnly) -ne 0) { return }
+    $newValue = $current -bor [System.IO.FileAttributes]::ReadOnly
+    [System.IO.File]::SetAttributes($ShortcutPath, $newValue)
+  } catch {
+    Write-Info "Could not lock desktop icon $ShortcutPath: $($_.Exception.Message)"
+  }
+}
+
 function Get-DesktopShortcutPaths {
   $shortcutNames = @("Codex ChatGPT 5.3.lnk", "Codex ChatGPT 5.lnk")
   $desktopCandidates = @()
@@ -109,17 +143,17 @@ function Get-DesktopShortcutPaths {
 
   $uniqueCandidates = @($desktopCandidates | Select-Object -Unique)
   foreach ($candidate in $uniqueCandidates) {
-    if (Test-Path -LiteralPath $candidate) {
-      $targetDesktops += $candidate
-    }
+    $resolved = Resolve-DesktopPath -Path $candidate
+    if ($resolved) { $targetDesktops += $resolved }
   }
 
   if ($targetDesktops.Count -eq 0 -and $uniqueCandidates.Count -gt 0) {
-    $targetDesktops += $uniqueCandidates[0]
+    $fallback = Resolve-DesktopPath -Path $uniqueCandidates[0]
+    if ($fallback) { $targetDesktops += $fallback }
   }
 
-  $commonDesktop = [Environment]::GetFolderPath('CommonDesktopDirectory')
-  if (-not [string]::IsNullOrWhiteSpace($commonDesktop)) {
+  $commonDesktop = Resolve-DesktopPath -Path ([Environment]::GetFolderPath('CommonDesktopDirectory'))
+  if ($commonDesktop) {
     $targetDesktops += $commonDesktop
   }
 
@@ -193,6 +227,7 @@ function Ensure-DesktopShortcut {
       $shortcut.WorkingDirectory = $WorkingDir
       $shortcut.IconLocation = $shell.Icon
       $shortcut.Save()
+      Lock-DesktopShortcut -ShortcutPath $shortcutPath
       $created += $shortcutPath
     } catch {
       $failed += "$shortcutPath ($($_.Exception.Message))"
@@ -256,7 +291,7 @@ if (-not (Test-Path $helperPath)) {
 $markerStart = '# >>> codex helper import >>>'
 $profileBlock = @"
 # >>> codex helper import >>>
-. '$helperPath'
+if (Test-Path -LiteralPath '$helperPath') { . '$helperPath' }
 # <<< codex helper import <<<
 "@
 

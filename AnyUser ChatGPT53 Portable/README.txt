@@ -27,4 +27,8 @@ Desktop icons created by installer:
 - PowerShell (Admin) -> open-admin-powershell.ps1
 - AnyUser ChatGPT53 Installer (Admin) -> install-anyuser-chatgpt53.ps1
 
+Shortcut locking
+- Shortcuts are automatically ACL-locked on every detected desktop after install. Users can run `unlock-shortcuts.cmd` (prompts for admin) to temporarily unlock them, edit/move as needed, then rerun the installer to lock them again.
+- Original permissions are stored in `C:\ProgramData\AnyUserChatGPT\shortcut-locks.json`.
+
 

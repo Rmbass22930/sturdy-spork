@@ -250,10 +250,121 @@ function Get-DesktopPaths {
   return @($list | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
 }
 
+function Get-ShortcutLockStorePath([string]$Root) {
+  if ([string]::IsNullOrWhiteSpace($Root)) {
+    throw 'InstallRoot cannot be blank when locking shortcuts.'
+  }
+  return Join-Path $Root 'shortcut-locks.json'
+}
+
+function Load-ShortcutLockRecords([string]$StorePath) {
+  if (-not (Test-Path -LiteralPath $StorePath)) { return @() }
+  try {
+    $raw = Get-Content -LiteralPath $StorePath -Raw
+    if ([string]::IsNullOrWhiteSpace($raw)) { return @() }
+    $parsed = $raw | ConvertFrom-Json -ErrorAction Stop
+    if ($null -eq $parsed) { return @() }
+    if ($parsed.PSObject.Properties.Name -contains 'Locks') {
+      return @($parsed.Locks)
+    }
+    return @($parsed)
+  } catch {
+    Write-Host "Could not parse shortcut lock store ($StorePath): $($_.Exception.Message)" -ForegroundColor Yellow
+    return @()
+  }
+}
+
+function Save-ShortcutLockRecords([string]$StorePath, [array]$Records) {
+  $payload = @{
+    Version = 1
+    SavedOn = (Get-Date).ToString('o')
+    Locks   = @($Records | Where-Object { $_ -and $_.Path })
+  }
+  $folder = Split-Path -Parent $StorePath
+  if (-not (Test-Path -LiteralPath $folder)) {
+    New-Item -ItemType Directory -Force -Path $folder | Out-Null
+  }
+  $payload | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $StorePath -Encoding UTF8
+}
+
+function New-ShortcutAccessRule {
+  param(
+    [string]$Identity,
+    [System.Security.AccessControl.FileSystemRights]$Rights
+  )
+  $inheritance = [System.Security.AccessControl.InheritanceFlags]::None
+  $propagation = [System.Security.AccessControl.PropagationFlags]::None
+  $accessType  = [System.Security.AccessControl.AccessControlType]::Allow
+  return New-Object System.Security.AccessControl.FileSystemAccessRule($Identity, $Rights, $inheritance, $propagation, $accessType)
+}
+
+function Lock-DesktopShortcuts {
+  param(
+    [string[]]$ShortcutPaths,
+    [string]$StorePath
+  )
+
+  if (-not $ShortcutPaths -or [string]::IsNullOrWhiteSpace($StorePath)) { return }
+
+  $knownRecords = @{}
+  foreach ($record in (Load-ShortcutLockRecords -StorePath $StorePath)) {
+    if ($null -ne $record -and -not [string]::IsNullOrWhiteSpace($record.Path)) {
+      $knownRecords[$record.Path.ToLowerInvariant()] = $record
+    }
+  }
+
+  foreach ($shortcut in $ShortcutPaths | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) {
+    if (-not (Test-Path -LiteralPath $shortcut)) { continue }
+    $resolved = (Resolve-Path -LiteralPath $shortcut).Path
+    $key = $resolved.ToLowerInvariant()
+    try {
+      $acl = Get-Acl -LiteralPath $resolved
+      if (-not $knownRecords.ContainsKey($key)) {
+        $knownRecords[$key] = [pscustomobject]@{
+          Path         = $resolved
+          OriginalSddl = $acl.Sddl
+          LockedOn     = (Get-Date).ToString('o')
+        }
+      }
+
+      $existingRules = @($acl.Access)
+      foreach ($rule in $existingRules) {
+        [void]$acl.RemoveAccessRule($rule)
+      }
+      $acl.SetAccessRuleProtection($true, $false)
+
+      foreach ($identity in @('BUILTIN\Administrators', 'NT AUTHORITY\SYSTEM')) {
+        $acl.AddAccessRule((New-ShortcutAccessRule -Identity $identity -Rights ([System.Security.AccessControl.FileSystemRights]::FullControl)))
+      }
+      foreach ($identity in @('BUILTIN\Users', 'NT AUTHORITY\Authenticated Users')) {
+        try {
+          $acl.AddAccessRule((New-ShortcutAccessRule -Identity $identity -Rights ([System.Security.AccessControl.FileSystemRights]::ReadAndExecute)))
+        } catch {
+          Write-Host "Could not apply ACL for $identity on $resolved: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+      }
+
+      Set-Acl -LiteralPath $resolved -AclObject $acl
+      try {
+        $fileInfo = Get-Item -LiteralPath $resolved -Force
+        $fileInfo.Attributes = $fileInfo.Attributes -bor [System.IO.FileAttributes]::ReadOnly
+      } catch { }
+
+      Write-Host "Locked shortcut ACL: $resolved" -ForegroundColor Cyan
+    } catch {
+      Write-Host "Failed to lock shortcut $resolved: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+  }
+
+  $finalRecords = $knownRecords.GetEnumerator() | Sort-Object Name | ForEach-Object { $_.Value }
+  Save-ShortcutLockRecords -StorePath $StorePath -Records $finalRecords
+}
+
 function Create-AdminShortcuts([string]$InstallerPath) {
   $shell = New-Object -ComObject WScript.Shell
   $psExe = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
   $adminPs = Join-Path (Split-Path -Parent $InstallerPath) 'open-admin-powershell.ps1'
+  $createdShortcuts = New-Object System.Collections.Generic.List[string]
 
   function New-Shortcut {
     param(
@@ -278,6 +389,8 @@ function Create-AdminShortcuts([string]$InstallerPath) {
     try {
       $adminShortcut = New-Shortcut -DesktopPath $desktop -Name 'PowerShell (Admin).lnk' -Target $psExe -Arguments "-NoProfile -ExecutionPolicy Bypass -File `"$adminPs`""
       $installerShortcut = New-Shortcut -DesktopPath $desktop -Name 'AnyUser ChatGPT53 Installer (Admin).lnk' -Target $psExe -Arguments "-NoProfile -ExecutionPolicy Bypass -File `"$InstallerPath`""
+      [void]$createdShortcuts.Add($adminShortcut)
+      [void]$createdShortcuts.Add($installerShortcut)
       Write-Host "Created shortcuts on $desktop:" -ForegroundColor Green
       Write-Host "  $adminShortcut"
       Write-Host "  $installerShortcut"
@@ -285,6 +398,8 @@ function Create-AdminShortcuts([string]$InstallerPath) {
       Write-Host "Could not create shortcuts on ${desktop}: $($_.Exception.Message)" -ForegroundColor Yellow
     }
   }
+
+  return @($createdShortcuts | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
 }
 
 function Verify-Environment {
@@ -360,8 +475,14 @@ if (-not $SkipCodexSetup) {
   Assert-ChatGPTLogin
 }
 
-Create-AdminShortcuts -InstallerPath $PSCommandPath
+$shortcutPaths = Create-AdminShortcuts -InstallerPath $PSCommandPath
+try {
+  $lockStore = Get-ShortcutLockStorePath -Root $InstallRoot
+  Lock-DesktopShortcuts -ShortcutPaths $shortcutPaths -StorePath $lockStore
+  Write-Host "Shortcut ACL store: $lockStore" -ForegroundColor Cyan
+} catch {
+  Write-Host "Shortcut locking skipped: $($_.Exception.Message)" -ForegroundColor Yellow
+}
 Verify-Environment
 Write-Host ''
 Write-Host 'AnyUser ChatGPT portable installation complete.' -ForegroundColor Green
-

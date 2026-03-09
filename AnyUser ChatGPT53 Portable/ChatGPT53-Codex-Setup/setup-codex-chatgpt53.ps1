@@ -9,6 +9,44 @@ $VersionSessionHome = Join-Path $env:USERPROFILE ".codex-gpt5"
 
 function Write-Info($msg) { Write-Host "[codex-setup] $msg" }
 
+function Test-IsAdmin {
+  $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+  $principal = New-Object Security.Principal.WindowsPrincipal($id)
+  return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Ensure-Elevated {
+  if (Test-IsAdmin) { return }
+
+  $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"{0}"' -f $PSCommandPath))
+  foreach ($entry in $PSBoundParameters.GetEnumerator()) {
+    $key = $entry.Key
+    $value = $entry.Value
+    if ($value -is [switch] -or $value -is [bool]) {
+      if ([bool]$value) { $argList += ('-{0}' -f $key) }
+    } elseif ($null -ne $value -and -not [string]::IsNullOrWhiteSpace([string]$value)) {
+      $argList += ('-{0}' -f $key)
+      $argList += ('"{0}"' -f ([string]$value).Replace('"','\"'))
+    }
+  }
+
+  $joined = [string]::Join(' ', $argList)
+  Write-Host '[codex-setup] Requesting Administrator privileges...' -ForegroundColor Yellow
+  try {
+    Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $joined -WorkingDirectory (Split-Path -Parent $PSCommandPath) -ErrorAction Stop | Out-Null
+  } catch {
+    throw 'Administrator approval is required to continue Codex setup.'
+  }
+  exit 0
+}
+
+function Assert-Elevated {
+  if (-not (Test-IsAdmin)) {
+    throw 'Administrator privileges are required to run ChatGPT 5.3 Codex setup.'
+  }
+  Write-Info 'Running with Administrator privileges.'
+}
+
 function Set-VersionSessionHome {
   New-Item -ItemType Directory -Force -Path $VersionSessionHome | Out-Null
   $env:CODEX_HOME = $VersionSessionHome
@@ -96,6 +134,40 @@ function Assert-PythonReady {
   }
 }
 
+function Resolve-DesktopPath {
+  param([string]$Path)
+
+  if ([string]::IsNullOrWhiteSpace($Path)) {
+    return $null
+  }
+
+  try {
+    New-Item -ItemType Directory -Force -Path $Path | Out-Null
+    return (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path
+  } catch {
+    Write-Info "Skipping desktop target $Path: $($_.Exception.Message)"
+    return $null
+  }
+}
+
+function Lock-DesktopShortcut {
+  param([string]$ShortcutPath)
+
+  if ([string]::IsNullOrWhiteSpace($ShortcutPath)) {
+    return
+  }
+
+  try {
+    if (-not (Test-Path -LiteralPath $ShortcutPath)) { return }
+    $current = [System.IO.File]::GetAttributes($ShortcutPath)
+    if (($current -band [System.IO.FileAttributes]::ReadOnly) -ne 0) { return }
+    $newValue = $current -bor [System.IO.FileAttributes]::ReadOnly
+    [System.IO.File]::SetAttributes($ShortcutPath, $newValue)
+  } catch {
+    Write-Info "Could not lock desktop icon $ShortcutPath: $($_.Exception.Message)"
+  }
+}
+
 function Get-DesktopShortcutPaths {
   $shortcutDefs = @(
     @{ Name = "Codex ChatGPT 5.3.lnk"; Model = "gpt-5.3-codex" },
@@ -123,17 +195,17 @@ function Get-DesktopShortcutPaths {
 
   $uniqueCandidates = @($userDesktopCandidates | Select-Object -Unique)
   foreach ($candidate in $uniqueCandidates) {
-    if (Test-Path -LiteralPath $candidate) {
-      $targetDesktops += $candidate
-    }
+    $resolved = Resolve-DesktopPath -Path $candidate
+    if ($resolved) { $targetDesktops += $resolved }
   }
 
   if ($targetDesktops.Count -eq 0 -and $uniqueCandidates.Count -gt 0) {
-    $targetDesktops += $uniqueCandidates[0]
+    $fallback = Resolve-DesktopPath -Path $uniqueCandidates[0]
+    if ($fallback) { $targetDesktops += $fallback }
   }
 
-  $commonDesktop = [Environment]::GetFolderPath('CommonDesktopDirectory')
-  if (-not [string]::IsNullOrWhiteSpace($commonDesktop)) {
+  $commonDesktop = Resolve-DesktopPath -Path ([Environment]::GetFolderPath('CommonDesktopDirectory'))
+  if ($commonDesktop) {
     $targetDesktops += $commonDesktop
   }
 
@@ -194,6 +266,7 @@ function Ensure-DesktopShortcut {
       $shortcut.WorkingDirectory = $WorkingDir
       $shortcut.IconLocation = $shell.Icon
       $shortcut.Save()
+      Lock-DesktopShortcut -ShortcutPath $shortcutPath
       $created += $shortcutPath
     } catch {
       $failed += "$shortcutPath ($($_.Exception.Message))"
@@ -209,6 +282,9 @@ function Ensure-DesktopShortcut {
   Write-Info "Shortcut shell: $($shell.Name)"
   Write-Info "Shortcut working directory: $WorkingDir"
 }
+
+Ensure-Elevated
+Assert-Elevated
 
 $resolvedSourceDir = Resolve-SourceDir -Path $SourceDir
 Write-Info "Using source directory: $resolvedSourceDir"
@@ -248,7 +324,7 @@ if (-not (Test-Path $helperPath)) {
 $markerStart = '# >>> codex helper import >>>'
 $profileBlock = @"
 # >>> codex helper import >>>
-. '$helperPath'
+if (Test-Path -LiteralPath '$helperPath') { . '$helperPath' }
 # <<< codex helper import <<<
 "@
 

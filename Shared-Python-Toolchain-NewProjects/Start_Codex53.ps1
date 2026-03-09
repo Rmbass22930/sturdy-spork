@@ -10,8 +10,15 @@ $ErrorActionPreference = "Stop"
 # Default model (edit this later to upgrade versions)
 $Model = "gpt-5.3-codex"
 
-# Force ChatGPT-account auth path (e.g., Pro plan) by default.
-$env:CODEX_HOME = Join-Path $env:USERPROFILE ".codex"
+# Match Codex 5.4 launcher behavior: default to user-level Codex home
+# unless CODEX_FORCE_PROJECT_HOME is explicitly enabled.
+if ($env:CODEX_FORCE_PROJECT_HOME -eq "1") {
+  $projectCodexHome = Join-Path $PSScriptRoot ".codex-home"
+  New-Item -ItemType Directory -Force -Path $projectCodexHome | Out-Null
+  $env:CODEX_HOME = $projectCodexHome
+} elseif ([string]::IsNullOrWhiteSpace($env:CODEX_HOME)) {
+  $env:CODEX_HOME = Join-Path $env:USERPROFILE ".codex"
+}
 if (Test-Path Env:OPENAI_API_KEY) {
   Remove-Item Env:OPENAI_API_KEY -ErrorAction SilentlyContinue
 }

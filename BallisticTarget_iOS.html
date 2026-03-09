@@ -63,6 +63,36 @@
             grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
             gap: 12px 18px;
         }
+        .helper-links {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            font-size: 0.8rem;
+            color: var(--muted);
+            margin: -4px 0 10px;
+        }
+        .helper-links .brand-links {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            align-items: center;
+        }
+        .helper-links .brand-links span {
+            font-weight: 600;
+            color: var(--accent);
+        }
+        .helper-links a {
+            text-decoration: none;
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            padding: 4px 10px;
+            color: var(--text);
+            font-weight: 600;
+        }
+        .helper-links a:hover {
+            background: var(--accent);
+            color: #0f172a;
+        }
         button {
             border: none;
             border-radius: 999px;
@@ -168,6 +198,20 @@
             <div>
                 <label for="sight-height">Sight Height (in)</label>
                 <input id="sight-height" inputmode="decimal" placeholder="2.6">
+                <div class="helper-links">
+                    <div class="brand-links">
+                        <span>Leupold:</span>
+                        <a href="https://www.leupold.com/shop/mounts/bases" target="_blank" rel="noopener noreferrer">Bases</a>
+                        <a href="https://www.leupold.com/shop/mounts/rings" target="_blank" rel="noopener noreferrer">Rings</a>
+                        <a href="https://www.leupold.com/shop/mounts/series/qr-quick-release" target="_blank" rel="noopener noreferrer">Quick Detach</a>
+                    </div>
+                    <div class="brand-links">
+                        <span>Burris:</span>
+                        <a href="https://www.burrisoptics.com/mounting-systems" target="_blank" rel="noopener noreferrer">Mount Catalog</a>
+                        <a href="https://www.burrisoptics.com/mounting-systems/signature-zee-rings" target="_blank" rel="noopener noreferrer">Signature Rings</a>
+                        <a href="https://www.burrisoptics.com/mounting-systems/ar-pepr-scope-mount" target="_blank" rel="noopener noreferrer">PEPR Mount</a>
+                    </div>
+                </div>
             </div>
             <div>
                 <label for="zero-range">Zero Range (yd)</label>
@@ -286,6 +330,8 @@
         windDir: "0",
         windGust: "0",
     };
+    let lastVisibleRows = [];
+    let lastExcludedDistances = [];
 
     function setStatus(message, isError = false) {
         statusEl.textContent = message;
@@ -346,17 +392,6 @@
     function dropToMoa(dropInches, distanceYd) {
         const denom = moaDiameterInches(distanceYd, 1);
         return denom > 0 ? dropInches / denom : 0;
-    }
-
-    function mapDropToMm(dropValue, minDrop, maxDrop) {
-        if (!Number.isFinite(dropValue)) {
-            return (DOT_AREA_TOP_MM + DOT_AREA_BOTTOM_MM) / 2;
-        }
-        if (Math.abs(maxDrop - minDrop) < 1e-6) {
-            return (DOT_AREA_TOP_MM + DOT_AREA_BOTTOM_MM) / 2;
-        }
-        const norm = (dropValue - minDrop) / (maxDrop - minDrop);
-        return DOT_AREA_TOP_MM + norm * (DOT_AREA_BOTTOM_MM - DOT_AREA_TOP_MM);
     }
 
     function calculateAirDensityRatio(altitudeFt, tempF) {
@@ -454,9 +489,6 @@
         );
 
         const rowByYard = Object.fromEntries(rows.map((row) => [row.yards, row]));
-        const dropValues = rows.map((row) => row.dropMoa);
-        const minDrop = dropValues.length ? Math.min(...dropValues) : 0;
-        const maxDrop = dropValues.length ? Math.max(...dropValues) : 0;
         const dotColors = {
             50: "#f43f5e",
             100: "#60a5fa",
@@ -466,6 +498,9 @@
         };
         const yardLines = DEFAULT_RANGES;
         const dotBottoms = [];
+        const visibleRows = [];
+        const excludedDistances = [];
+        const mmPerMoaAtZero = Math.max(moaDiameterInches(Math.max(state.zeroRange, 1), DOT_MOA) * 25.4, 0.5);
 
         ctx.textAlign = "center";
 
@@ -475,9 +510,19 @@
             if (!row || typeof xMm === "undefined") {
                 return;
             }
-            const radiusPx = Math.max((moaDiameterInches(yards, DOT_MOA) * PX_PER_IN) / 2, mmToPx(3));
+            const radiusMm = Math.max(moaDiameterInches(yards, DOT_MOA) * 25.4 / 2, 3);
+            const radiusPx = Math.max(mmToPx(radiusMm), mmToPx(3));
             const cx = mmToPx(xMm);
-            const cy = mmToPx(mapDropToMm(row.dropMoa, minDrop, maxDrop));
+            let centerMm = DOT_AREA_TOP_MM + row.dropMoa * mmPerMoaAtZero;
+            const minCenterMm = DOT_AREA_TOP_MM + radiusMm;
+            if (centerMm < minCenterMm) {
+                centerMm = minCenterMm;
+            }
+            if (centerMm + radiusMm > DOT_AREA_BOTTOM_MM) {
+                excludedDistances.push(yards);
+                return;
+            }
+            const cy = mmToPx(centerMm);
             ctx.fillStyle = dotColors[yards];
             ctx.beginPath();
             ctx.arc(cx, cy, radiusPx, 0, Math.PI * 2);
@@ -503,6 +548,7 @@
             ctx.font = "bold 22px 'Segoe UI'";
             ctx.fillText(`${yards} yd | Hold ${row.dropMoa.toFixed(2)} MOA`, cx, cy + radiusPx + 28);
             dotBottoms.push(cy + radiusPx);
+            visibleRows.push(row);
         });
 
         const maxBottom = dotBottoms.length ? Math.max(...dotBottoms) : 320;
@@ -520,9 +566,23 @@
             canvas.width / 2,
             legendY + 26
         );
+        if (excludedDistances.length > 0) {
+            ctx.font = "italic 15px 'Segoe UI'";
+            ctx.fillStyle = "#475569";
+            ctx.fillText(
+                `Omitted distances that need more than one sheet: ${excludedDistances.join(", ")}.`,
+                canvas.width / 2,
+                legendY + 48
+            );
+        }
+        return { visibleRows, excludedDistances };
     }
 
     function copyTable(rows) {
+        if (!rows || rows.length === 0) {
+            setStatus("Generate a target first.", true);
+            return;
+        }
         const header = "Yds\tDrop(in)\tDrop(MOA)\tVel(fps)\tTOF(s)\tAngle(deg)";
         const lines = rows.map(
             (row) =>
@@ -589,10 +649,20 @@
         saveState();
 
         const rows = buildRows(state);
-        updateTable(rows);
-        drawTarget(rows, state);
-        setStatus("Target updated. Use Print or Download to export.");
-        return rows;
+        const result = drawTarget(rows, state);
+        const visibleRows = result.visibleRows.length ? result.visibleRows : rows;
+        updateTable(visibleRows);
+        lastVisibleRows = visibleRows;
+        lastExcludedDistances = result.excludedDistances;
+        if (result.excludedDistances.length > 0) {
+            setStatus(
+                `Target updated. Omitted distances needing more than one sheet: ${result.excludedDistances.join(", ")}.`,
+                false
+            );
+        } else {
+            setStatus("Target updated. Use Print or Download to export.");
+        }
+        return visibleRows;
     }
 
     document.querySelectorAll("input").forEach((el) => {
@@ -615,7 +685,7 @@
         }
     });
     $("copy-table-btn").addEventListener("click", () => {
-        const rows = generateTarget();
+        const rows = lastVisibleRows.length ? lastVisibleRows : generateTarget();
         if (Array.isArray(rows)) {
             copyTable(rows);
         }
@@ -625,8 +695,11 @@
     loadState();
     const initialState = gatherState();
     const initialRows = buildRows(initialState);
-    updateTable(initialRows);
-    drawTarget(initialRows, initialState);
+    const initialResult = drawTarget(initialRows, initialState);
+    const initialVisible = initialResult.visibleRows.length ? initialResult.visibleRows : initialRows;
+    updateTable(initialVisible);
+    lastVisibleRows = initialVisible;
+    lastExcludedDistances = initialResult.excludedDistances;
     setStatus("Ready. Adjust values and tap Generate Target.");
 
     if ('serviceWorker' in navigator) {

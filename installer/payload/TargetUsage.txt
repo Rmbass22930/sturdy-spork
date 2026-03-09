@@ -20,6 +20,11 @@ Range Validation Plan
 - After each string circle the group, jot the actual impact location, and reset turrets to zero before moving on.
 - Feed any consistent offsets back into BallisticTarget (adjust muzzle velocity, BC, or sight height) then regenerate the target.
 
+Extension Sheets (Large Holds)
+- If a dot’s MOA hold would fall below the first page, BallisticTarget prints a continuation sheet with gray ALIGN bars.
+- Stack that sheet under the main page so the ALIGN bars touch before stapling/taping to the backer; this keeps the MOA spacing accurate.
+- Leave every spacer sheet in place even if it has no dots—each one maintains the proper distance to the next sheet downrange.
+
 Scope Movement Quick Reference
 - Dialing: rotate the elevation turret up the printed MOA (example: +1.75 MOA for 200 yd) and aim at the dot.
 - Holding: leave the turret at zero, place the appropriate MOA hash mark on the dot (example: 6 MOA hash for a "Hold 6.10 MOA" at 300 yd) and break the shot while keeping the center crosshair steady above the dot.
@@ -29,3 +34,15 @@ Printing Tips
 - Keep the sheet flat on the backer and mark each group to compare with the table on PDF page 2.
 
 Adjust, reprint, and reconfirm any time ammo lot, suppressor setup, or environment changes more than ~15 °F or 2,000 ft from the printed data.
+
+Manual Input Checklist
+- Rifle make/model + barrel length: record the exact rifle or upper and the true barrel length (bolt face to muzzle). Swap uppers? Save each one.
+- Twist rate: write down the stamped ratio (e.g., 1:8). If it is missing, mark a cleaning rod for one full revolution to calculate it manually.
+- Ammunition details: include manufacturer, product line, cartridge, and bullet weight (example: Hornady Precision Hunter 6.5 CM 143gr ELD-X).
+- Muzzle velocity: average a chronograph string (≥10 shots). Enter the actual feet-per-second number for the lot you are using.
+- Ballistic coefficient (G1): copy from the projectile or ammo data sheet. Convert G7 values if needed before entering them.
+- Sight height: measure bore center to optic center with calipers, or click **Estimate Sight Height** to pull manufacturer scope + mount data, then overwrite with your measurement if desired.
+- Scope click value: note the MOA per click stamped on your turret (0.25 for many hunting scopes). Update the field so the click column matches your hardware.
+- Zero distance: confirm the exact yard line you used when zeroing (50 yd default). Enter precise yardage like 36, 100, or 200.
+- Environmentals: log temperature (°F), station pressure or altitude (ft), wind speed/direction/gust. You can paste GPS pins into Environmentals + Geo to sample these automatically.
+- Wind inputs: write the steady wind, gust, and the direction from which it blows (degrees) so holds are repeatable on the printed sheet.
