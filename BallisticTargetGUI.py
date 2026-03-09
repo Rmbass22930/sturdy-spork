@@ -5344,6 +5344,12 @@ class EnvGeoDialog(tk.Toplevel):
         else:
             messagebox.showwarning("Weather", "No weather samples were available.")
 
+    def _on_use_pins_toggle(self) -> None:
+        use_pins = self.use_pins_only.get()
+        state = "disabled" if use_pins else "normal"
+        self.range_entry.configure(state=state)
+        self.bearing_entry.configure(state=state)
+
     def on_project_and_sample(self):
         if self._projection_thread and self._projection_thread.is_alive():
             messagebox.showinfo("Projection", "Projection already running.")
@@ -6537,8 +6543,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    def _on_use_pins_toggle(self) -> None:
-        use_pins = self.use_pins_only.get()
-        state = "disabled" if use_pins else "normal"
-        self.range_entry.configure(state=state)
-        self.bearing_entry.configure(state=state)
+

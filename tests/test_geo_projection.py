@@ -2,7 +2,7 @@ import math
 
 import pytest
 
-from BallisticTargetGUI import bearing_to_cardinal
+from BallisticTargetGUI import EnvGeoDialog, bearing_to_cardinal
 from geo_projection import ProjectionError, project_path, project_path_between_points, resolve_bearing
 
 
@@ -16,6 +16,10 @@ def test_bearing_to_cardinal_primary_axes():
 def test_bearing_to_cardinal_midpoints_round():
     assert bearing_to_cardinal(33.0) == "NNE"
     assert bearing_to_cardinal(359.0) == "N"
+
+
+def test_env_geo_dialog_exposes_projection_pin_toggle_callback():
+    assert callable(getattr(EnvGeoDialog, "_on_use_pins_toggle", None))
 
 
 def test_resolve_bearing_from_direction():
