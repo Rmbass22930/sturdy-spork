@@ -1,4 +1,56 @@
-Shared-Python-Toolchain/build/
-AnyUser Memory Optimizer Portable/Shared-Python-Toolchain/build/
+.codex-home/
+
+# Python caches
+__pycache__/
+.pytest_cache/
+*.py[cod]
+*.pyo
+
+# Generated builds and distributions
+build/
+dist/
+output/
+_tmp/
+temp/
+sandbox/
+_bak_*/
+*.bak_*
+
+# Nested build outputs
+**/build/
+**/dist/
+**/__pycache__/
+**/.pytest_cache/
+
+# Installer and release artifacts
+/BallisticTargetGUI.exe
+/BallisticTargetInstaller.zip
+/BallisticTargetSetup.exe
+/InstallBallistic.exe
+/CHECKSUMS.txt
+/ChatGPT53-Codex-Setup*.zip
+/Shared-Python-Toolchain*.zip
+installer/*.exe
+installer/*.zip
+installer/*.log
+installer/*.cab
+installer/*.CAB
+installer/**/*.DDF
+installer/payload/*.exe
+
+# Local notes and scratch files
+/# === ChatGPT  Codex permanent setu.txt
+/# Define source files and the targe.txt
+/# PowerShell script to copy files t.txt
+/Set-Location GBallisticTargetsrc.txt
+/notepad $envUSERPROFILE.codexconfig.txt
+/tmp_patch.txt
+/~InstallBallistic.DDF
+
+# Existing vendor/tool outputs
 AnyUser ChatGPT53 Portable/InstallerLauncher/bin/
 AnyUser ChatGPT53 Portable/InstallerLauncher/obj/
+AnyUser ChatGPT53 Portable/install-anyuser-chatgpt53.exe
+
+# One-off scratch scripts
+temp_*.py
