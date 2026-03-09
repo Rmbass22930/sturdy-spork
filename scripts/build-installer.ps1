@@ -14,8 +14,12 @@ function Invoke-Step {
         [scriptblock]$Action
     )
     Write-Host "==> $Label"
+    $global:LASTEXITCODE = 0
     & $Action
-    if ($LASTEXITCODE -ne 0) {
+    if (-not $?) {
+        throw "$Label failed."
+    }
+    if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {
         throw "$Label failed with exit code $LASTEXITCODE"
     }
 }
@@ -28,8 +32,14 @@ Invoke-Step "PyInstaller BallisticTargetGUI" {
     python -m PyInstaller BallisticTargetGUI.spec
 }
 
+Invoke-Step "PyInstaller EnvironmentalsGeoGUI" {
+    python -m PyInstaller EnvironmentalsGeoGUI.spec
+}
+
 Copy-Item -Path "dist\BallisticTargetGUI.exe" -Destination "BallisticTargetGUI.exe" -Force
 Copy-Item -Path "dist\BallisticTargetGUI.exe" -Destination "installer\payload\BallisticTargetGUI.exe" -Force
+Copy-Item -Path "dist\EnvironmentalsGeoGUI.exe" -Destination "EnvironmentalsGeoGUI.exe" -Force
+Copy-Item -Path "dist\EnvironmentalsGeoGUI.exe" -Destination "installer\payload\EnvironmentalsGeoGUI.exe" -Force
 
 Invoke-Step "PyInstaller Uninstall.exe" {
     python -m PyInstaller "installer\Uninstall.py" --onefile --name Uninstall
@@ -97,3 +107,5 @@ if ($OutputRoot) {
     }
 }
 Write-Host "Build complete."
+
+
