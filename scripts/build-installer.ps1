@@ -65,6 +65,7 @@ Pop-Location
 
 $artifactPaths = @(
     "BallisticTargetGUI.exe",
+    "EnvironmentalsGeoGUI.exe",
     "installer\BallisticTargetInstaller.zip",
     "installer\BallisticTargetSetup.exe",
     "installer\InstallBallistic.exe"

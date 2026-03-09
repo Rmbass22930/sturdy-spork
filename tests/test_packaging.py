@@ -4,8 +4,6 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-PRIMARY_EXE = ROOT / "BallisticTargetGUI.exe"
-INSTALLER_PAYLOAD = ROOT / "installer" / "payload" / "BallisticTargetGUI.exe"
 
 
 def _md5(path: Path) -> str:
@@ -16,8 +14,16 @@ def _md5(path: Path) -> str:
     return digest.hexdigest()
 
 
-@pytest.mark.skipif(not (PRIMARY_EXE.exists() and INSTALLER_PAYLOAD.exists()), reason="Build artifacts missing")
-def test_installer_payload_in_sync_with_gui_binary():
-    assert PRIMARY_EXE.stat().st_size > 0
-    assert INSTALLER_PAYLOAD.stat().st_size > 0
-    assert _md5(PRIMARY_EXE) == _md5(INSTALLER_PAYLOAD)
+@pytest.mark.parametrize(
+    ("primary_exe", "installer_payload"),
+    [
+        (ROOT / "BallisticTargetGUI.exe", ROOT / "installer" / "payload" / "BallisticTargetGUI.exe"),
+        (ROOT / "EnvironmentalsGeoGUI.exe", ROOT / "installer" / "payload" / "EnvironmentalsGeoGUI.exe"),
+    ],
+)
+def test_installer_payload_in_sync_with_gui_binary(primary_exe: Path, installer_payload: Path):
+    if not (primary_exe.exists() and installer_payload.exists()):
+        pytest.skip("Build artifacts missing")
+    assert primary_exe.stat().st_size > 0
+    assert installer_payload.stat().st_size > 0
+    assert _md5(primary_exe) == _md5(installer_payload)
