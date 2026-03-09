@@ -1,22 +1,14 @@
 # Start_Codex5.ps1
-# Minimal launcher for ChatGPT 5 model, matching working 5.3 behavior.
+# Thin wrapper around the shared Codex launcher.
 
 Set-StrictMode -Version Latest
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = 'Stop'
 
-$Model = "gpt-5.4-codex"
-
-function cx {
-  param(
-    [Parameter(ValueFromRemainingArguments = $true)]
-    [string[]]$Args
-  )
-  codex -m $Model -C "$PSScriptRoot" @Args
+$launcher = Join-Path $PSScriptRoot 'codex_launcher_common.ps1'
+if (-not (Test-Path -LiteralPath $launcher)) {
+  Write-Error "Missing launcher helper: $launcher"
+  exit 1
 }
 
-if ($Args.Count -eq 0) {
-  cx
-} else {
-  cx @Args
-}
-
+. $launcher
+Invoke-CodexLauncher -Model 'gpt-5.4-codex' -LauncherName 'Start_Codex5' -WorkingDirectory $PSScriptRoot -CliArgs $Args -EnableSearch

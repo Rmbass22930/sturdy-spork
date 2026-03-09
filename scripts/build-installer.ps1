@@ -20,6 +20,10 @@ function Invoke-Step {
     }
 }
 
+Invoke-Step "Sync setup assets" {
+    & (Join-Path $here 'sync-setup-assets.ps1')
+}
+
 Invoke-Step "PyInstaller BallisticTargetGUI" {
     python -m PyInstaller BallisticTargetGUI.spec
 }

@@ -24,4 +24,3 @@ Set-Alias Codex54 cx
 
 Write-Host "Loaded project Codex profile. Model = $script:CODEX_MODEL" -ForegroundColor Green
 
-

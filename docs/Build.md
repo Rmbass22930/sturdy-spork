@@ -5,8 +5,25 @@
 - Python 3.14 environment that matches what the app uses (already configured in this repo).
 - `G:\` and `H:\` mapped (or override the output roots when running the scripts).
 
+## Setup asset sync
+Launcher/setup files are mirrored into a few packaging trees. The canonical launcher entrypoints now live in the repo root, share one helper in `codex_launcher_common.ps1`, and `scripts/sync-setup-assets.ps1` updates the mirrored package copies from an explicit manifest.
+
+Run a check without changing files:
+
+```powershell
+pwsh -NoProfile -File scripts/sync-setup-assets.ps1 -Check
+```
+
+Apply the sync:
+
+```powershell
+pwsh -NoProfile -File scripts/sync-setup-assets.ps1
+```
+
+`scripts/build-installer.ps1` runs this sync step automatically before packaging so installer assets do not drift.
+
 ## One-step CI/local build
-Run the combined pipeline script. It builds the EXEs, packages the payload, creates both self-extracting installers, copies artifacts + checksums to every configured output root (default: `G:\` and `H:\`), and performs a smoke test that extracts each installer into a temp folder to ensure `Install.cmd` is present.
+Run the combined pipeline script. It syncs mirrored setup assets, builds the EXEs, packages the payload, creates both self-extracting installers, copies artifacts + checksums to every configured output root (default: `G:\` and `H:\`), and performs a smoke test that extracts each installer into a temp folder to ensure `Install.cmd` is present.
 
 ```powershell
 pwsh -NoProfile -File scripts/ci-build.ps1            # default outputs G:\ and H:\
@@ -16,21 +33,22 @@ pwsh -NoProfile -File scripts/ci-build.ps1 -OutputRoot 'D:\drops\bt','E:\mirror'
 ```
 
 ## Individual stages
-1. `scripts/build-installer.ps1 [-OutputRoot ...]`  
-   - PyInstaller for `BallisticTargetGUI` and `Uninstall.exe`  
-   - Zips `installer\payload` -> `installer\BallisticTargetInstaller.zip`  
-   - Runs IExpress inside `installer\` to create `BallisticTargetSetup.exe` and `InstallBallistic.exe`  
+1. `scripts/build-installer.ps1 [-OutputRoot ...]`
+   - Syncs mirrored launcher/setup assets from the manifest in `scripts/sync-setup-assets.ps1`
+   - PyInstaller for `BallisticTargetGUI` and `Uninstall.exe`
+   - Zips `installer\payload` -> `installer\BallisticTargetInstaller.zip`
+   - Runs IExpress inside `installer\` to create `BallisticTargetSetup.exe` and `InstallBallistic.exe`
    - Regenerates `CHECKSUMS.txt` and copies artifacts to each output root (skipping any drive that is offline)
-2. `scripts/smoke-test-installers.ps1`  
-   - Expands `installer\BallisticTargetInstaller.zip` into a temp folder  
-   - Verifies that core files (`Install.cmd`, `BallisticTargetGUI.exe`, `Uninstall.exe`, `README.txt`) exist  
-   - Cleans up the temp directory afterward  
-   - Because both IExpress packages are built directly from this ZIP, validating its contents verifies the installers’ payload
+2. `scripts/smoke-test-installers.ps1`
+   - Expands `installer\BallisticTargetInstaller.zip` into a temp folder
+   - Verifies that core files (`Install.cmd`, `BallisticTargetGUI.exe`, `Uninstall.exe`, `README.txt`) exist
+   - Cleans up the temp directory afterward
+   - Because both IExpress packages are built directly from this ZIP, validating its contents verifies the installers' payload
 
 ## Scheduled task automation
 To rebuild automatically every night on the workstation:
 1. Ensure PowerShell 7, Python/PyInstaller, and access to `J:\gdrive\BallisticTarget\src` + `G:\` exist for the account that will run the task.
-2. Run (once) from an elevated PowerShell prompt if you want the task to run even when logged off, otherwise a normal prompt creates an “Interactive only” task:
+2. Run (once) from an elevated PowerShell prompt if you want the task to run even when logged off, otherwise a normal prompt creates an "Interactive only" task:
    ```powershell
    $taskCommand = '"C:\Program Files\PowerShell\7\pwsh.exe" -NoProfile -ExecutionPolicy Bypass -File "J:\gdrive\BallisticTarget\src\scripts\ci-build.ps1"'
    schtasks.exe /Create /TN BallisticTargetCIBuild /SC DAILY /ST 02:00 /TR $taskCommand
@@ -51,3 +69,4 @@ pytest tests/test_geo_projection.py tests/test_packaging.py
 
 - `test_geo_projection.py` exercises the compass-to-bearing math and verifies that `project_path()` produces evenly spaced waypoints that match the between-pins projection helper.
 - `test_packaging.py` compares the MD5 of `BallisticTargetGUI.exe` in the repo root with the copy staged inside `installer/payload`. Any mismatch means the installer payload is stale relative to the freshly built GUI and should block release until re-packed.
+

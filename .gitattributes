@@ -1,3 +1,32 @@
+* text=auto
+
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.psd1 text eol=crlf
+*.toml text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.txt text eol=crlf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.spec text eol=lf
+*.csv text eol=crlf
+*.exe binary
+*.dll binary
+*.zip binary
+*.7z binary
+*.pdf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.epub binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
 *.epub filter=lfs diff=lfs merge=lfs -text
 *.pdf filter=lfs diff=lfs merge=lfs -text
 drivers/*.exe filter=lfs diff=lfs merge=lfs -text
