@@ -114,3 +114,65 @@ def test_access_evaluate_auto_block_message(monkeypatch, tmp_path):
     assert blocklist.is_blocked("203.0.113.31") is True
     assert traceroute.calls
     assert any(event == "access.evaluate" for event, _ in audit.events)
+
+
+def test_promote_missing_ip_returns_404(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+
+    with TestClient(service.app) as client:
+        response = client.post(
+            "/network/blocked-ips/203.0.113.40/promote",
+            json={"reason": "confirmed attacker"},
+        )
+
+    assert response.status_code == 404
+
+
+def test_unblock_missing_ip_returns_404(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+
+    with TestClient(service.app) as client:
+        response = client.request(
+            "DELETE",
+            "/network/blocked-ips/203.0.113.41",
+            json={"reason": "false positive"},
+        )
+
+    assert response.status_code == 404
+
+
+def test_access_evaluate_denies_already_blocked_ip(monkeypatch, tmp_path):
+    audit, blocklist, _ = _install_test_managers(monkeypatch, tmp_path)
+    blocklist.block("203.0.113.42", reason="manual review", blocked_by="test")
+
+    with TestClient(service.app) as client:
+        response = client.post(
+            "/access/evaluate",
+            json={
+                "user": {
+                    "user_id": "user-123",
+                    "email": "user@example.com",
+                    "groups": ["engineering"],
+                    "geo_lat": 37.7749,
+                    "geo_lon": -122.4194,
+                    "last_login": (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat(),
+                },
+                "device": {
+                    "device_id": "device-1",
+                    "os": "macOS",
+                    "os_version": "15.0",
+                    "compliance": DeviceCompliance.compliant.value,
+                    "is_encrypted": True,
+                    "edr_active": True,
+                },
+                "resource": "git",
+                "privilege_level": "standard",
+                "source_ip": "203.0.113.42",
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["decision"] == "deny"
+    assert any("blocked" in reason.lower() for reason in payload["reasons"])
+    assert any(event == "access.evaluate" for event, _ in audit.events)
