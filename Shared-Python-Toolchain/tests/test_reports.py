@@ -56,6 +56,18 @@ def _write_audit_events(path: Path) -> None:
                 "reasons": ["Step-up MFA required"],
             },
         },
+        {
+            "ts": "2026-03-27T05:08:00+00:00",
+            "type": "privacy.tracker_block",
+            "data": {
+                "target_type": "proxy",
+                "hostname": "metrics.example.com",
+                "matched_domain": "metrics.example.com",
+                "source": "heuristic",
+                "confidence": "high",
+                "reason": "Tracker-style host labels: metrics; Tracking query keys: client_id",
+            },
+        },
     ]
     path.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
 
@@ -80,6 +92,7 @@ def test_collect_summary_includes_blocked_and_potential_ips(tmp_path: Path) -> N
     assert potential["203.0.113.10"]["count"] == 2
     assert "git" in potential["203.0.113.10"]["resources"]
     assert "Risk above threshold" in potential["203.0.113.10"]["reasons"]
+    assert summary["tracker_block_events"][0]["hostname"] == "metrics.example.com"
 
 
 def test_collect_summary_respects_filters(tmp_path: Path) -> None:
@@ -125,4 +138,5 @@ def test_write_summary_pdf_and_list_saved_reports(tmp_path: Path, monkeypatch) -
     assert reports[0]["name"] == "security-summary.pdf"
     assert reports[0]["blocked_ip_count"] == 0
     assert reports[0]["potential_blocked_ip_count"] == 2
+    assert reports[0]["tracker_block_count"] == 1
     assert builder.resolve_saved_report() == report_path

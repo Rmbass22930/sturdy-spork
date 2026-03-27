@@ -61,13 +61,14 @@ class ReportBrowser:
         body.columnconfigure(0, weight=1)
         body.rowconfigure(0, weight=1)
 
-        columns = ("name", "generated_at", "blocked", "potential", "size", "modified_at")
+        columns = ("name", "generated_at", "blocked", "potential", "trackers", "size", "modified_at")
         self.tree = ttk.Treeview(body, columns=columns, show="headings", height=18)
         headings = {
             "name": "Report",
             "generated_at": "Generated",
             "blocked": "Blocked IPs",
             "potential": "Potential Blocked",
+            "trackers": "Tracker Blocks",
             "size": "Size",
             "modified_at": "Modified",
         }
@@ -76,6 +77,7 @@ class ReportBrowser:
             "generated_at": 220,
             "blocked": 110,
             "potential": 130,
+            "trackers": 120,
             "size": 110,
             "modified_at": 220,
         }
@@ -117,6 +119,7 @@ class ReportBrowser:
                     report.get("generated_at") or "-",
                     report.get("blocked_ip_count") if report.get("blocked_ip_count") is not None else "-",
                     report.get("potential_blocked_ip_count") if report.get("potential_blocked_ip_count") is not None else "-",
+                    report.get("tracker_block_count") if report.get("tracker_block_count") is not None else "-",
                     self._format_size(report["size"]),
                     report["modified_at"],
                 ),

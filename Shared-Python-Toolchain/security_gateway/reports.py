@@ -83,6 +83,7 @@ class SecurityReportBuilder:
             ] if filters.include_blocked_ips else [],
             "potential_blocked_ips": self._collect_potential_blocks(recent_events, blocked_ips, min_risk_score=filters.min_risk_score)
             if filters.include_potential_blocked_ips else [],
+            "tracker_block_events": self._collect_tracker_blocks(recent_events),
             "recent_events": recent_events if filters.include_recent_events else [],
         }
 
@@ -183,6 +184,20 @@ class SecurityReportBuilder:
             write_line("No current candidates from recent deny events.", size=9, gap=14)
 
         y -= 8
+        write_line("Tracker Activity", font="Helvetica-Bold", size=12, gap=16)
+        if summary["tracker_block_events"]:
+            for event in summary["tracker_block_events"]:
+                write_line(
+                    f"{event['ts']} | {event['target_type']} | host={event['hostname']} | confidence={event['confidence']}",
+                    size=9,
+                    gap=12,
+                )
+                for line in self._wrap_text(f"Reason: {event['reason']}", width=92):
+                    write_line(line, size=8, indent=12, gap=11)
+        else:
+            write_line("No tracker activity recorded.", size=9, gap=14)
+
+        y -= 8
         write_line("Recent Audit Events", font="Helvetica-Bold", size=12, gap=16)
         if summary["recent_events"]:
             for event in summary["recent_events"]:
@@ -220,6 +235,7 @@ class SecurityReportBuilder:
                     "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
                     "blocked_ip_count": metadata.get("blocked_ip_count"),
                     "potential_blocked_ip_count": metadata.get("potential_blocked_ip_count"),
+                    "tracker_block_count": metadata.get("tracker_block_count"),
                     "generated_at": metadata.get("generated_at"),
                 }
             )
@@ -250,6 +266,7 @@ class SecurityReportBuilder:
             "generated_at": datetime.now(UTC).isoformat(),
             "blocked_ip_count": len(summary["blocked_ips"]),
             "potential_blocked_ip_count": len(summary["potential_blocked_ips"]),
+            "tracker_block_count": len(summary["tracker_block_events"]),
             "filters": summary.get("filters", {}),
         }
         self._metadata_path_for_report(report_path).write_text(json.dumps(metadata, indent=2), encoding="utf-8")
@@ -373,6 +390,25 @@ class SecurityReportBuilder:
                 }
             )
         return sorted(filtered_candidates, key=lambda item: (-item["count"], -item["max_risk_score"], item["ip"]))
+
+    def _collect_tracker_blocks(self, events: List[dict[str, Any]]) -> List[dict[str, Any]]:
+        tracker_events: list[dict[str, Any]] = []
+        for event in events:
+            if event.get("type") != "privacy.tracker_block":
+                continue
+            data = event.get("data", {})
+            tracker_events.append(
+                {
+                    "ts": event.get("ts", ""),
+                    "target_type": data.get("target_type", "unknown"),
+                    "hostname": data.get("hostname", ""),
+                    "matched_domain": data.get("matched_domain", ""),
+                    "source": data.get("source", ""),
+                    "confidence": data.get("confidence", ""),
+                    "reason": data.get("reason", ""),
+                }
+            )
+        return tracker_events
 
     def _parse_event_timestamp(self, value: Any) -> datetime | None:
         if not value or not isinstance(value, str):
