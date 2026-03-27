@@ -38,7 +38,11 @@ proxy = OutboundProxy()
 telemetry = EndpointTelemetryService()
 scanner = MalwareScanner()
 report_builder = SecurityReportBuilder()
-tracker_intel = TrackerIntel(extra_domains_path=settings.tracker_domain_list_path)
+tracker_intel = TrackerIntel(
+    extra_domains_path=settings.tracker_domain_list_path,
+    feed_cache_path=settings.tracker_feed_cache_path,
+    feed_urls=settings.tracker_feed_urls,
+)
 automation = AutomationSupervisor(
     vault=vault,
     proxy=proxy,
@@ -186,6 +190,10 @@ class PromoteIPPayload(BaseModel):
     reason: str = "confirmed attacker - permanent block"
 
 
+class RefreshTrackerFeedsPayload(BaseModel):
+    urls: list[str] | None = None
+
+
 @app.post("/tor/request")
 async def proxy_request(payload: ProxyPayload) -> dict:
     tracker_match = tracker_intel.is_tracker_url(payload.url) if settings.tracker_block_enabled else None
@@ -234,6 +242,21 @@ async def tracker_events(max_events: int = 50) -> dict:
             if event.get("type") == "privacy.tracker_block":
                 events.append(event)
     return {"events": events}
+
+
+@app.get("/privacy/tracker-feeds/status")
+async def tracker_feed_status() -> dict:
+    return tracker_intel.feed_status()
+
+
+@app.post("/privacy/tracker-feeds/refresh")
+async def tracker_feed_refresh(payload: RefreshTrackerFeedsPayload | None = None) -> dict:
+    try:
+        return tracker_intel.refresh_feed_cache(payload.urls if payload else None)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Tracker feed refresh failed: {exc}") from exc
 
 
 @app.get("/network/blocked-ips")

@@ -103,6 +103,28 @@ SECURITY_GATEWAY_TRACKER_BLOCK_ENABLED=false
 ```
 SECURITY_GATEWAY_TRACKER_DOMAIN_LIST_PATH=C:\path\to\tracker-domains.json
 ```
+- Tracker feed refresh is explicit and local-cache based. Runtime blocking reads only the cached domains file.
+- Default feed sources are:
+  - Disconnect tracking protection
+  - AdGuard first-party tracking servers
+  - EasyPrivacy
+- Refresh feeds with:
+```
+security-gateway tracker-feed-refresh
+security-gateway tracker-feed-refresh --url https://example.com/custom-tracker-list.txt
+security-gateway tracker-feed-status
+```
+- API support:
+  - `GET /privacy/tracker-feeds/status`
+  - `POST /privacy/tracker-feeds/refresh`
+- Feed cache path:
+```
+SECURITY_GATEWAY_TRACKER_FEED_CACHE_PATH=logs/tracker_feed_domains.json
+```
+- Override default feed URLs with:
+```
+SECURITY_GATEWAY_TRACKER_FEED_URLS=["https://example.com/list1.txt","https://example.com/list2.json"]
+```
 
 ## Quiet operation defaults
 - Desktop toast alerts are disabled by default.

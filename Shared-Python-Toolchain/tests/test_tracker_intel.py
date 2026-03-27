@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 from security_gateway.tracker_intel import TrackerIntel
 
 
@@ -61,3 +64,68 @@ def test_plain_ingest_endpoint_without_tracking_signals_is_not_flagged() -> None
     match = intel.is_tracker_url("https://api.example.com/ingest?job_id=42")
 
     assert match is None
+
+
+class _FakeResponse:
+    def __init__(self, payload: str):
+        self.payload = payload
+
+    def read(self) -> bytes:
+        return self.payload.encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return None
+
+
+def test_refresh_feed_cache_parses_json_and_filter_lists(monkeypatch, tmp_path: Path) -> None:
+    cache_path = tmp_path / "tracker-feeds.json"
+    intel = TrackerIntel(feed_cache_path=cache_path, feed_urls=["https://feed.local/one", "https://feed.local/two"])
+
+    payloads = {
+        "https://feed.local/one": json.dumps(
+            {
+                "Advertising": {
+                    "Example Tracker": {
+                        "properties": ["track.example.com", "pixel.example.net"]
+                    }
+                }
+            }
+        ),
+        "https://feed.local/two": "||metrics.example.org^\n0.0.0.0 beacon.example.io\n! comment\n",
+    }
+
+    monkeypatch.setattr(
+        "security_gateway.tracker_intel.urlopen",
+        lambda url, timeout=20.0: _FakeResponse(payloads[url]),
+    )
+
+    result = intel.refresh_feed_cache()
+
+    assert result["domain_count"] == 4
+    assert cache_path.exists()
+    assert intel.is_tracker_hostname("www.metrics.example.org") is not None
+    assert intel.is_tracker_hostname("track.example.com") is not None
+    assert intel.feed_status()["domain_count"] == 4
+
+
+def test_feed_cache_domains_report_feed_source(tmp_path: Path) -> None:
+    cache_path = tmp_path / "tracker-feeds.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "updated_at": "2026-03-27T12:00:00+00:00",
+                "sources": [{"url": "https://feed.local/one", "domain_count": 1}],
+                "domains": ["feedtracker.example"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    intel = TrackerIntel(feed_cache_path=cache_path)
+
+    match = intel.is_tracker_hostname("cdn.feedtracker.example")
+
+    assert match is not None
+    assert match.source == "feed"

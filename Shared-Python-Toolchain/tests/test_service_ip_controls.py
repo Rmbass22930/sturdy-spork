@@ -241,3 +241,29 @@ def test_proxy_request_blocks_tracker_like_urls(monkeypatch, tmp_path):
     tracker_events = [data for event, data in audit.events if event == "privacy.tracker_block"]
     assert tracker_events
     assert tracker_events[0]["source"] == "heuristic"
+
+
+def test_tracker_feed_status_and_refresh_api(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+
+    class DummyTrackerIntel:
+        def feed_status(self):
+            return {"cache_path": str(tmp_path / "tracker-feeds.json"), "domain_count": 0, "sources": []}
+
+        def refresh_feed_cache(self, urls=None):
+            return {
+                "cache_path": str(tmp_path / "tracker-feeds.json"),
+                "domain_count": 25,
+                "sources": [{"url": "https://feed.local/example", "domain_count": 25}],
+            }
+
+    monkeypatch.setattr(service, "tracker_intel", DummyTrackerIntel())
+
+    with TestClient(service.app) as client:
+        status = client.get("/privacy/tracker-feeds/status")
+        assert status.status_code == 200
+        assert status.json()["domain_count"] == 0
+
+        refreshed = client.post("/privacy/tracker-feeds/refresh", json={"urls": ["https://feed.local/example"]})
+        assert refreshed.status_code == 200
+        assert refreshed.json()["domain_count"] == 25

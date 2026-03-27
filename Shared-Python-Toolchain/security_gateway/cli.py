@@ -25,6 +25,7 @@ from security_gateway.policy import PolicyEngine
 from security_gateway.report_browser import run_report_browser
 from security_gateway.reports import SecurityReportBuilder
 from security_gateway.state import dns_security_cache
+from security_gateway.tracker_intel import TrackerIntel
 from security_gateway.tor import OutboundProxy
 from security_gateway.threat_response import ThreatResponseCoordinator
 
@@ -39,6 +40,11 @@ resolver = SecureDNSResolver()
 proxy = OutboundProxy()
 scanner = MalwareScanner()
 report_builder = SecurityReportBuilder()
+tracker_intel = TrackerIntel(
+    extra_domains_path=settings.tracker_domain_list_path,
+    feed_cache_path=settings.tracker_feed_cache_path,
+    feed_urls=settings.tracker_feed_urls,
+)
 
 
 @app.command()
@@ -218,6 +224,23 @@ def report_open(
 @app.command("report-browser")
 def report_browser() -> None:
     run_report_browser(report_builder)
+
+
+@app.command("tracker-feed-status")
+def tracker_feed_status() -> None:
+    print(tracker_intel.feed_status())
+
+
+@app.command("tracker-feed-refresh")
+def tracker_feed_refresh(
+    url: list[str] | None = typer.Option(None, "--url", help="Override tracker feed URLs for this refresh run"),
+) -> None:
+    try:
+        result = tracker_intel.refresh_feed_cache(url)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    print({"status": "refreshed", **result})
 
 
 def launch() -> None:

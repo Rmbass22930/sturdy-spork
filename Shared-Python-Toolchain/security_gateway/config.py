@@ -51,6 +51,14 @@ class Settings(BaseSettings):
     auto_block_duration_minutes: int = 30
     tracker_block_enabled: bool = True
     tracker_domain_list_path: Optional[str] = None
+    tracker_feed_urls: List[str] = Field(
+        default_factory=lambda: [
+            "https://raw.githubusercontent.com/disconnectme/disconnect-tracking-protection/master/services.json",
+            "https://raw.githubusercontent.com/AdguardTeam/AdguardFilters/master/SpywareFilter/sections/tracking_servers_firstparty.txt",
+            "https://raw.githubusercontent.com/easylist/easylist/master/easyprivacy/easyprivacy_general.txt",
+        ]
+    )
+    tracker_feed_cache_path: str = Field("logs/tracker_feed_domains.json")
     traceroute_require_confirmation: bool = False
     traceroute_show_popup_results: bool = False
     traceroute_preview_lines: int = 6
