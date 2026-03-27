@@ -37,6 +37,7 @@ security-gateway report-pdf
 security-gateway report-list
 security-gateway report-open
 security-gateway report-open security-summary-20260327-120000.pdf --print
+security-gateway report-browser
 security-gateway scan suspicious.bin
 security-gateway automation-run
 security-gateway mfa-register-webauthn user-123 cred-abc BASE64PUBLICKEY==
@@ -96,6 +97,8 @@ SECURITY_GATEWAY_TRACEROUTE_SHOW_POPUP_RESULTS=true
 - The installer now creates that reports directory as part of setup.
 - Use `security-gateway report-pdf` to generate a PDF, `security-gateway report-list` to see saved reports, and `security-gateway report-open [name]` to view the newest or named report.
 - Add `--print` to `report-open` to send the report to the default printer.
+- Use `security-gateway report-browser` for the built-in report browser with `Generate New`, `Open`, and `Print`.
+- In the packaged build, launching `SecurityGateway.exe` with no arguments opens the report browser by default.
 - API support:
   - `GET /reports` lists saved PDFs
   - `GET /reports/security-summary.pdf` generates a current summary PDF

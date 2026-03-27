@@ -22,6 +22,42 @@ class SecurityReportBuilder:
 
     def build_summary_pdf(self, *, title: str = "Security Gateway Summary Report", max_events: int = 25) -> bytes:
         summary = self.collect_summary(max_events=max_events)
+        return self.build_summary_pdf_from_summary(summary, title=title)
+
+    def collect_summary(self, *, max_events: int = 25) -> dict[str, Any]:
+        blocked_ips = self.ip_blocklist.list_entries()
+        recent_events = self._load_recent_events(max_events=max_events)
+        return {
+            "blocked_ips": [
+                {
+                    "ip": entry.ip,
+                    "blocked_at": entry.blocked_at,
+                    "blocked_by": entry.blocked_by,
+                    "expires_at": entry.expires_at,
+                    "reason": entry.reason,
+                }
+                for entry in blocked_ips
+            ],
+            "potential_blocked_ips": self._collect_potential_blocks(recent_events, blocked_ips),
+            "recent_events": recent_events,
+        }
+
+    def write_summary_pdf(self, output_path: str | Path | None = None, *, max_events: int = 25) -> Path:
+        output_dir = self.get_output_dir()
+        output_dir.mkdir(parents=True, exist_ok=True)
+        target = Path(output_path) if output_path else output_dir / f"security-summary-{datetime.now():%Y%m%d-%H%M%S}.pdf"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        summary = self.collect_summary(max_events=max_events)
+        target.write_bytes(self.build_summary_pdf_from_summary(summary))
+        self._write_report_metadata(target, summary)
+        return target
+
+    def build_summary_pdf_from_summary(
+        self,
+        summary: dict[str, Any],
+        *,
+        title: str = "Security Gateway Summary Report",
+    ) -> bytes:
         buffer = io.BytesIO()
         pdf = canvas.Canvas(buffer, pagesize=letter)
         _, height = letter
@@ -93,32 +129,6 @@ class SecurityReportBuilder:
         pdf.save()
         return buffer.getvalue()
 
-    def collect_summary(self, *, max_events: int = 25) -> dict[str, Any]:
-        blocked_ips = self.ip_blocklist.list_entries()
-        recent_events = self._load_recent_events(max_events=max_events)
-        return {
-            "blocked_ips": [
-                {
-                    "ip": entry.ip,
-                    "blocked_at": entry.blocked_at,
-                    "blocked_by": entry.blocked_by,
-                    "expires_at": entry.expires_at,
-                    "reason": entry.reason,
-                }
-                for entry in blocked_ips
-            ],
-            "potential_blocked_ips": self._collect_potential_blocks(recent_events, blocked_ips),
-            "recent_events": recent_events,
-        }
-
-    def write_summary_pdf(self, output_path: str | Path | None = None, *, max_events: int = 25) -> Path:
-        output_dir = self.get_output_dir()
-        output_dir.mkdir(parents=True, exist_ok=True)
-        target = Path(output_path) if output_path else output_dir / f"security-summary-{datetime.now():%Y%m%d-%H%M%S}.pdf"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(self.build_summary_pdf(max_events=max_events))
-        return target
-
     def get_output_dir(self) -> Path:
         return Path(settings.report_output_dir)
 
@@ -129,12 +139,16 @@ class SecurityReportBuilder:
         reports: list[dict[str, Any]] = []
         for path in sorted(output_dir.glob("*.pdf"), key=lambda item: item.stat().st_mtime, reverse=True):
             stat = path.stat()
+            metadata = self._read_report_metadata(path)
             reports.append(
                 {
                     "name": path.name,
                     "path": str(path),
                     "size": stat.st_size,
                     "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
+                    "blocked_ip_count": metadata.get("blocked_ip_count"),
+                    "potential_blocked_ip_count": metadata.get("potential_blocked_ip_count"),
+                    "generated_at": metadata.get("generated_at"),
                 }
             )
         return reports
@@ -154,6 +168,28 @@ class SecurityReportBuilder:
         target = self.resolve_saved_report(report_name)
         os.startfile(target, action)  # type: ignore[attr-defined]
         return target
+
+    def _metadata_path_for_report(self, report_path: Path) -> Path:
+        return report_path.with_suffix(".json")
+
+    def _write_report_metadata(self, report_path: Path, summary: dict[str, Any]) -> None:
+        metadata = {
+            "name": report_path.name,
+            "generated_at": datetime.now(UTC).isoformat(),
+            "blocked_ip_count": len(summary["blocked_ips"]),
+            "potential_blocked_ip_count": len(summary["potential_blocked_ips"]),
+        }
+        self._metadata_path_for_report(report_path).write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+
+    def _read_report_metadata(self, report_path: Path) -> dict[str, Any]:
+        metadata_path = self._metadata_path_for_report(report_path)
+        if not metadata_path.exists():
+            return {}
+        try:
+            payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {}
+        return payload if isinstance(payload, dict) else {}
 
     def _load_recent_events(self, *, max_events: int) -> List[dict[str, Any]]:
         if not self.audit_log_path.exists():

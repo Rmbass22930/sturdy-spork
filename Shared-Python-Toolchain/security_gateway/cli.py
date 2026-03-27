@@ -22,6 +22,7 @@ from security_gateway.ip_controls import IPBlocklistManager
 from security_gateway.models import AccessRequest
 from security_gateway.pam import VaultClient
 from security_gateway.policy import PolicyEngine
+from security_gateway.report_browser import run_report_browser
 from security_gateway.reports import SecurityReportBuilder
 from security_gateway.state import dns_security_cache
 from security_gateway.tor import OutboundProxy
@@ -201,5 +202,17 @@ def report_open(
     print({"status": action, "path": str(target)})
 
 
+@app.command("report-browser")
+def report_browser() -> None:
+    run_report_browser(report_builder)
+
+
+def launch() -> None:
+    if getattr(sys, "frozen", False) and len(sys.argv) == 1:
+        run_report_browser(report_builder)
+    else:
+        app()
+
+
 if __name__ == "__main__":
-    app()
+    launch()
