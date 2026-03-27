@@ -226,6 +226,27 @@ def test_install_external_dependencies_can_abort(monkeypatch) -> None:
         installer.install_external_dependencies([dep])
 
 
+def test_resolve_resource_uses_project_root_and_dist_fallback(monkeypatch, tmp_path: Path) -> None:
+    project_root = tmp_path / "Shared-Python-Toolchain"
+    installer_dir = project_root / "installer"
+    docs_dir = project_root / "docs"
+    dist_dir = project_root / "dist"
+    installer_dir.mkdir(parents=True)
+    docs_dir.mkdir()
+    dist_dir.mkdir()
+    (docs_dir / "INSTALL_GUIDE.pdf").write_text("pdf", encoding="utf-8")
+    (dist_dir / "SecurityGateway.exe").write_text("binary", encoding="utf-8")
+
+    fake_installer = installer_dir / "installer.py"
+    fake_installer.write_text("# placeholder", encoding="utf-8")
+
+    monkeypatch.delattr(installer.sys, "_MEIPASS", raising=False)
+    monkeypatch.setattr(installer, "__file__", str(fake_installer))
+
+    assert installer.resolve_resource(installer.GUIDE_RELATIVE) == docs_dir / "INSTALL_GUIDE.pdf"
+    assert installer.resolve_resource(installer.RESOURCE_RELATIVE) == dist_dir / "SecurityGateway.exe"
+
+
 def test_main_uses_console_flow_when_not_frozen(monkeypatch) -> None:
     args = installer.parse_args([])
     perform_calls = []

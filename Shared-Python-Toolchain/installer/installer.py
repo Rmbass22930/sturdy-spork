@@ -339,11 +339,18 @@ def ensure_admin() -> None:
 
 
 def resolve_resource(rel_path: Path) -> Path:
-    base = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
-    resource = base / rel_path
-    if not resource.exists():
-        raise FileNotFoundError(f"Embedded resource missing: {resource}")
-    return resource
+    if hasattr(sys, "_MEIPASS"):
+        base = Path(getattr(sys, "_MEIPASS"))
+        candidates = [base / rel_path]
+    else:
+        project_root = Path(__file__).resolve().parents[1]
+        candidates = [project_root / rel_path]
+        if rel_path == RESOURCE_RELATIVE:
+            candidates.append(project_root / "dist" / "SecurityGateway.exe")
+    for resource in candidates:
+        if resource.exists():
+            return resource
+    raise FileNotFoundError(f"Embedded resource missing: {candidates[0]}")
 
 
 def resolve_optional_resource(rel_path: Path) -> Optional[Path]:
