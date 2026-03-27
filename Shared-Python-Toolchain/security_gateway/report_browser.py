@@ -12,12 +12,20 @@ except Exception:  # pragma: no cover
     messagebox = None
 
 from .reports import ReportFilters, SecurityReportBuilder
+from .tracker_intel import TrackerIntel
+from .config import settings
 
 class ReportBrowser:
     def __init__(self, builder: SecurityReportBuilder | None = None):
         if tk is None or ttk is None or messagebox is None:
             raise RuntimeError("Tk report browser is unavailable on this machine.")
         self.builder = builder or SecurityReportBuilder()
+        self.tracker_intel = TrackerIntel(
+            extra_domains_path=settings.tracker_domain_list_path,
+            feed_cache_path=settings.tracker_feed_cache_path,
+            feed_urls=settings.tracker_feed_urls,
+            stale_after_hours=settings.tracker_feed_stale_hours,
+        )
         self.root = tk.Tk()
         self.root.title("Security Gateway Reports")
         self.root.geometry("1180x720")
@@ -35,8 +43,10 @@ class ReportBrowser:
         ttk.Label(header, text="Security Gateway Reports", font=("Segoe UI", 18, "bold")).grid(row=0, column=0, sticky="w")
         self.path_var = tk.StringVar(value=f"Reports directory: {self.builder.get_output_dir()}")
         ttk.Label(header, textvariable=self.path_var).grid(row=1, column=0, sticky="w", pady=(6, 0))
+        self.feed_status_var = tk.StringVar(value="Tracker feeds: status unavailable")
+        ttk.Label(header, textvariable=self.feed_status_var).grid(row=2, column=0, sticky="w", pady=(4, 0))
         filters = ttk.Frame(header)
-        filters.grid(row=2, column=0, sticky="w", pady=(10, 0))
+        filters.grid(row=3, column=0, sticky="w", pady=(10, 0))
         ttk.Label(filters, text="Window (hours)").grid(row=0, column=0, sticky="w")
         self.window_var = tk.StringVar(value="24")
         ttk.Combobox(
@@ -106,6 +116,7 @@ class ReportBrowser:
 
     def refresh_reports(self) -> None:
         self.path_var.set(f"Reports directory: {self.builder.get_output_dir()}")
+        self.feed_status_var.set(self._format_feed_status())
         for item in self.tree.get_children():
             self.tree.delete(item)
         reports = self.builder.list_saved_reports()
@@ -172,6 +183,27 @@ class ReportBrowser:
         if size < 1024 * 1024:
             return f"{size / 1024:.1f} KB"
         return f"{size / (1024 * 1024):.1f} MB"
+
+    def _format_feed_status(self) -> str:
+        status = self.tracker_intel.feed_status()
+        domain_count = status.get("domain_count", 0)
+        updated_at = status.get("updated_at") or "never"
+        last_result = status.get("last_refresh_result") or "unknown"
+        parts = [
+            f"Tracker feeds: {domain_count} domains",
+            f"updated={updated_at}",
+            f"last_result={last_result}",
+        ]
+        if status.get("is_stale"):
+            age_hours = status.get("age_hours")
+            if age_hours is None:
+                parts.append("stale cache")
+            else:
+                parts.append(f"stale cache ({age_hours}h old)")
+        failures = status.get("failures") or []
+        if failures:
+            parts.append(f"failures={len(failures)}")
+        return " | ".join(parts)
 
     def _current_filters(self) -> ReportFilters:
         window_text = self.window_var.get().strip().lower()

@@ -248,13 +248,22 @@ def test_tracker_feed_status_and_refresh_api(monkeypatch, tmp_path):
 
     class DummyTrackerIntel:
         def feed_status(self):
-            return {"cache_path": str(tmp_path / "tracker-feeds.json"), "domain_count": 0, "sources": []}
+            return {
+                "cache_path": str(tmp_path / "tracker-feeds.json"),
+                "domain_count": 0,
+                "sources": [],
+                "is_stale": True,
+                "last_refresh_result": "failed",
+                "failures": [{"url": "https://feed.local/example", "error": "timeout"}],
+            }
 
         def refresh_feed_cache(self, urls=None):
             return {
                 "cache_path": str(tmp_path / "tracker-feeds.json"),
                 "domain_count": 25,
                 "sources": [{"url": "https://feed.local/example", "domain_count": 25}],
+                "last_refresh_result": "success",
+                "failures": [],
             }
 
     monkeypatch.setattr(service, "tracker_intel", DummyTrackerIntel())
@@ -263,7 +272,27 @@ def test_tracker_feed_status_and_refresh_api(monkeypatch, tmp_path):
         status = client.get("/privacy/tracker-feeds/status")
         assert status.status_code == 200
         assert status.json()["domain_count"] == 0
+        assert status.json()["is_stale"] is True
 
         refreshed = client.post("/privacy/tracker-feeds/refresh", json={"urls": ["https://feed.local/example"]})
         assert refreshed.status_code == 200
         assert refreshed.json()["domain_count"] == 25
+
+
+def test_tracker_feed_refresh_api_returns_502_on_failure(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+
+    class FailingTrackerIntel:
+        def feed_status(self):
+            return {"cache_path": str(tmp_path / "tracker-feeds.json"), "domain_count": 0, "sources": []}
+
+        def refresh_feed_cache(self, urls=None):
+            raise RuntimeError("upstream timeout")
+
+    monkeypatch.setattr(service, "tracker_intel", FailingTrackerIntel())
+
+    with TestClient(service.app) as client:
+        refreshed = client.post("/privacy/tracker-feeds/refresh", json={"urls": ["https://feed.local/example"]})
+
+    assert refreshed.status_code == 502
+    assert "upstream timeout" in refreshed.json()["detail"]

@@ -117,9 +117,19 @@ security-gateway tracker-feed-status
 - API support:
   - `GET /privacy/tracker-feeds/status`
   - `POST /privacy/tracker-feeds/refresh`
+- Status reports include:
+  - last successful update time
+  - last refresh attempt result
+  - per-source counts
+  - failure details from the most recent refresh
+  - stale-cache detection
 - Feed cache path:
 ```
 SECURITY_GATEWAY_TRACKER_FEED_CACHE_PATH=logs/tracker_feed_domains.json
+```
+- Mark the cache stale after this many hours:
+```
+SECURITY_GATEWAY_TRACKER_FEED_STALE_HOURS=168
 ```
 - Override default feed URLs with:
 ```

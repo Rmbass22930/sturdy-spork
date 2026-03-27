@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from datetime import UTC, datetime, timedelta
 
 from security_gateway.tracker_intel import TrackerIntel
 
@@ -129,3 +130,50 @@ def test_feed_cache_domains_report_feed_source(tmp_path: Path) -> None:
 
     assert match is not None
     assert match.source == "feed"
+
+
+def test_feed_status_reports_stale_cache(tmp_path: Path) -> None:
+    cache_path = tmp_path / "tracker-feeds.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "updated_at": (datetime.now(UTC) - timedelta(hours=200)).isoformat(),
+                "last_refresh_attempted_at": (datetime.now(UTC) - timedelta(hours=10)).isoformat(),
+                "last_refresh_result": "success",
+                "last_error": None,
+                "failures": [],
+                "sources": [{"url": "https://feed.local/one", "domain_count": 1}],
+                "domains": ["feedtracker.example"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    intel = TrackerIntel(feed_cache_path=cache_path, stale_after_hours=168)
+
+    status = intel.feed_status()
+
+    assert status["is_stale"] is True
+    assert status["age_hours"] is not None
+    assert status["last_refresh_result"] == "success"
+
+
+def test_failed_feed_refresh_records_failure_details(monkeypatch, tmp_path: Path) -> None:
+    cache_path = tmp_path / "tracker-feeds.json"
+    intel = TrackerIntel(feed_cache_path=cache_path, feed_urls=["https://feed.local/fail"])
+
+    def _raise(url, timeout=20.0):
+        raise OSError(f"down: {url}")
+
+    monkeypatch.setattr("security_gateway.tracker_intel.urlopen", _raise)
+
+    try:
+        intel.refresh_feed_cache()
+    except RuntimeError as exc:
+        assert "down: https://feed.local/fail" in str(exc)
+    else:
+        raise AssertionError("Expected refresh_feed_cache to fail")
+
+    status = intel.feed_status()
+    assert status["last_refresh_result"] == "failed"
+    assert status["failures"]
+    assert "down: https://feed.local/fail" in status["last_error"]

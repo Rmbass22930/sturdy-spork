@@ -44,6 +44,7 @@ tracker_intel = TrackerIntel(
     extra_domains_path=settings.tracker_domain_list_path,
     feed_cache_path=settings.tracker_feed_cache_path,
     feed_urls=settings.tracker_feed_urls,
+    stale_after_hours=settings.tracker_feed_stale_hours,
 )
 
 

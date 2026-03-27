@@ -136,10 +136,12 @@ class TrackerIntel:
         *,
         feed_cache_path: str | Path | None = None,
         feed_urls: Iterable[str] | None = None,
+        stale_after_hours: float = 168.0,
     ):
         self.extra_domains_path = Path(extra_domains_path) if extra_domains_path else None
         self.feed_cache_path = Path(feed_cache_path) if feed_cache_path else None
         self.feed_urls = [str(url) for url in feed_urls] if feed_urls else []
+        self.stale_after_hours = stale_after_hours
 
     def is_tracker_hostname(self, hostname: str | None) -> Optional[TrackerMatch]:
         if not hostname:
@@ -217,12 +219,7 @@ class TrackerIntel:
         return []
 
     def _load_feed_domains(self) -> Iterable[str]:
-        if not self.feed_cache_path or not self.feed_cache_path.exists():
-            return []
-        try:
-            payload = json.loads(self.feed_cache_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            return []
+        payload = self._read_feed_cache_payload()
         if isinstance(payload, list):
             return [str(item) for item in payload]
         if isinstance(payload, dict) and isinstance(payload.get("domains"), list):
@@ -230,23 +227,41 @@ class TrackerIntel:
         return []
 
     def feed_status(self) -> dict[str, Any]:
-        if not self.feed_cache_path or not self.feed_cache_path.exists():
+        payload = self._read_feed_cache_payload()
+        if not payload:
             return {
                 "cache_path": str(self.feed_cache_path) if self.feed_cache_path else None,
                 "feed_urls": self.feed_urls,
                 "domain_count": 0,
                 "updated_at": None,
+                "last_refresh_attempted_at": None,
+                "last_refresh_result": None,
+                "last_error": None,
+                "failures": [],
+                "age_hours": None,
+                "is_stale": True,
+                "stale_after_hours": self.stale_after_hours,
                 "sources": [],
             }
-        try:
-            payload = json.loads(self.feed_cache_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            payload = {}
+        updated_at = payload.get("updated_at") if isinstance(payload, dict) else None
+        updated_dt = self._parse_timestamp(updated_at)
+        age_hours = None
+        is_stale = True
+        if updated_dt is not None:
+            age_hours = round((datetime.now(UTC) - updated_dt).total_seconds() / 3600, 2)
+            is_stale = age_hours > self.stale_after_hours
         return {
             "cache_path": str(self.feed_cache_path),
             "feed_urls": self.feed_urls,
             "domain_count": len(list(self._load_feed_domains())),
-            "updated_at": payload.get("updated_at") if isinstance(payload, dict) else None,
+            "updated_at": updated_at,
+            "last_refresh_attempted_at": payload.get("last_refresh_attempted_at") if isinstance(payload, dict) else None,
+            "last_refresh_result": payload.get("last_refresh_result") if isinstance(payload, dict) else None,
+            "last_error": payload.get("last_error") if isinstance(payload, dict) else None,
+            "failures": payload.get("failures", []) if isinstance(payload, dict) else [],
+            "age_hours": age_hours,
+            "is_stale": is_stale,
+            "stale_after_hours": self.stale_after_hours,
             "sources": payload.get("sources", []) if isinstance(payload, dict) else [],
         }
 
@@ -257,27 +272,67 @@ class TrackerIntel:
 
         domains: set[str] = set()
         source_summaries: list[dict[str, Any]] = []
+        failures: list[dict[str, str]] = []
+        refresh_time = datetime.now(UTC).isoformat()
         for url in active_urls:
-            with urlopen(url, timeout=timeout) as response:  # noqa: S310
-                payload = response.read().decode("utf-8", errors="replace")
-            parsed = self._parse_feed_payload(payload, source_url=url)
-            domains.update(parsed)
-            source_summaries.append({"url": url, "domain_count": len(parsed)})
+            try:
+                with urlopen(url, timeout=timeout) as response:  # noqa: S310
+                    payload = response.read().decode("utf-8", errors="replace")
+                parsed = self._parse_feed_payload(payload, source_url=url)
+                domains.update(parsed)
+                source_summaries.append({"url": url, "domain_count": len(parsed)})
+            except Exception as exc:  # noqa: BLE001
+                failures.append({"url": url, "error": str(exc)})
 
         if not self.feed_cache_path:
             raise ValueError("Tracker feed cache path is not configured.")
         self.feed_cache_path.parent.mkdir(parents=True, exist_ok=True)
+        existing_payload = self._read_feed_cache_payload()
+        if not source_summaries:
+            failed_payload = dict(existing_payload) if isinstance(existing_payload, dict) else {"domains": [], "sources": []}
+            failed_payload.update(
+                {
+                    "last_refresh_attempted_at": refresh_time,
+                    "last_refresh_result": "failed",
+                    "last_error": "; ".join(f"{item['url']}: {item['error']}" for item in failures)[:2000] or "Feed refresh failed",
+                    "failures": failures,
+                }
+            )
+            self._write_feed_cache_payload(failed_payload)
+            raise RuntimeError(failed_payload["last_error"])
+
         payload = {
-            "updated_at": datetime.now(UTC).isoformat(),
+            "updated_at": refresh_time,
+            "last_refresh_attempted_at": refresh_time,
+            "last_refresh_result": "success" if not failures else "partial",
+            "last_error": "; ".join(f"{item['url']}: {item['error']}" for item in failures)[:2000] if failures else None,
+            "failures": failures,
             "sources": source_summaries,
             "domains": sorted(domains),
         }
-        self.feed_cache_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        return {
+        self._write_feed_cache_payload(payload)
+        result = {
             "cache_path": str(self.feed_cache_path),
             "domain_count": len(domains),
             "sources": source_summaries,
+            "last_refresh_result": payload["last_refresh_result"],
+            "last_error": payload["last_error"],
+            "failures": failures,
         }
+        return result
+
+    def _read_feed_cache_payload(self) -> dict[str, Any] | list[Any] | None:
+        if not self.feed_cache_path or not self.feed_cache_path.exists():
+            return None
+        try:
+            return json.loads(self.feed_cache_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return None
+
+    def _write_feed_cache_payload(self, payload: dict[str, Any]) -> None:
+        if not self.feed_cache_path:
+            raise ValueError("Tracker feed cache path is not configured.")
+        self.feed_cache_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     def _parse_feed_payload(self, payload: str, *, source_url: str = "") -> set[str]:
         stripped = payload.lstrip()
@@ -323,6 +378,17 @@ class TrackerIntel:
                     candidate = candidate[4:]
                 domains.add(candidate)
         return domains
+
+    def _parse_timestamp(self, value: Any) -> datetime | None:
+        if not value or not isinstance(value, str):
+            return None
+        try:
+            timestamp = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        if timestamp.tzinfo is None:
+            return timestamp.replace(tzinfo=UTC)
+        return timestamp.astimezone(UTC)
 
     def _heuristic_score(self, hostname: str, *, path: str, query_keys: list[str]) -> tuple[int, list[str]]:
         score = 0

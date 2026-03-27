@@ -59,6 +59,7 @@ class Settings(BaseSettings):
         ]
     )
     tracker_feed_cache_path: str = Field("logs/tracker_feed_domains.json")
+    tracker_feed_stale_hours: float = 168.0
     traceroute_require_confirmation: bool = False
     traceroute_show_popup_results: bool = False
     traceroute_preview_lines: int = 6
