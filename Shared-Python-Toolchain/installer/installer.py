@@ -128,6 +128,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--payload-sha256", help="Expected SHA256 for payload download")
     parser.add_argument("--guide-url", help="Override install guide download URL")
     parser.add_argument("--dependency-manifest", help="Path or URL to dependency manifest JSON")
+    parser.add_argument("--skip-dependencies", action="store_true", help="Skip prerequisite dependency installation")
     return parser.parse_args(argv)
 
 
@@ -285,9 +286,8 @@ try {{
     foreach ($ShortcutPath in @({shortcut_path_block})) {{
         if (Test-Path $ShortcutPath) {{ Remove-Item $ShortcutPath -Force }}
     }}
-    if (-not (Restore-PathFromBackup -File $PathBackupFile)) {{
-        Remove-PathEntry -Dir $InstallDir
-    }}
+    $restored = Restore-PathFromBackup -File $PathBackupFile
+    Remove-PathEntry -Dir $InstallDir
     Remove-AutomationTask -Name $TaskName
     foreach ($target in @($InstallDir, $SystemDataPath, $UserDataPath)) {{
         if (Test-Path $target) {{
@@ -360,10 +360,11 @@ def show_install_guide(override_url: Optional[str] = None) -> None:
         except Exception as explorer_exc:  # pragma: no cover
             print(f"Also failed to open File Explorer: {explorer_exc}")
         print("If you do not have a PDF reader installed, install one (e.g., Edge, Acrobat) and open the guide manually.")
-    prompt = "Review the installation guide (opened automatically or manually), then press Enter to continue..."
-    if not opened:
-        prompt = f"{prompt}\nGuide path: {guide}"
-    input(prompt)
+    if opened:
+        print("Installation guide opened. Setup will continue immediately.")
+    else:
+        print(f"Guide path: {guide}")
+        print("Setup will continue immediately.")
 
 
 def resolve_manifest_reference(ref: Optional[str]) -> Optional[Path]:
@@ -473,14 +474,18 @@ def main(argv: Optional[list[str]] = None) -> int:
         else resolve_resource(RESOURCE_RELATIVE)
     )
 
-    manifest_ref = (
-        args.dependency_manifest
-        or os.environ.get(MANIFEST_PATH_ENV)
-        or os.environ.get(MANIFEST_URL_ENV)
-    )
-    manifest_path = resolve_manifest_reference(manifest_ref)
-    dependencies = load_dependency_manifest(manifest_path)
-    dependency_results = install_external_dependencies(dependencies)
+    dependency_results: List[DependencyInstallResult] = []
+    if args.skip_dependencies:
+        print("Skipping prerequisite dependency installation.")
+    else:
+        manifest_ref = (
+            args.dependency_manifest
+            or os.environ.get(MANIFEST_PATH_ENV)
+            or os.environ.get(MANIFEST_URL_ENV)
+        )
+        manifest_path = resolve_manifest_reference(manifest_ref)
+        dependencies = load_dependency_manifest(manifest_path)
+        dependency_results = install_external_dependencies(dependencies)
 
     transaction = InstallTransaction()
     try:

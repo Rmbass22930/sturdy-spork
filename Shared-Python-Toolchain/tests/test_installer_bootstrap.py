@@ -123,3 +123,51 @@ def test_main_wraps_rollback_failures(monkeypatch, tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="Rollback also failed"):
         installer.main([])
+
+
+def test_show_install_guide_does_not_wait_for_input(monkeypatch, tmp_path: Path, capsys) -> None:
+    guide_path = tmp_path / "INSTALL_GUIDE.pdf"
+    guide_path.write_text("pdf", encoding="utf-8")
+    monkeypatch.setattr(installer, "resolve_resource", lambda rel: guide_path)
+    monkeypatch.setattr(installer.os, "startfile", lambda path: None, raising=False)
+
+    installer.show_install_guide()
+    output = capsys.readouterr().out
+
+    assert "Setup will continue immediately." in output
+
+
+def test_main_skips_dependencies_when_requested(monkeypatch, tmp_path: Path) -> None:
+    installed_path = tmp_path / "SecurityGateway.exe"
+    backup_file = tmp_path / "user_path_backup.txt"
+    uninstall_script = tmp_path / "Uninstall-SecurityGateway.ps1"
+    installed_path.write_text("binary", encoding="utf-8")
+    uninstall_script.write_text("script", encoding="utf-8")
+    dependency_calls = []
+
+    monkeypatch.setattr(installer, "ensure_admin", lambda: None)
+    monkeypatch.setattr(installer, "show_install_guide", lambda url=None: None)
+    monkeypatch.setattr(installer, "resolve_resource", lambda rel: installed_path)
+    monkeypatch.setattr(installer, "resolve_manifest_reference", lambda ref: (_ for _ in ()).throw(AssertionError("manifest should not be resolved")))
+    monkeypatch.setattr(installer, "load_dependency_manifest", lambda path: (_ for _ in ()).throw(AssertionError("dependencies should not load")))
+    monkeypatch.setattr(installer, "install_external_dependencies", lambda deps: dependency_calls.append(deps))
+    monkeypatch.setattr(installer, "copy_binary", lambda src, dest: installed_path)
+    monkeypatch.setattr(installer, "update_user_path", lambda path: "C:\\Existing\\Path")
+    monkeypatch.setattr(installer, "create_shortcut", lambda path: [tmp_path / "Desktop" / "SecurityGateway.lnk"])
+    monkeypatch.setattr(installer, "register_automation_task", lambda path: None)
+    monkeypatch.setattr(installer, "write_uninstall_script", lambda path, backup: uninstall_script)
+
+    result = installer.main(["--skip-dependencies"])
+
+    assert result == 0
+    assert dependency_calls == []
+
+
+def test_uninstall_script_always_removes_path_entry(tmp_path: Path) -> None:
+    installed_path = tmp_path / "SecurityGateway.exe"
+    backup_file = tmp_path / "user_path_backup.txt"
+    script_path = installer.write_uninstall_script(installed_path, backup_file)
+    script = script_path.read_text(encoding="utf-8")
+
+    assert "$restored = Restore-PathFromBackup -File $PathBackupFile" in script
+    assert "Remove-PathEntry -Dir $InstallDir" in script
