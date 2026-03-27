@@ -103,12 +103,16 @@ class PolicyEngine:
             reasons.append("DNSSEC validation failed for resource")
 
         trace_details: TraceRouteResult | None = None
-        if score >= settings.max_risk_score and request.source_ip:
+        if (
+            score >= settings.max_risk_score
+            and request.source_ip
+            and self._should_trace_real_threat(request, dns_secure=dns_secure)
+        ):
             trace_context = f"resource={request.resource or 'unknown'}, score={score:.1f}"
             trace_details = self.traceroute_runner.trace(request.source_ip, context=trace_context)
 
         if score >= settings.max_risk_score:
-            context = {"risk_score": score, "reasons": reasons}
+            context = {"risk_score": score, "reasons": reasons, "source_ip": request.source_ip}
             if trace_details:
                 context["traceroute"] = {
                     "target": trace_details.target,
@@ -141,7 +145,7 @@ class PolicyEngine:
                         level=AlertLevel.warning,
                         title="Step-up MFA triggered",
                         message=f"User {request.user.user_id} requires MFA for {request.resource}",
-                        context={"risk_score": score},
+                        context={"risk_score": score, "source_ip": request.source_ip},
                     )
                 )
                 return AccessDecision(
@@ -164,3 +168,19 @@ class PolicyEngine:
             self.threat_responder.trigger_rotation("threat_signal", peak_signal, metadata)
         elif score >= settings.threat_rotation_risk_threshold:
             self.threat_responder.trigger_rotation("risk_score", score, metadata)
+
+    def _should_trace_real_threat(self, request: AccessRequest, dns_secure: Optional[bool]) -> bool:
+        corroborating_signals = 0
+        if request.device.compliance == DeviceCompliance.compromised:
+            corroborating_signals += 1
+        if not request.device.is_encrypted:
+            corroborating_signals += 1
+        if not request.device.edr_active:
+            corroborating_signals += 1
+        if request.privilege_level == "privileged":
+            corroborating_signals += 1
+        if dns_secure is False:
+            corroborating_signals += 1
+        if any(value >= settings.threat_rotation_signal_threshold for value in request.threat_signals.values()):
+            corroborating_signals += 1
+        return corroborating_signals >= 2

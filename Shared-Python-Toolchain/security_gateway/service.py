@@ -56,7 +56,22 @@ app = FastAPI(title="Security Gateway", version="0.1.0", lifespan=lifespan)
 async def evaluate_access(access_request: AccessRequest, http_request: Request) -> AccessDecision:
     if not access_request.source_ip and http_request.client:
         access_request.source_ip = http_request.client.host
-    return policy_engine.evaluate(access_request)
+    decision = policy_engine.evaluate(access_request)
+    audit_logger.log(
+        "access.evaluate",
+        {
+            "user_id": access_request.user.user_id,
+            "resource": access_request.resource,
+            "privilege_level": access_request.privilege_level,
+            "source_ip": access_request.source_ip,
+            "dns_secure": access_request.dns_secure,
+            "threat_signals": access_request.threat_signals,
+            "decision": decision.decision.value,
+            "risk_score": decision.risk_score,
+            "reasons": decision.reasons,
+        },
+    )
+    return decision
 
 
 class SecretPayload(BaseModel):

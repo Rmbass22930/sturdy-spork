@@ -112,3 +112,46 @@ def test_risk_threshold_triggers_rotation_without_signal():
     engine.evaluate(request)
     assert responder.calls
     assert responder.calls[0]["source"] == "risk_score"
+
+
+class DummyTraceRunner:
+    def __init__(self):
+        self.calls = []
+
+    def trace(self, target, context=None):
+        self.calls.append({"target": target, "context": context})
+        return None
+
+
+def test_traceroute_runs_only_for_corroborated_real_threat():
+    trace_runner = DummyTraceRunner()
+    engine = PolicyEngine(traceroute_runner=trace_runner)
+    request = _base_request(privilege="privileged")
+    request.source_ip = "203.0.113.10"
+    request.device.compliance = DeviceCompliance.compromised
+    request.device.is_encrypted = False
+    request.device.edr_active = False
+    request.dns_secure = False
+
+    decision = engine.evaluate(request)
+
+    assert decision.decision == Decision.deny
+    assert len(trace_runner.calls) == 1
+    assert trace_runner.calls[0]["target"] == "203.0.113.10"
+
+
+def test_traceroute_does_not_run_on_uncorroborated_high_score():
+    trace_runner = DummyTraceRunner()
+    engine = PolicyEngine(traceroute_runner=trace_runner)
+    request = _base_request()
+    request.source_ip = "203.0.113.11"
+
+    class FixedRisk:
+        def score(self, request, dns_secure=None):
+            return settings.max_risk_score
+
+    engine.risk_calculator = FixedRisk()
+    decision = engine.evaluate(request)
+
+    assert decision.decision == Decision.deny
+    assert trace_runner.calls == []
