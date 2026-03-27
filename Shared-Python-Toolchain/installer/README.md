@@ -39,3 +39,14 @@ Example entry (see the default `dependencies.json`):
 ```
 
 During setup the installer ensures each dependency is installed (using `winget` when possible, otherwise downloading the installer and executing it). This makes it easy to keep VPN clients, Tor, or other prerequisites updated automatically.
+
+If a dependency install fails or times out, the installer now prompts to:
+- retry the dependency
+- continue without that dependency
+- abort setup
+
+For smoke tests or recovery installs, you can bypass dependency installation entirely with:
+
+```powershell
+SecurityGatewayInstaller.exe --skip-dependencies
+```

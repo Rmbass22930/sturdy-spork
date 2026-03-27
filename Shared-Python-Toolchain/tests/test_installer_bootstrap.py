@@ -73,13 +73,14 @@ def test_install_dependency_reports_winget_method(monkeypatch) -> None:
     monkeypatch.setattr(installer.shutil, "which", lambda name: "C:\\Windows\\System32\\winget.exe")
     calls = []
 
-    def fake_run(args, check):
-        calls.append((args, check))
+    def fake_run(args, check, timeout=None):
+        calls.append((args, check, timeout))
 
     monkeypatch.setattr(installer.subprocess, "run", fake_run)
     result = installer.install_dependency(dep)
 
     assert result.name == "Cloudflare WARP"
+    assert result.status == "installed"
     assert result.method == "winget"
     assert result.target == "Cloudflare.WARP"
     assert calls
@@ -94,7 +95,12 @@ def test_print_install_summary_lists_shortcuts_and_dependencies(capsys, tmp_path
         ],
         uninstall_script=tmp_path / "Uninstall-SecurityGateway.ps1",
         dependency_results=[
-            installer.DependencyInstallResult(name="Cloudflare WARP", method="winget", target="Cloudflare.WARP")
+            installer.DependencyInstallResult(
+                name="Cloudflare WARP",
+                status="installed",
+                method="winget",
+                target="Cloudflare.WARP",
+            )
         ],
     )
 
@@ -103,7 +109,7 @@ def test_print_install_summary_lists_shortcuts_and_dependencies(capsys, tmp_path
 
     assert "Install complete:" in output
     assert "Desktop shortcuts:" in output
-    assert "Cloudflare WARP: winget (Cloudflare.WARP)" in output
+    assert "Cloudflare WARP: installed via winget (Cloudflare.WARP)" in output
 
 
 def test_main_wraps_rollback_failures(monkeypatch, tmp_path: Path) -> None:
@@ -171,3 +177,50 @@ def test_uninstall_script_always_removes_path_entry(tmp_path: Path) -> None:
 
     assert "$restored = Restore-PathFromBackup -File $PathBackupFile" in script
     assert "Remove-PathEntry -Dir $InstallDir" in script
+
+
+def test_install_external_dependencies_can_skip_on_failure(monkeypatch) -> None:
+    dep = installer.ExternalDependency(name="Cloudflare WARP", winget_id="Cloudflare.WARP")
+    monkeypatch.setattr(installer, "install_dependency", lambda dependency: (_ for _ in ()).throw(RuntimeError("winget timed out")))
+    monkeypatch.setattr(installer, "prompt_dependency_failure", lambda dependency, message: "skip")
+
+    results = installer.install_external_dependencies([dep])
+
+    assert len(results) == 1
+    assert results[0].status == "skipped"
+    assert results[0].name == "Cloudflare WARP"
+    assert "winget timed out" in (results[0].detail or "")
+
+
+def test_install_external_dependencies_retries_before_success(monkeypatch) -> None:
+    dep = installer.ExternalDependency(name="Cloudflare WARP", winget_id="Cloudflare.WARP")
+    calls = {"count": 0}
+
+    def fake_install(dependency):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("first failure")
+        return installer.DependencyInstallResult(
+            name=dependency.name,
+            status="installed",
+            method="winget",
+            target=dependency.winget_id,
+        )
+
+    monkeypatch.setattr(installer, "install_dependency", fake_install)
+    monkeypatch.setattr(installer, "prompt_dependency_failure", lambda dependency, message: "retry")
+
+    results = installer.install_external_dependencies([dep])
+
+    assert calls["count"] == 2
+    assert len(results) == 1
+    assert results[0].status == "installed"
+
+
+def test_install_external_dependencies_can_abort(monkeypatch) -> None:
+    dep = installer.ExternalDependency(name="Cloudflare WARP", winget_id="Cloudflare.WARP")
+    monkeypatch.setattr(installer, "install_dependency", lambda dependency: (_ for _ in ()).throw(RuntimeError("winget timed out")))
+    monkeypatch.setattr(installer, "prompt_dependency_failure", lambda dependency, message: "abort")
+
+    with pytest.raises(RuntimeError, match="Dependency installation aborted"):
+        installer.install_external_dependencies([dep])

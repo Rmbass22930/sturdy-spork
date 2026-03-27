@@ -30,6 +30,7 @@ PAYLOAD_SHA_ENV = "SECURITY_GATEWAY_PAYLOAD_SHA256"
 GUIDE_URL_ENV = "SECURITY_GATEWAY_GUIDE_URL"
 MANIFEST_PATH_ENV = "SECURITY_GATEWAY_DEPENDENCY_MANIFEST"
 MANIFEST_URL_ENV = "SECURITY_GATEWAY_DEPENDENCY_MANIFEST_URL"
+DEFAULT_DEPENDENCY_TIMEOUT_SECONDS = 300
 
 
 @dataclass
@@ -42,6 +43,7 @@ class ExternalDependency:
     copy_to: Optional[str] = None
     winget_id: Optional[str] = None
     winget_args: Optional[List[str]] = None
+    timeout_seconds: Optional[int] = None
 
 
 @dataclass
@@ -57,8 +59,10 @@ class InstallTransaction:
 @dataclass
 class DependencyInstallResult:
     name: str
+    status: str
     method: str
     target: Optional[str] = None
+    detail: Optional[str] = None
 
 
 @dataclass
@@ -99,13 +103,18 @@ def resolve_optional_resource(rel_path: Path) -> Optional[Path]:
     return resource
 
 
-def download_file(url: str, description: str, expected_sha256: Optional[str] = None) -> Path:
+def download_file(
+    url: str,
+    description: str,
+    expected_sha256: Optional[str] = None,
+    timeout_seconds: int = DEFAULT_DEPENDENCY_TIMEOUT_SECONDS,
+) -> Path:
     parsed = urllib.parse.urlparse(url)
     filename = Path(parsed.path).name or f"{description.replace(' ', '_')}.bin"
     temp_dir = Path(tempfile.mkdtemp(prefix="sgw_dl_"))
     target = temp_dir / filename
     print(f"Downloading {description} from {url} ...")
-    with urllib.request.urlopen(url) as response, open(target, "wb") as handle:
+    with urllib.request.urlopen(url, timeout=timeout_seconds) as response, open(target, "wb") as handle:
         shutil.copyfileobj(response, handle)
     if expected_sha256:
         verify_sha256(target, expected_sha256)
@@ -394,6 +403,7 @@ def load_dependency_manifest(path: Optional[Path]) -> List[ExternalDependency]:
                 copy_to=entry.get("copy_to"),
                 winget_id=entry.get("winget_id"),
                 winget_args=entry.get("winget_args"),
+                timeout_seconds=entry.get("timeout_seconds"),
             )
         )
     return dependencies
@@ -406,11 +416,31 @@ def install_external_dependencies(dependencies: List[ExternalDependency]) -> Lis
     print(f"Installing {len(dependencies)} prerequisite program(s)...")
     for dep in dependencies:
         print(f"- Ensuring {dep.name}")
-        results.append(install_dependency(dep))
+        while True:
+            try:
+                results.append(install_dependency(dep))
+                break
+            except Exception as exc:  # noqa: BLE001
+                action = prompt_dependency_failure(dep, str(exc))
+                if action == "retry":
+                    continue
+                if action == "skip":
+                    results.append(
+                        DependencyInstallResult(
+                            name=dep.name,
+                            status="skipped",
+                            method="skipped",
+                            target=dep.winget_id or dep.download_url,
+                            detail=str(exc),
+                        )
+                    )
+                    break
+                raise RuntimeError(f"Dependency installation aborted for {dep.name}: {exc}") from exc
     return results
 
 
 def install_dependency(dep: ExternalDependency) -> DependencyInstallResult:
+    timeout_seconds = dep.timeout_seconds or DEFAULT_DEPENDENCY_TIMEOUT_SECONDS
     if dep.winget_id and shutil.which("winget"):
         cmd = [
             "winget",
@@ -424,10 +454,10 @@ def install_dependency(dep: ExternalDependency) -> DependencyInstallResult:
         ]
         if dep.winget_args:
             cmd.extend(dep.winget_args)
-        subprocess.run(cmd, check=True)
-        return DependencyInstallResult(name=dep.name, method="winget", target=dep.winget_id)
+        subprocess.run(cmd, check=True, timeout=timeout_seconds)
+        return DependencyInstallResult(name=dep.name, status="installed", method="winget", target=dep.winget_id)
     if dep.download_url:
-        target = download_file(dep.download_url, dep.name, dep.sha256)
+        target = download_file(dep.download_url, dep.name, dep.sha256, timeout_seconds=timeout_seconds)
         if dep.copy_to:
             destination = Path(dep.copy_to)
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -435,9 +465,9 @@ def install_dependency(dep: ExternalDependency) -> DependencyInstallResult:
             target = destination
         if dep.run_installer:
             args = dep.installer_args or []
-            subprocess.run([str(target), *args], check=True)
-            return DependencyInstallResult(name=dep.name, method="download+run", target=str(target))
-        return DependencyInstallResult(name=dep.name, method="download", target=str(target))
+            subprocess.run([str(target), *args], check=True, timeout=timeout_seconds)
+            return DependencyInstallResult(name=dep.name, status="installed", method="download+run", target=str(target))
+        return DependencyInstallResult(name=dep.name, status="installed", method="download", target=str(target))
     raise RuntimeError(f"No installation method available for {dep.name}")
 
 
@@ -452,11 +482,34 @@ def print_install_summary(summary: InstallSummary) -> None:
         print("- Dependencies:")
         for result in summary.dependency_results:
             target_suffix = f" ({result.target})" if result.target else ""
-            print(f"  - {result.name}: {result.method}{target_suffix}")
+            detail_suffix = f" - {result.detail}" if result.detail else ""
+            print(f"  - {result.name}: {result.status} via {result.method}{target_suffix}{detail_suffix}")
     else:
         print("- Dependencies: none")
     print(f"- Uninstall script: {summary.uninstall_script}")
     print("- PATH updated for current user. Sign out/in or restart terminal to use immediately.")
+
+
+def prompt_dependency_failure(dep: ExternalDependency, message: str) -> str:
+    text = (
+        f"Dependency installation failed for {dep.name}.\n\n"
+        f"{message}\n\n"
+        "Retry the dependency install, continue without it, or abort setup?"
+    )
+    try:
+        result = ctypes.windll.user32.MessageBoxW(  # type: ignore[attr-defined]
+            None,
+            text,
+            "SecurityGateway Installer",
+            0x00000002 | 0x00000030,
+        )
+    except Exception:  # noqa: BLE001
+        return "abort"
+    if result == 4:
+        return "retry"
+    if result == 5:
+        return "skip"
+    return "abort"
 
 
 def main(argv: Optional[list[str]] = None) -> int:
