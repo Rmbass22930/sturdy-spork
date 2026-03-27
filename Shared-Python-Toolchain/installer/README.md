@@ -9,6 +9,7 @@ Use [scripts/build-security-gateway.ps1](/J:/sturdy-spork/Shared-Python-Toolchai
 - It builds `SecurityGateway.exe` first into a staged location.
 - It passes that exact staged payload into `SecurityGatewayInstaller.spec`.
 - The installer spec now fails fast if `SECURITY_GATEWAY_PAYLOAD_PATH` is not provided.
+- The staged build is pinned to `Python 3.13`.
 
 This avoids silently embedding a stale `dist\SecurityGateway.exe`.
 

@@ -36,7 +36,7 @@ security-gateway alert-test --level warning --title \"Suspicious\" --message \"U
 
 ## Tests
 ```
-py -3.14 -m pytest
+py -3.13 -m pytest
 ```
 
 This now works directly from a normal checkout because pytest is configured to add the project root to `sys.path`.
@@ -45,6 +45,8 @@ This now works directly from a normal checkout because pytest is configured to a
 ```
 .\scripts\build-security-gateway.ps1
 ```
+
+The staged Security Gateway build is pinned to `Python 3.13`.
 
 ## HashiCorp Vault backend
 Set the following environment variables (or `.env`) to push PAM secrets into Vault KV v2:

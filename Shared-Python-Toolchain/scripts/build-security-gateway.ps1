@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$Python = "py",
-    [string[]]$PythonArgs = @("-3.14"),
+    [string[]]$PythonArgs = @("-3.13"),
     [string]$OutputRoot = "$PSScriptRoot\..\dist"
 )
 
