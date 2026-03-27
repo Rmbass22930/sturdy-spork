@@ -83,7 +83,12 @@ class _FakeResponse:
 
 def test_refresh_feed_cache_parses_json_and_filter_lists(monkeypatch, tmp_path: Path) -> None:
     cache_path = tmp_path / "tracker-feeds.json"
-    intel = TrackerIntel(feed_cache_path=cache_path, feed_urls=["https://feed.local/one", "https://feed.local/two"])
+    intel = TrackerIntel(
+        feed_cache_path=cache_path,
+        feed_urls=["https://feed.local/one", "https://feed.local/two"],
+        min_domains_per_source=1,
+        min_total_domains=1,
+    )
 
     payloads = {
         "https://feed.local/one": json.dumps(
@@ -159,7 +164,7 @@ def test_feed_status_reports_stale_cache(tmp_path: Path) -> None:
 
 def test_failed_feed_refresh_records_failure_details(monkeypatch, tmp_path: Path) -> None:
     cache_path = tmp_path / "tracker-feeds.json"
-    intel = TrackerIntel(feed_cache_path=cache_path, feed_urls=["https://feed.local/fail"])
+    intel = TrackerIntel(feed_cache_path=cache_path, feed_urls=["https://feed.local/fail"], min_total_domains=1)
 
     def _raise(url, timeout=20.0):
         raise OSError(f"down: {url}")
@@ -177,3 +182,71 @@ def test_failed_feed_refresh_records_failure_details(monkeypatch, tmp_path: Path
     assert status["last_refresh_result"] == "failed"
     assert status["failures"]
     assert "down: https://feed.local/fail" in status["last_error"]
+
+
+def test_disabled_feed_urls_are_skipped(monkeypatch, tmp_path: Path) -> None:
+    cache_path = tmp_path / "tracker-feeds.json"
+    intel = TrackerIntel(
+        feed_cache_path=cache_path,
+        feed_urls=["https://feed.local/one", "https://feed.local/two"],
+        disabled_feed_urls=["https://feed.local/two"],
+        min_domains_per_source=1,
+        min_total_domains=1,
+    )
+
+    seen_urls: list[str] = []
+
+    def _fake_urlopen(url, timeout=20.0):
+        seen_urls.append(url)
+        return _FakeResponse("||tracker.example^\n")
+
+    monkeypatch.setattr("security_gateway.tracker_intel.urlopen", _fake_urlopen)
+
+    result = intel.refresh_feed_cache()
+
+    assert result["domain_count"] == 1
+    assert seen_urls == ["https://feed.local/one"]
+    assert intel.feed_status()["active_feed_urls"] == ["https://feed.local/one"]
+
+
+def test_suspiciously_small_refresh_preserves_existing_cache(monkeypatch, tmp_path: Path) -> None:
+    cache_path = tmp_path / "tracker-feeds.json"
+    existing_domains = [f"tracker{i}.example" for i in range(20)]
+    cache_path.write_text(
+        json.dumps(
+            {
+                "updated_at": "2026-03-27T12:00:00+00:00",
+                "last_refresh_attempted_at": "2026-03-27T12:00:00+00:00",
+                "last_refresh_result": "success",
+                "last_error": None,
+                "failures": [],
+                "sources": [{"url": "https://feed.local/good", "domain_count": 20}],
+                "domains": existing_domains,
+            }
+        ),
+        encoding="utf-8",
+    )
+    intel = TrackerIntel(
+        feed_cache_path=cache_path,
+        feed_urls=["https://feed.local/one"],
+        min_domains_per_source=1,
+        min_total_domains=1,
+        replace_ratio_floor=0.75,
+    )
+
+    monkeypatch.setattr(
+        "security_gateway.tracker_intel.urlopen",
+        lambda url, timeout=20.0: _FakeResponse("||tiny.example^\n"),
+    )
+
+    try:
+        intel.refresh_feed_cache()
+    except RuntimeError as exc:
+        assert "replacement floor" in str(exc)
+    else:
+        raise AssertionError("Expected suspiciously small refresh to fail")
+
+    status = intel.feed_status()
+    assert status["last_refresh_result"] == "failed"
+    assert "replacement floor" in status["last_error"]
+    assert list(intel._load_feed_domains()) == existing_domains

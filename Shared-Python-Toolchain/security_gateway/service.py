@@ -43,6 +43,10 @@ tracker_intel = TrackerIntel(
     feed_cache_path=settings.tracker_feed_cache_path,
     feed_urls=settings.tracker_feed_urls,
     stale_after_hours=settings.tracker_feed_stale_hours,
+    disabled_feed_urls=settings.tracker_feed_disabled_urls,
+    min_domains_per_source=settings.tracker_feed_min_domains_per_source,
+    min_total_domains=settings.tracker_feed_min_total_domains,
+    replace_ratio_floor=settings.tracker_feed_replace_ratio_floor,
 )
 automation = AutomationSupervisor(
     vault=vault,

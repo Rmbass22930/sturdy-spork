@@ -131,6 +131,22 @@ SECURITY_GATEWAY_TRACKER_FEED_CACHE_PATH=logs/tracker_feed_domains.json
 ```
 SECURITY_GATEWAY_TRACKER_FEED_STALE_HOURS=168
 ```
+- Disable specific feed URLs without removing them from the configured list:
+```
+SECURITY_GATEWAY_TRACKER_FEED_DISABLED_URLS=["https://example.com/list2.json"]
+```
+- Require at least this many domains from each source before accepting it:
+```
+SECURITY_GATEWAY_TRACKER_FEED_MIN_DOMAINS_PER_SOURCE=10
+```
+- Reject a refresh if the merged result is too small overall:
+```
+SECURITY_GATEWAY_TRACKER_FEED_MIN_TOTAL_DOMAINS=500
+```
+- Reject a refresh if it falls below this fraction of the previous cache size:
+```
+SECURITY_GATEWAY_TRACKER_FEED_REPLACE_RATIO_FLOOR=0.5
+```
 - Override default feed URLs with:
 ```
 SECURITY_GATEWAY_TRACKER_FEED_URLS=["https://example.com/list1.txt","https://example.com/list2.json"]

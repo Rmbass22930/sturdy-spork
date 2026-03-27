@@ -1,5 +1,9 @@
 {
-  "updated_at": "2026-03-27T22:08:43.137822+00:00",
+  "updated_at": "2026-03-27T22:25:36.070864+00:00",
+  "last_refresh_attempted_at": "2026-03-27T22:25:36.070864+00:00",
+  "last_refresh_result": "success",
+  "last_error": null,
+  "failures": [],
   "sources": [
     {
       "url": "https://raw.githubusercontent.com/disconnectme/disconnect-tracking-protection/master/services.json",

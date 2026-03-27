@@ -137,11 +137,19 @@ class TrackerIntel:
         feed_cache_path: str | Path | None = None,
         feed_urls: Iterable[str] | None = None,
         stale_after_hours: float = 168.0,
+        disabled_feed_urls: Iterable[str] | None = None,
+        min_domains_per_source: int = 10,
+        min_total_domains: int = 500,
+        replace_ratio_floor: float = 0.5,
     ):
         self.extra_domains_path = Path(extra_domains_path) if extra_domains_path else None
         self.feed_cache_path = Path(feed_cache_path) if feed_cache_path else None
         self.feed_urls = [str(url) for url in feed_urls] if feed_urls else []
         self.stale_after_hours = stale_after_hours
+        self.disabled_feed_urls = {str(url) for url in (disabled_feed_urls or []) if str(url).strip()}
+        self.min_domains_per_source = min_domains_per_source
+        self.min_total_domains = min_total_domains
+        self.replace_ratio_floor = replace_ratio_floor
 
     def is_tracker_hostname(self, hostname: str | None) -> Optional[TrackerMatch]:
         if not hostname:
@@ -232,6 +240,8 @@ class TrackerIntel:
             return {
                 "cache_path": str(self.feed_cache_path) if self.feed_cache_path else None,
                 "feed_urls": self.feed_urls,
+                "active_feed_urls": self._active_feed_urls(),
+                "disabled_feed_urls": sorted(self.disabled_feed_urls),
                 "domain_count": 0,
                 "updated_at": None,
                 "last_refresh_attempted_at": None,
@@ -241,6 +251,9 @@ class TrackerIntel:
                 "age_hours": None,
                 "is_stale": True,
                 "stale_after_hours": self.stale_after_hours,
+                "min_domains_per_source": self.min_domains_per_source,
+                "min_total_domains": self.min_total_domains,
+                "replace_ratio_floor": self.replace_ratio_floor,
                 "sources": [],
             }
         updated_at = payload.get("updated_at") if isinstance(payload, dict) else None
@@ -253,6 +266,8 @@ class TrackerIntel:
         return {
             "cache_path": str(self.feed_cache_path),
             "feed_urls": self.feed_urls,
+            "active_feed_urls": self._active_feed_urls(),
+            "disabled_feed_urls": sorted(self.disabled_feed_urls),
             "domain_count": len(list(self._load_feed_domains())),
             "updated_at": updated_at,
             "last_refresh_attempted_at": payload.get("last_refresh_attempted_at") if isinstance(payload, dict) else None,
@@ -262,11 +277,14 @@ class TrackerIntel:
             "age_hours": age_hours,
             "is_stale": is_stale,
             "stale_after_hours": self.stale_after_hours,
+            "min_domains_per_source": self.min_domains_per_source,
+            "min_total_domains": self.min_total_domains,
+            "replace_ratio_floor": self.replace_ratio_floor,
             "sources": payload.get("sources", []) if isinstance(payload, dict) else [],
         }
 
     def refresh_feed_cache(self, urls: Iterable[str] | None = None, *, timeout: float = 20.0) -> dict[str, Any]:
-        active_urls = [str(url) for url in (urls or self.feed_urls) if str(url).strip()]
+        active_urls = self._active_feed_urls(urls)
         if not active_urls:
             raise ValueError("No tracker feed URLs configured.")
 
@@ -279,6 +297,10 @@ class TrackerIntel:
                 with urlopen(url, timeout=timeout) as response:  # noqa: S310
                     payload = response.read().decode("utf-8", errors="replace")
                 parsed = self._parse_feed_payload(payload, source_url=url)
+                if len(parsed) < self.min_domains_per_source:
+                    raise RuntimeError(
+                        f"Source returned {len(parsed)} domains, below minimum {self.min_domains_per_source}"
+                    )
                 domains.update(parsed)
                 source_summaries.append({"url": url, "domain_count": len(parsed)})
             except Exception as exc:  # noqa: BLE001
@@ -288,13 +310,31 @@ class TrackerIntel:
             raise ValueError("Tracker feed cache path is not configured.")
         self.feed_cache_path.parent.mkdir(parents=True, exist_ok=True)
         existing_payload = self._read_feed_cache_payload()
-        if not source_summaries:
+        existing_count = len(existing_payload.get("domains", [])) if isinstance(existing_payload, dict) else 0
+        suspiciously_small = False
+        suspicious_reason = None
+        if len(domains) < self.min_total_domains:
+            suspiciously_small = True
+            suspicious_reason = (
+                f"Refresh produced {len(domains)} domains, below minimum total {self.min_total_domains}"
+            )
+        elif existing_count and len(domains) < int(existing_count * self.replace_ratio_floor):
+            suspiciously_small = True
+            suspicious_reason = (
+                f"Refresh produced {len(domains)} domains, below replacement floor of "
+                f"{int(existing_count * self.replace_ratio_floor)} from previous cache"
+            )
+
+        if not source_summaries or suspiciously_small:
             failed_payload = dict(existing_payload) if isinstance(existing_payload, dict) else {"domains": [], "sources": []}
+            failure_messages = [f"{item['url']}: {item['error']}" for item in failures]
+            if suspicious_reason:
+                failure_messages.append(suspicious_reason)
             failed_payload.update(
                 {
                     "last_refresh_attempted_at": refresh_time,
                     "last_refresh_result": "failed",
-                    "last_error": "; ".join(f"{item['url']}: {item['error']}" for item in failures)[:2000] or "Feed refresh failed",
+                    "last_error": "; ".join(failure_messages)[:2000] or "Feed refresh failed",
                     "failures": failures,
                 }
             )
@@ -320,6 +360,13 @@ class TrackerIntel:
             "failures": failures,
         }
         return result
+
+    def _active_feed_urls(self, urls: Iterable[str] | None = None) -> list[str]:
+        return [
+            str(url)
+            for url in (urls or self.feed_urls)
+            if str(url).strip() and str(url) not in self.disabled_feed_urls
+        ]
 
     def _read_feed_cache_payload(self) -> dict[str, Any] | list[Any] | None:
         if not self.feed_cache_path or not self.feed_cache_path.exists():
