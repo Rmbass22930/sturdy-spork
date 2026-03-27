@@ -54,6 +54,21 @@ class InstallTransaction:
     automation_task_registered: bool = False
 
 
+@dataclass
+class DependencyInstallResult:
+    name: str
+    method: str
+    target: Optional[str] = None
+
+
+@dataclass
+class InstallSummary:
+    installed_path: Path
+    shortcut_paths: List[Path]
+    uninstall_script: Path
+    dependency_results: List[DependencyInstallResult]
+
+
 def resolve_powershell_executable() -> str:
     return (
         shutil.which("pwsh")
@@ -383,16 +398,18 @@ def load_dependency_manifest(path: Optional[Path]) -> List[ExternalDependency]:
     return dependencies
 
 
-def install_external_dependencies(dependencies: List[ExternalDependency]) -> None:
+def install_external_dependencies(dependencies: List[ExternalDependency]) -> List[DependencyInstallResult]:
     if not dependencies:
-        return
+        return []
+    results: list[DependencyInstallResult] = []
     print(f"Installing {len(dependencies)} prerequisite program(s)...")
     for dep in dependencies:
         print(f"- Ensuring {dep.name}")
-        install_dependency(dep)
+        results.append(install_dependency(dep))
+    return results
 
 
-def install_dependency(dep: ExternalDependency) -> None:
+def install_dependency(dep: ExternalDependency) -> DependencyInstallResult:
     if dep.winget_id and shutil.which("winget"):
         cmd = [
             "winget",
@@ -407,7 +424,7 @@ def install_dependency(dep: ExternalDependency) -> None:
         if dep.winget_args:
             cmd.extend(dep.winget_args)
         subprocess.run(cmd, check=True)
-        return
+        return DependencyInstallResult(name=dep.name, method="winget", target=dep.winget_id)
     if dep.download_url:
         target = download_file(dep.download_url, dep.name, dep.sha256)
         if dep.copy_to:
@@ -418,8 +435,27 @@ def install_dependency(dep: ExternalDependency) -> None:
         if dep.run_installer:
             args = dep.installer_args or []
             subprocess.run([str(target), *args], check=True)
-        return
+            return DependencyInstallResult(name=dep.name, method="download+run", target=str(target))
+        return DependencyInstallResult(name=dep.name, method="download", target=str(target))
     raise RuntimeError(f"No installation method available for {dep.name}")
+
+
+def print_install_summary(summary: InstallSummary) -> None:
+    print("")
+    print("Install complete:")
+    print(f"- Application: {summary.installed_path}")
+    print("- Desktop shortcuts:")
+    for shortcut_path in summary.shortcut_paths:
+        print(f"  - {shortcut_path}")
+    if summary.dependency_results:
+        print("- Dependencies:")
+        for result in summary.dependency_results:
+            target_suffix = f" ({result.target})" if result.target else ""
+            print(f"  - {result.name}: {result.method}{target_suffix}")
+    else:
+        print("- Dependencies: none")
+    print(f"- Uninstall script: {summary.uninstall_script}")
+    print("- PATH updated for current user. Sign out/in or restart terminal to use immediately.")
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -444,7 +480,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     manifest_path = resolve_manifest_reference(manifest_ref)
     dependencies = load_dependency_manifest(manifest_path)
-    install_external_dependencies(dependencies)
+    dependency_results = install_external_dependencies(dependencies)
 
     transaction = InstallTransaction()
     try:
@@ -460,13 +496,20 @@ def main(argv: Optional[list[str]] = None) -> int:
         transaction.automation_task_registered = True
         uninstall_script = write_uninstall_script(installed_path, backup_file)
         transaction.uninstall_script = uninstall_script
-    except Exception:
-        rollback_install(transaction)
-        raise
-    print(f"SecurityGateway installed to {installed_path}")
-    print("PATH updated for current user. Sign out/in or restart terminal to use immediately.")
-    print("Desktop shortcut created for automation mode.")
-    print(f"To uninstall later, run {uninstall_script}")
+    except Exception as exc:
+        try:
+            rollback_install(transaction)
+        except Exception as rollback_exc:
+            raise RuntimeError(f"Installer failed: {exc}. Rollback also failed: {rollback_exc}") from exc
+        raise RuntimeError(f"Installer failed before completion: {exc}") from exc
+    print_install_summary(
+        InstallSummary(
+            installed_path=installed_path,
+            shortcut_paths=transaction.shortcut_paths or [],
+            uninstall_script=uninstall_script,
+            dependency_results=dependency_results,
+        )
+    )
     return 0
 
 

@@ -2,6 +2,7 @@ import sys
 import importlib.util
 from pathlib import Path
 from unittest import mock
+import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -65,3 +66,60 @@ def test_create_shortcut_returns_created_paths(tmp_path: Path) -> None:
         tmp_path / "OneDrive" / "Desktop" / "SecurityGateway.lnk",
     ]
     run.assert_called_once()
+
+
+def test_install_dependency_reports_winget_method(monkeypatch) -> None:
+    dep = installer.ExternalDependency(name="Cloudflare WARP", winget_id="Cloudflare.WARP")
+    monkeypatch.setattr(installer.shutil, "which", lambda name: "C:\\Windows\\System32\\winget.exe")
+    calls = []
+
+    def fake_run(args, check):
+        calls.append((args, check))
+
+    monkeypatch.setattr(installer.subprocess, "run", fake_run)
+    result = installer.install_dependency(dep)
+
+    assert result.name == "Cloudflare WARP"
+    assert result.method == "winget"
+    assert result.target == "Cloudflare.WARP"
+    assert calls
+
+
+def test_print_install_summary_lists_shortcuts_and_dependencies(capsys, tmp_path: Path) -> None:
+    summary = installer.InstallSummary(
+        installed_path=tmp_path / "SecurityGateway.exe",
+        shortcut_paths=[
+            tmp_path / "Desktop" / "SecurityGateway.lnk",
+            tmp_path / "OneDrive" / "Desktop" / "SecurityGateway.lnk",
+        ],
+        uninstall_script=tmp_path / "Uninstall-SecurityGateway.ps1",
+        dependency_results=[
+            installer.DependencyInstallResult(name="Cloudflare WARP", method="winget", target="Cloudflare.WARP")
+        ],
+    )
+
+    installer.print_install_summary(summary)
+    output = capsys.readouterr().out
+
+    assert "Install complete:" in output
+    assert "Desktop shortcuts:" in output
+    assert "Cloudflare WARP: winget (Cloudflare.WARP)" in output
+
+
+def test_main_wraps_rollback_failures(monkeypatch, tmp_path: Path) -> None:
+    installed_path = tmp_path / "SecurityGateway.exe"
+    installed_path.write_text("binary", encoding="utf-8")
+    monkeypatch.setattr(installer, "ensure_admin", lambda: None)
+    monkeypatch.setattr(installer, "show_install_guide", lambda url=None: None)
+    monkeypatch.setattr(installer, "resolve_resource", lambda rel: installed_path)
+    monkeypatch.setattr(installer, "resolve_manifest_reference", lambda ref: None)
+    monkeypatch.setattr(installer, "load_dependency_manifest", lambda path: [])
+    monkeypatch.setattr(installer, "install_external_dependencies", lambda deps: [])
+    monkeypatch.setattr(installer, "copy_binary", lambda src, dest: installed_path)
+    monkeypatch.setattr(installer, "update_user_path", lambda path: "C:\\Existing\\Path")
+    monkeypatch.setattr(installer, "create_shortcut", lambda path: [tmp_path / "Desktop" / "SecurityGateway.lnk"])
+    monkeypatch.setattr(installer, "register_automation_task", lambda path: (_ for _ in ()).throw(RuntimeError("task failed")))
+    monkeypatch.setattr(installer, "rollback_install", lambda transaction: (_ for _ in ()).throw(RuntimeError("rollback failed")))
+
+    with pytest.raises(RuntimeError, match="Rollback also failed"):
+        installer.main([])
