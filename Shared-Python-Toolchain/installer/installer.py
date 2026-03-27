@@ -49,7 +49,7 @@ class InstallTransaction:
     installed_path: Optional[Path] = None
     previous_user_path: Optional[str] = None
     backup_file: Optional[Path] = None
-    shortcut_path: Optional[Path] = None
+    shortcut_paths: Optional[List[Path]] = None
     uninstall_script: Optional[Path] = None
     automation_task_registered: bool = False
 
@@ -153,16 +153,35 @@ def restore_user_path(previous: str) -> None:
         winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, previous)
 
 
-def create_shortcut(exe_path: Path) -> Path:
-    desktop = Path(os.path.join(os.environ["USERPROFILE"], "Desktop"))
-    shortcut_path = desktop / "SecurityGateway.lnk"
-    ps_script = f"$s=(New-Object -ComObject WScript.Shell).CreateShortcut(\"{shortcut_path}\");"
-    ps_script += f"$s.TargetPath=\"{exe_path}\";"
-    ps_script += f"$s.Arguments=\"automation-run\";"
-    ps_script += f"$s.WorkingDirectory=\"{exe_path.parent}\";"
-    ps_script += "$s.Save()"
+def resolve_desktop_roots() -> List[Path]:
+    roots: list[Path] = []
+    user_profile = os.environ.get("USERPROFILE")
+    if user_profile:
+        roots.append(Path(user_profile) / "Desktop")
+        roots.append(Path(user_profile) / "OneDrive" / "Desktop")
+    seen: set[str] = set()
+    resolved: list[Path] = []
+    for root in roots:
+        key = str(root).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        resolved.append(root)
+    return resolved
+
+
+def create_shortcut(exe_path: Path) -> List[Path]:
+    shortcut_paths = [root / "SecurityGateway.lnk" for root in resolve_desktop_roots()]
+    ps_targets = ", ".join(_ps_quote(str(path)) for path in shortcut_paths)
+    ps_script = f"$targets=@({ps_targets}); foreach($shortcutPath in $targets) {{"
+    ps_script += "New-Item -ItemType Directory -Force -Path ([System.IO.Path]::GetDirectoryName($shortcutPath)) | Out-Null;"
+    ps_script += "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($shortcutPath);"
+    ps_script += f"$s.TargetPath={_ps_quote(str(exe_path))};"
+    ps_script += "$s.Arguments='automation-run';"
+    ps_script += f"$s.WorkingDirectory={_ps_quote(str(exe_path.parent))};"
+    ps_script += "$s.Save() }"
     subprocess.run([resolve_powershell_executable(), "-NoProfile", "-Command", ps_script], check=True)
-    return shortcut_path
+    return shortcut_paths
 
 
 def _ps_quote(value: str) -> str:
@@ -202,13 +221,13 @@ if ($task) {{
 
 def write_uninstall_script(installed_path: Path, path_backup_file: Path) -> Path:
     script_path = installed_path.parent / UNINSTALL_SCRIPT_NAME
-    desktop_shortcut = Path(os.path.join(os.environ["USERPROFILE"], "Desktop")) / "SecurityGateway.lnk"
+    shortcut_paths = [path / "SecurityGateway.lnk" for path in resolve_desktop_roots()]
+    shortcut_path_block = ", ".join(f'"{path}"' for path in shortcut_paths)
     system_data = SYSTEM_DATA_DIR
     user_data = USER_DATA_DIR
     script = f"""\
 param(
     [string]$InstallDir = "{installed_path.parent}",
-    [string]$ShortcutPath = "{desktop_shortcut}",
     [string]$SystemDataPath = "{system_data}",
     [string]$UserDataPath = "{user_data}",
     [string]$PathBackupFile = "{path_backup_file}",
@@ -248,7 +267,9 @@ function Remove-AutomationTask {{
 
 try {{
     Assert-Admin
-    if (Test-Path $ShortcutPath) {{ Remove-Item $ShortcutPath -Force }}
+    foreach ($ShortcutPath in @({shortcut_path_block})) {{
+        if (Test-Path $ShortcutPath) {{ Remove-Item $ShortcutPath -Force }}
+    }}
     if (-not (Restore-PathFromBackup -File $PathBackupFile)) {{
         Remove-PathEntry -Dir $InstallDir
     }}
@@ -278,7 +299,8 @@ def rollback_install(transaction: InstallTransaction) -> None:
         except Exception as exc:  # noqa: BLE001
             cleanup_errors.append(f"scheduled task rollback failed: {exc}")
 
-    for path in (transaction.uninstall_script, transaction.shortcut_path, transaction.backup_file, transaction.installed_path):
+    shortcut_paths = transaction.shortcut_paths or []
+    for path in (transaction.uninstall_script, *shortcut_paths, transaction.backup_file, transaction.installed_path):
         if not path:
             continue
         try:
@@ -433,7 +455,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         backup_file = installed_path.parent / PATH_BACKUP_NAME
         backup_file.write_text(previous_path, encoding="utf-8")
         transaction.backup_file = backup_file
-        transaction.shortcut_path = create_shortcut(installed_path)
+        transaction.shortcut_paths = create_shortcut(installed_path)
         register_automation_task(installed_path)
         transaction.automation_task_registered = True
         uninstall_script = write_uninstall_script(installed_path, backup_file)

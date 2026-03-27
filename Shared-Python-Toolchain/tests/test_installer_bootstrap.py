@@ -19,7 +19,8 @@ def test_rollback_install_cleans_created_artifacts(tmp_path: Path) -> None:
     install_dir.mkdir()
     installed_path = install_dir / "SecurityGateway.exe"
     backup_file = install_dir / "user_path_backup.txt"
-    shortcut_path = tmp_path / "SecurityGateway.lnk"
+    shortcut_path = tmp_path / "Desktop" / "SecurityGateway.lnk"
+    shortcut_path.parent.mkdir()
     uninstall_script = install_dir / "Uninstall-SecurityGateway.ps1"
 
     for path in (installed_path, backup_file, shortcut_path, uninstall_script):
@@ -29,7 +30,7 @@ def test_rollback_install_cleans_created_artifacts(tmp_path: Path) -> None:
         installed_path=installed_path,
         previous_user_path="C:\\Existing\\Path",
         backup_file=backup_file,
-        shortcut_path=shortcut_path,
+        shortcut_paths=[shortcut_path],
         uninstall_script=uninstall_script,
         automation_task_registered=True,
     )
@@ -49,7 +50,7 @@ def test_rollback_install_cleans_created_artifacts(tmp_path: Path) -> None:
     assert not install_dir.exists()
 
 
-def test_create_shortcut_returns_created_path(tmp_path: Path) -> None:
+def test_create_shortcut_returns_created_paths(tmp_path: Path) -> None:
     exe_path = tmp_path / "SecurityGateway.exe"
     exe_path.write_text("binary", encoding="utf-8")
 
@@ -57,7 +58,10 @@ def test_create_shortcut_returns_created_path(tmp_path: Path) -> None:
         mock.patch.dict(installer.os.environ, {"USERPROFILE": str(tmp_path)}),
         mock.patch.object(installer.subprocess, "run") as run,
     ):
-        shortcut_path = installer.create_shortcut(exe_path)
+        shortcut_paths = installer.create_shortcut(exe_path)
 
-    assert shortcut_path == tmp_path / "Desktop" / "SecurityGateway.lnk"
+    assert shortcut_paths == [
+        tmp_path / "Desktop" / "SecurityGateway.lnk",
+        tmp_path / "OneDrive" / "Desktop" / "SecurityGateway.lnk",
+    ]
     run.assert_called_once()
