@@ -14,6 +14,37 @@ def test_report_list_command_runs(monkeypatch, tmp_path) -> None:
     assert "'reports': []" in result.stdout
 
 
+def test_report_pdf_command_accepts_filters(monkeypatch, tmp_path) -> None:
+    calls = []
+
+    def fake_write(output, **kwargs):
+        calls.append((output, kwargs))
+        target = tmp_path / "reports" / "filtered.pdf"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"%PDF-sample")
+        return target
+
+    monkeypatch.setattr(cli.report_builder, "write_summary_pdf", fake_write)
+    result = runner.invoke(
+        cli.app,
+        [
+            "report-pdf",
+            "--max-events", "12",
+            "--time-window-hours", "24",
+            "--min-risk-score", "60",
+            "--no-events",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls
+    _, kwargs = calls[0]
+    assert kwargs["max_events"] == 12
+    assert kwargs["time_window_hours"] == 24.0
+    assert kwargs["min_risk_score"] == 60.0
+    assert kwargs["include_recent_events"] is False
+
+
 def test_launch_uses_report_browser_when_frozen_without_args(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(cli.sys, "frozen", True, raising=False)

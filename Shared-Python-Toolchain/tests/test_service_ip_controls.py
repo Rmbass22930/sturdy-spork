@@ -195,7 +195,10 @@ def test_reports_endpoints_list_and_fetch_saved_pdf(monkeypatch, tmp_path):
     _install_test_managers(monkeypatch, tmp_path)
 
     with TestClient(service.app) as client:
-        generated = client.get("/reports/security-summary.pdf")
+        generated = client.get(
+            "/reports/security-summary.pdf",
+            params={"time_window_hours": 24, "min_risk_score": 50, "include_recent_events": False},
+        )
         assert generated.status_code == 200
         assert generated.headers["content-type"] == "application/pdf"
         assert generated.content.startswith(b"%PDF")

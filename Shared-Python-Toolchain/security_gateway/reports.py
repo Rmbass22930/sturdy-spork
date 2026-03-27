@@ -4,6 +4,7 @@ from __future__ import annotations
 import io
 import json
 import os
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterable, List
@@ -15,19 +16,61 @@ from .config import settings
 from .ip_controls import IPBlocklistManager
 
 
+@dataclass(frozen=True)
+class ReportFilters:
+    max_events: int = 25
+    time_window_hours: float | None = None
+    min_risk_score: float = 0.0
+    include_blocked_ips: bool = True
+    include_potential_blocked_ips: bool = True
+    include_recent_events: bool = True
+
+
 class SecurityReportBuilder:
     def __init__(self, *, audit_log_path: str | Path | None = None, ip_blocklist_path: str | Path | None = None):
         self.audit_log_path = Path(audit_log_path or settings.audit_log_path)
         self.ip_blocklist = IPBlocklistManager(path=ip_blocklist_path or settings.ip_blocklist_path)
 
-    def build_summary_pdf(self, *, title: str = "Security Gateway Summary Report", max_events: int = 25) -> bytes:
-        summary = self.collect_summary(max_events=max_events)
+    def build_summary_pdf(
+        self,
+        *,
+        title: str = "Security Gateway Summary Report",
+        max_events: int = 25,
+        time_window_hours: float | None = None,
+        min_risk_score: float = 0.0,
+        include_blocked_ips: bool = True,
+        include_potential_blocked_ips: bool = True,
+        include_recent_events: bool = True,
+    ) -> bytes:
+        summary = self.collect_summary(
+            filters=ReportFilters(
+                max_events=max_events,
+                time_window_hours=time_window_hours,
+                min_risk_score=min_risk_score,
+                include_blocked_ips=include_blocked_ips,
+                include_potential_blocked_ips=include_potential_blocked_ips,
+                include_recent_events=include_recent_events,
+            )
+        )
         return self.build_summary_pdf_from_summary(summary, title=title)
 
-    def collect_summary(self, *, max_events: int = 25) -> dict[str, Any]:
-        blocked_ips = self.ip_blocklist.list_entries()
-        recent_events = self._load_recent_events(max_events=max_events)
+    def collect_summary(self, *, filters: ReportFilters | None = None) -> dict[str, Any]:
+        filters = filters or ReportFilters()
+        blocked_ips = self.ip_blocklist.list_entries() if filters.include_blocked_ips else []
+        recent_events = self._load_recent_events(
+            max_events=filters.max_events,
+            time_window_hours=filters.time_window_hours,
+            min_risk_score=filters.min_risk_score,
+        )
         return {
+            "filters": {
+                "max_events": filters.max_events,
+                "time_window_hours": filters.time_window_hours,
+                "min_risk_score": filters.min_risk_score,
+                "include_blocked_ips": filters.include_blocked_ips,
+                "include_potential_blocked_ips": filters.include_potential_blocked_ips,
+                "include_recent_events": filters.include_recent_events,
+            },
             "blocked_ips": [
                 {
                     "ip": entry.ip,
@@ -37,17 +80,37 @@ class SecurityReportBuilder:
                     "reason": entry.reason,
                 }
                 for entry in blocked_ips
-            ],
-            "potential_blocked_ips": self._collect_potential_blocks(recent_events, blocked_ips),
-            "recent_events": recent_events,
+            ] if filters.include_blocked_ips else [],
+            "potential_blocked_ips": self._collect_potential_blocks(recent_events, blocked_ips, min_risk_score=filters.min_risk_score)
+            if filters.include_potential_blocked_ips else [],
+            "recent_events": recent_events if filters.include_recent_events else [],
         }
 
-    def write_summary_pdf(self, output_path: str | Path | None = None, *, max_events: int = 25) -> Path:
+    def write_summary_pdf(
+        self,
+        output_path: str | Path | None = None,
+        *,
+        max_events: int = 25,
+        time_window_hours: float | None = None,
+        min_risk_score: float = 0.0,
+        include_blocked_ips: bool = True,
+        include_potential_blocked_ips: bool = True,
+        include_recent_events: bool = True,
+    ) -> Path:
         output_dir = self.get_output_dir()
         output_dir.mkdir(parents=True, exist_ok=True)
         target = Path(output_path) if output_path else output_dir / f"security-summary-{datetime.now():%Y%m%d-%H%M%S}.pdf"
         target.parent.mkdir(parents=True, exist_ok=True)
-        summary = self.collect_summary(max_events=max_events)
+        summary = self.collect_summary(
+            filters=ReportFilters(
+                max_events=max_events,
+                time_window_hours=time_window_hours,
+                min_risk_score=min_risk_score,
+                include_blocked_ips=include_blocked_ips,
+                include_potential_blocked_ips=include_potential_blocked_ips,
+                include_recent_events=include_recent_events,
+            )
+        )
         target.write_bytes(self.build_summary_pdf_from_summary(summary))
         self._write_report_metadata(target, summary)
         return target
@@ -75,6 +138,15 @@ class SecurityReportBuilder:
         pdf.setTitle(title)
         write_line(title, font="Helvetica-Bold", size=16, gap=20)
         write_line(f"Generated: {datetime.now(UTC).isoformat()}", font="Helvetica", size=9, gap=18)
+        filters = summary.get("filters", {})
+        filter_text = (
+            f"Filters: window_hours={filters.get('time_window_hours', 'all')} | "
+            f"min_risk={filters.get('min_risk_score', 0)} | "
+            f"blocked={filters.get('include_blocked_ips', True)} | "
+            f"potential={filters.get('include_potential_blocked_ips', True)} | "
+            f"events={filters.get('include_recent_events', True)}"
+        )
+        write_line(filter_text, font="Helvetica", size=8, gap=16)
 
         write_line("Blocked IPs", font="Helvetica-Bold", size=12, gap=16)
         if summary["blocked_ips"]:
@@ -178,6 +250,7 @@ class SecurityReportBuilder:
             "generated_at": datetime.now(UTC).isoformat(),
             "blocked_ip_count": len(summary["blocked_ips"]),
             "potential_blocked_ip_count": len(summary["potential_blocked_ips"]),
+            "filters": summary.get("filters", {}),
         }
         self._metadata_path_for_report(report_path).write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
@@ -191,16 +264,31 @@ class SecurityReportBuilder:
             return {}
         return payload if isinstance(payload, dict) else {}
 
-    def _load_recent_events(self, *, max_events: int) -> List[dict[str, Any]]:
+    def _load_recent_events(
+        self,
+        *,
+        max_events: int,
+        time_window_hours: float | None = None,
+        min_risk_score: float = 0.0,
+    ) -> List[dict[str, Any]]:
         if not self.audit_log_path.exists():
             return []
         lines = self.audit_log_path.read_text(encoding="utf-8").splitlines()
         events: list[dict[str, Any]] = []
+        now = datetime.now(UTC)
         for raw in lines[-max_events:]:
             try:
-                events.append(json.loads(raw))
+                event = json.loads(raw)
             except json.JSONDecodeError:
                 continue
+            timestamp = self._parse_event_timestamp(event.get("ts"))
+            if time_window_hours is not None and timestamp is not None:
+                if (now - timestamp).total_seconds() > time_window_hours * 3600:
+                    continue
+            risk_score = float(event.get("data", {}).get("risk_score", 0) or 0)
+            if risk_score < min_risk_score and event.get("type") == "access.evaluate":
+                continue
+            events.append(event)
         return events
 
     def _format_event_data(self, data: dict[str, Any]) -> str:
@@ -234,6 +322,8 @@ class SecurityReportBuilder:
         self,
         events: List[dict[str, Any]],
         blocked_ips: List[Any],
+        *,
+        min_risk_score: float = 0.0,
     ) -> List[dict[str, Any]]:
         blocked_set = {entry.ip for entry in blocked_ips}
         candidates: dict[str, dict[str, Any]] = {}
@@ -247,6 +337,8 @@ class SecurityReportBuilder:
             if data.get("decision") != "deny":
                 continue
             risk_score = float(data.get("risk_score", 0) or 0)
+            if risk_score < min_risk_score:
+                continue
             item = candidates.setdefault(
                 ip,
                 {
@@ -268,7 +360,7 @@ class SecurityReportBuilder:
 
         filtered_candidates: list[dict[str, Any]] = []
         for item in candidates.values():
-            if item["count"] < 2 and item["max_risk_score"] < settings.max_risk_score:
+            if item["count"] < 2 and item["max_risk_score"] < max(settings.max_risk_score, min_risk_score):
                 continue
             filtered_candidates.append(
                 {
@@ -281,3 +373,14 @@ class SecurityReportBuilder:
                 }
             )
         return sorted(filtered_candidates, key=lambda item: (-item["count"], -item["max_risk_score"], item["ip"]))
+
+    def _parse_event_timestamp(self, value: Any) -> datetime | None:
+        if not value or not isinstance(value, str):
+            return None
+        try:
+            timestamp = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        if timestamp.tzinfo is None:
+            return timestamp.replace(tzinfo=UTC)
+        return timestamp.astimezone(UTC)

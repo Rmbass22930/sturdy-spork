@@ -227,8 +227,22 @@ async def automation_status() -> dict:
 
 
 @app.get("/reports/security-summary.pdf")
-async def security_summary_report(max_events: int = 25) -> Response:
-    pdf_bytes = report_builder.build_summary_pdf(max_events=max_events)
+async def security_summary_report(
+    max_events: int = 25,
+    time_window_hours: float | None = None,
+    min_risk_score: float = 0.0,
+    include_blocked_ips: bool = True,
+    include_potential_blocked_ips: bool = True,
+    include_recent_events: bool = True,
+) -> Response:
+    pdf_bytes = report_builder.build_summary_pdf(
+        max_events=max_events,
+        time_window_hours=time_window_hours,
+        min_risk_score=min_risk_score,
+        include_blocked_ips=include_blocked_ips,
+        include_potential_blocked_ips=include_potential_blocked_ips,
+        include_recent_events=include_recent_events,
+    )
     headers = {"Content-Disposition": 'attachment; filename="security-summary.pdf"'}
     return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
 

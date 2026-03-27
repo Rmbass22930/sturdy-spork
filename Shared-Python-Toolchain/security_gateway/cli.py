@@ -168,9 +168,22 @@ def mfa_register_webauthn(user_id: str, credential_id: str, public_key_b64: str)
 def report_pdf(
     output: Path | None = typer.Option(None, help="Write the PDF to this path"),
     max_events: int = typer.Option(25, help="Number of recent audit events to include"),
+    time_window_hours: float | None = typer.Option(None, help="Only include events from the last N hours"),
+    min_risk_score: float = typer.Option(0.0, help="Only include access-evaluate entries at or above this risk score"),
+    include_blocked_ips: bool = typer.Option(True, "--blocked/--no-blocked", help="Include the blocked IP section"),
+    include_potential_blocked_ips: bool = typer.Option(True, "--potential/--no-potential", help="Include the potential blocked IP section"),
+    include_recent_events: bool = typer.Option(True, "--events/--no-events", help="Include the recent audit events section"),
     open_file: bool = typer.Option(False, "--open", help="Open the PDF after generating it"),
 ) -> None:
-    target = report_builder.write_summary_pdf(output, max_events=max_events)
+    target = report_builder.write_summary_pdf(
+        output,
+        max_events=max_events,
+        time_window_hours=time_window_hours,
+        min_risk_score=min_risk_score,
+        include_blocked_ips=include_blocked_ips,
+        include_potential_blocked_ips=include_potential_blocked_ips,
+        include_recent_events=include_recent_events,
+    )
     print({"status": "written", "path": str(target)})
     if open_file:
         try:

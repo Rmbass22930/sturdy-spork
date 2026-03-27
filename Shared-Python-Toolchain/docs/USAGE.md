@@ -34,6 +34,7 @@ security-gateway ip-list
 security-gateway ip-promote 203.0.113.10 --reason "confirmed attacker"
 security-gateway ip-unblock 203.0.113.10 --reason "false positive"
 security-gateway report-pdf
+security-gateway report-pdf --time-window-hours 24 --min-risk-score 60 --no-events
 security-gateway report-list
 security-gateway report-open
 security-gateway report-open security-summary-20260327-120000.pdf --print
@@ -99,9 +100,16 @@ SECURITY_GATEWAY_TRACEROUTE_SHOW_POPUP_RESULTS=true
 - Add `--print` to `report-open` to send the report to the default printer.
 - Use `security-gateway report-browser` for the built-in report browser with `Generate New`, `Open`, and `Print`.
 - In the packaged build, launching `SecurityGateway.exe` with no arguments opens the report browser by default.
+- Report generation filters:
+  - `--time-window-hours <n>`
+  - `--min-risk-score <n>`
+  - `--blocked/--no-blocked`
+  - `--potential/--no-potential`
+  - `--events/--no-events`
+- The report browser exposes the same filters directly in the window before generating a new report.
 - API support:
   - `GET /reports` lists saved PDFs
-  - `GET /reports/security-summary.pdf` generates a current summary PDF
+  - `GET /reports/security-summary.pdf` generates a current summary PDF and accepts the same filter query parameters
   - `GET /reports/{name}` fetches a saved PDF
 
 ## Uninstall

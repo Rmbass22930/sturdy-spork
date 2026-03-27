@@ -3,7 +3,7 @@ from pathlib import Path
 
 from security_gateway.ip_controls import IPBlocklistManager
 from security_gateway.config import settings
-from security_gateway.reports import SecurityReportBuilder
+from security_gateway.reports import ReportFilters, SecurityReportBuilder
 
 
 def _write_audit_events(path: Path) -> None:
@@ -68,7 +68,7 @@ def test_collect_summary_includes_blocked_and_potential_ips(tmp_path: Path) -> N
     manager.block("198.51.100.9", reason="confirmed attacker", blocked_by="operator")
 
     builder = SecurityReportBuilder(audit_log_path=audit_path, ip_blocklist_path=blocklist_path)
-    summary = builder.collect_summary(max_events=10)
+    summary = builder.collect_summary(filters=ReportFilters(max_events=10))
 
     blocked_ips = {entry["ip"] for entry in summary["blocked_ips"]}
     assert blocked_ips == {"198.51.100.9"}
@@ -80,6 +80,31 @@ def test_collect_summary_includes_blocked_and_potential_ips(tmp_path: Path) -> N
     assert potential["203.0.113.10"]["count"] == 2
     assert "git" in potential["203.0.113.10"]["resources"]
     assert "Risk above threshold" in potential["203.0.113.10"]["reasons"]
+
+
+def test_collect_summary_respects_filters(tmp_path: Path) -> None:
+    audit_path = tmp_path / "audit.jsonl"
+    blocklist_path = tmp_path / "blocked-ips.json"
+    _write_audit_events(audit_path)
+    manager = IPBlocklistManager(path=blocklist_path)
+    manager.block("198.51.100.9", reason="confirmed attacker", blocked_by="operator")
+
+    builder = SecurityReportBuilder(audit_log_path=audit_path, ip_blocklist_path=blocklist_path)
+    summary = builder.collect_summary(
+        filters=ReportFilters(
+            time_window_hours=100000.0,
+            min_risk_score=85.0,
+            include_blocked_ips=False,
+            include_potential_blocked_ips=True,
+            include_recent_events=False,
+        )
+    )
+
+    assert summary["blocked_ips"] == []
+    assert summary["recent_events"] == []
+    potential = {entry["ip"]: entry for entry in summary["potential_blocked_ips"]}
+    assert "198.51.100.22" in potential
+    assert "203.0.113.10" not in potential
 
 
 def test_write_summary_pdf_and_list_saved_reports(tmp_path: Path, monkeypatch) -> None:
@@ -98,4 +123,6 @@ def test_write_summary_pdf_and_list_saved_reports(tmp_path: Path, monkeypatch) -
     reports = builder.list_saved_reports()
     assert len(reports) == 1
     assert reports[0]["name"] == "security-summary.pdf"
+    assert reports[0]["blocked_ip_count"] == 0
+    assert reports[0]["potential_blocked_ip_count"] == 2
     assert builder.resolve_saved_report() == report_path
