@@ -45,8 +45,35 @@ class ReportBrowser:
         ttk.Label(header, textvariable=self.path_var).grid(row=1, column=0, sticky="w", pady=(6, 0))
         self.feed_status_var = tk.StringVar(value="Tracker feeds: status unavailable")
         ttk.Label(header, textvariable=self.feed_status_var).grid(row=2, column=0, sticky="w", pady=(4, 0))
+        feed_panel = ttk.LabelFrame(header, text="Tracker Feed Management", padding=(12, 10))
+        feed_panel.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        feed_panel.columnconfigure(0, weight=1)
+        feed_panel.columnconfigure(1, weight=1)
+        feed_panel.columnconfigure(2, weight=1)
+
+        ttk.Button(feed_panel, text="Refresh Feeds", command=self.refresh_tracker_feeds).grid(
+            row=0, column=0, sticky="w", pady=(0, 8)
+        )
+        self.feed_detail_var = tk.StringVar(value="No feed refresh has been run in this session.")
+        ttk.Label(feed_panel, textvariable=self.feed_detail_var).grid(
+            row=0, column=1, columnspan=2, sticky="w", padx=(12, 0), pady=(0, 8)
+        )
+
+        ttk.Label(feed_panel, text="Active Sources").grid(row=1, column=0, sticky="w")
+        ttk.Label(feed_panel, text="Disabled Sources").grid(row=1, column=1, sticky="w")
+        ttk.Label(feed_panel, text="Recent Failures").grid(row=1, column=2, sticky="w")
+
+        self.active_sources_text = tk.Text(feed_panel, width=42, height=6, wrap="word")
+        self.active_sources_text.grid(row=2, column=0, sticky="nsew", padx=(0, 8))
+        self.disabled_sources_text = tk.Text(feed_panel, width=32, height=6, wrap="word")
+        self.disabled_sources_text.grid(row=2, column=1, sticky="nsew", padx=(0, 8))
+        self.feed_failures_text = tk.Text(feed_panel, width=42, height=6, wrap="word")
+        self.feed_failures_text.grid(row=2, column=2, sticky="nsew")
+        for widget in (self.active_sources_text, self.disabled_sources_text, self.feed_failures_text):
+            widget.configure(state="disabled")
+
         filters = ttk.Frame(header)
-        filters.grid(row=3, column=0, sticky="w", pady=(10, 0))
+        filters.grid(row=4, column=0, sticky="w", pady=(10, 0))
         ttk.Label(filters, text="Window (hours)").grid(row=0, column=0, sticky="w")
         self.window_var = tk.StringVar(value="24")
         ttk.Combobox(
@@ -116,7 +143,12 @@ class ReportBrowser:
 
     def refresh_reports(self) -> None:
         self.path_var.set(f"Reports directory: {self.builder.get_output_dir()}")
-        self.feed_status_var.set(self._format_feed_status())
+        feed_status = self.tracker_intel.feed_status()
+        self.feed_status_var.set(self._format_feed_status(feed_status))
+        self.feed_detail_var.set(self._format_feed_detail(feed_status))
+        self._set_text_block(self.active_sources_text, self._format_feed_source_lines(feed_status.get("sources") or []))
+        self._set_text_block(self.disabled_sources_text, self._format_disabled_sources(feed_status))
+        self._set_text_block(self.feed_failures_text, self._format_feed_failures(feed_status))
         for item in self.tree.get_children():
             self.tree.delete(item)
         reports = self.builder.list_saved_reports()
@@ -161,6 +193,19 @@ class ReportBrowser:
     def print_selected_report(self) -> None:
         self._act_on_selected_report("print")
 
+    def refresh_tracker_feeds(self) -> None:
+        try:
+            result = self.tracker_intel.refresh_feed_cache()
+        except Exception as exc:  # noqa: BLE001
+            self.refresh_reports()
+            if messagebox is not None:
+                messagebox.showerror("Security Gateway Reports", f"Tracker feed refresh failed:\n{exc}")
+            return
+        self.refresh_reports()
+        self.status_var.set(
+            f"Tracker feeds refreshed: {result.get('domain_count', 0)} domains across {len(result.get('sources', []))} sources"
+        )
+
     def _act_on_selected_report(self, action: str) -> None:
         selected = self.tree.selection()
         if not selected:
@@ -184,8 +229,8 @@ class ReportBrowser:
             return f"{size / 1024:.1f} KB"
         return f"{size / (1024 * 1024):.1f} MB"
 
-    def _format_feed_status(self) -> str:
-        status = self.tracker_intel.feed_status()
+    def _format_feed_status(self, status: dict | None = None) -> str:
+        status = status or self.tracker_intel.feed_status()
         domain_count = status.get("domain_count", 0)
         updated_at = status.get("updated_at") or "never"
         last_result = status.get("last_refresh_result") or "unknown"
@@ -204,6 +249,46 @@ class ReportBrowser:
         if failures:
             parts.append(f"failures={len(failures)}")
         return " | ".join(parts)
+
+    def _format_feed_detail(self, status: dict | None = None) -> str:
+        status = status or self.tracker_intel.feed_status()
+        last_attempt = status.get("last_refresh_attempted_at") or "never"
+        sources = status.get("sources") or []
+        return (
+            f"Last attempt={last_attempt} | active_sources={len(status.get('active_feed_urls') or [])} | "
+            f"loaded_sources={len(sources)}"
+        )
+
+    def _format_feed_source_lines(self, sources: list[dict]) -> str:
+        if not sources:
+            return "No active source data recorded."
+        return "\n".join(
+            f"{item.get('url', 'unknown')} ({item.get('domain_count', 0)} domains)"
+            for item in sources
+        )
+
+    def _format_disabled_sources(self, status: dict | None = None) -> str:
+        status = status or self.tracker_intel.feed_status()
+        disabled = status.get("disabled_feed_urls") or []
+        if not disabled:
+            return "No disabled sources."
+        return "\n".join(str(url) for url in disabled)
+
+    def _format_feed_failures(self, status: dict | None = None) -> str:
+        status = status or self.tracker_intel.feed_status()
+        failures = status.get("failures") or []
+        if not failures:
+            return "No recent feed failures."
+        return "\n\n".join(
+            f"{item.get('url', 'unknown')}\n{item.get('error', 'unknown error')}"
+            for item in failures
+        )
+
+    def _set_text_block(self, widget: tk.Text, text: str) -> None:
+        widget.configure(state="normal")
+        widget.delete("1.0", "end")
+        widget.insert("1.0", text)
+        widget.configure(state="disabled")
 
     def _current_filters(self) -> ReportFilters:
         window_text = self.window_var.get().strip().lower()
