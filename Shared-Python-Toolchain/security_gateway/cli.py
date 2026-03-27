@@ -89,8 +89,12 @@ def proxy_health() -> None:
 
 
 @app.command("ip-block")
-def ip_block(ip: str, reason: str = typer.Option("manual operator block", help="Why the IP is being blocked")) -> None:
-    entry = ip_blocklist.block(ip, reason=reason, blocked_by="cli")
+def ip_block(
+    ip: str,
+    reason: str = typer.Option("manual operator block", help="Why the IP is being blocked"),
+    duration_minutes: int | None = typer.Option(None, help="Optional automatic expiry in minutes"),
+) -> None:
+    entry = ip_blocklist.block(ip, reason=reason, blocked_by="cli", duration_minutes=duration_minutes)
     print({"status": "blocked", "entry": entry.__dict__})
 
 

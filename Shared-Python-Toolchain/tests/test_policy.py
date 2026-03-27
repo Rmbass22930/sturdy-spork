@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import json
 
 import base64
 
@@ -169,3 +170,25 @@ def test_blocked_ip_is_denied_immediately(tmp_path):
 
     assert decision.decision == Decision.deny
     assert any("blocked" in reason.lower() for reason in decision.reasons)
+
+
+def test_expired_blocked_ip_is_not_denied(tmp_path):
+    blocklist = IPBlocklistManager(path=tmp_path / "blocked_ips.json")
+    blocklist.block("203.0.113.13", reason="temporary hold", blocked_by="test", duration_minutes=1)
+    payload = {
+        "203.0.113.13": {
+            "ip": "203.0.113.13",
+            "blocked_at": (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat(),
+            "reason": "temporary hold",
+            "blocked_by": "test",
+            "expires_at": (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(),
+        }
+    }
+    (tmp_path / "blocked_ips.json").write_text(json.dumps(payload), encoding="utf-8")
+    engine = PolicyEngine(ip_blocklist=blocklist)
+    request = _base_request()
+    request.source_ip = "203.0.113.13"
+
+    decision = engine.evaluate(request)
+
+    assert not any("blocked" in reason.lower() for reason in decision.reasons)

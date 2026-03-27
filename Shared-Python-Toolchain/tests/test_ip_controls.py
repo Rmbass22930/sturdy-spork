@@ -1,4 +1,6 @@
+import json
 from pathlib import Path
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -42,3 +44,24 @@ def test_invalid_ip_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError):
         manager.block("not-an-ip", reason="bad")
+
+
+def test_temporary_block_expires_automatically(tmp_path: Path) -> None:
+    audit = DummyAuditLogger()
+    manager = IPBlocklistManager(path=tmp_path / "blocked_ips.json", audit_logger=audit)
+    manager.block("203.0.113.12", reason="temporary hold", blocked_by="test", duration_minutes=5)
+
+    payload = {
+        "203.0.113.12": {
+            "ip": "203.0.113.12",
+            "blocked_at": datetime.now(UTC).isoformat(),
+            "reason": "temporary hold",
+            "blocked_by": "test",
+            "expires_at": (datetime.now(UTC) - timedelta(minutes=1)).isoformat(),
+        }
+    }
+    (tmp_path / "blocked_ips.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    assert manager.is_blocked("203.0.113.12") is False
+    assert manager.list_entries() == []
+    assert any(event == "network.ip_unblock_expired" for event, _ in audit.events)

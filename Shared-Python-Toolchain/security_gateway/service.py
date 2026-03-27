@@ -153,6 +153,7 @@ class ProxyPayload(BaseModel):
 class BlockIPPayload(BaseModel):
     ip: str
     reason: str = "manual operator block"
+    duration_minutes: int | None = None
 
 
 class UnblockIPPayload(BaseModel):
@@ -184,7 +185,12 @@ async def list_blocked_ips() -> dict:
 
 @app.post("/network/blocked-ips")
 async def block_ip(payload: BlockIPPayload) -> dict:
-    entry = ip_blocklist.block(payload.ip, reason=payload.reason, blocked_by="api")
+    entry = ip_blocklist.block(
+        payload.ip,
+        reason=payload.reason,
+        blocked_by="api",
+        duration_minutes=payload.duration_minutes,
+    )
     return {"status": "blocked", "entry": entry.__dict__}
 
 

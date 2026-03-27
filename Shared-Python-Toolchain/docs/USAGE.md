@@ -29,7 +29,7 @@ security-gateway pam-checkout db --ttl-minutes 5
 security-gateway pam-metrics
 security-gateway proxy-request https://ifconfig.me --via tor
 security-gateway proxy-health
-security-gateway ip-block 203.0.113.10 --reason "confirmed attack"
+security-gateway ip-block 203.0.113.10 --reason "confirmed attack" --duration-minutes 60
 security-gateway ip-list
 security-gateway ip-unblock 203.0.113.10 --reason "false positive"
 security-gateway scan suspicious.bin
