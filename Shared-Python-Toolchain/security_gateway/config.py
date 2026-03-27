@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SECURITY_GATEWAY_", env_file=".env")
     environment: str = Field("dev", description="Deployment environment tag")
     audit_log_path: str = Field("logs/audit.jsonl")
+    ip_blocklist_path: str = Field("logs/blocked_ips.json")
     hashicorp_vault_url: Optional[str] = None
     hashicorp_vault_token: Optional[str] = None
     hashicorp_vault_mount: str = "secret"

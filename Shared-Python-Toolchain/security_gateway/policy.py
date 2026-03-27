@@ -7,6 +7,7 @@ from typing import List, Optional
 
 from .alerts import AlertEvent, AlertLevel, alert_manager
 from .config import settings
+from .ip_controls import IPBlocklistManager
 from .mfa import MFAService
 from .models import AccessDecision, AccessRequest, Decision, DeviceCompliance
 from .threat_response import ThreatResponseCoordinator
@@ -72,11 +73,13 @@ class PolicyEngine:
         dns_cache=dns_security_cache,
         threat_responder: ThreatResponseCoordinator | None = None,
         traceroute_runner: TraceRouteRunner | None = None,
+        ip_blocklist: IPBlocklistManager | None = None,
     ):
         self.risk_calculator = risk_calculator or RiskCalculator()
         self.mfa_service = mfa_service or MFAService()
         self.dns_cache = dns_cache
         self.threat_responder = threat_responder
+        self.ip_blocklist = ip_blocklist or IPBlocklistManager()
         self.traceroute_runner = traceroute_runner or TraceRouteRunner(
             confirm_before_trace=settings.traceroute_require_confirmation,
             show_popup_results=settings.traceroute_show_popup_results,
@@ -84,6 +87,17 @@ class PolicyEngine:
         )
 
     def evaluate(self, request: AccessRequest) -> AccessDecision:
+        if request.source_ip and self.ip_blocklist.is_blocked(request.source_ip):
+            reason = f"Source IP {request.source_ip} is blocked"
+            alert_manager.emit(
+                AlertEvent(
+                    level=AlertLevel.warning,
+                    title="Blocked IP denied",
+                    message=f"Traffic denied from blocked IP {request.source_ip}",
+                    context={"source_ip": request.source_ip, "resource": request.resource},
+                )
+            )
+            return AccessDecision(decision=Decision.deny, risk_score=settings.max_risk_score, reasons=[reason])
         dns_secure = request.dns_secure
         if dns_secure is None and request.resource:
             dns_secure = self.dns_cache.get(request.resource)

@@ -17,6 +17,7 @@ from security_gateway.automation import AutomationSupervisor, run_forever
 from security_gateway.config import settings
 from security_gateway.dns import SecureDNSResolver
 from security_gateway.endpoint import MalwareScanner
+from security_gateway.ip_controls import IPBlocklistManager
 from security_gateway.models import AccessRequest
 from security_gateway.pam import VaultClient
 from security_gateway.policy import PolicyEngine
@@ -29,7 +30,8 @@ app = typer.Typer(help="Interact with the security gateway modules locally.")
 audit_logger = AuditLogger(settings.audit_log_path)
 vault = VaultClient(audit_logger=audit_logger)
 threat_responder = ThreatResponseCoordinator(vault, audit_logger, alert_manager)
-policy_engine = PolicyEngine(threat_responder=threat_responder)
+ip_blocklist = IPBlocklistManager(audit_logger=audit_logger)
+policy_engine = PolicyEngine(threat_responder=threat_responder, ip_blocklist=ip_blocklist)
 resolver = SecureDNSResolver()
 proxy = OutboundProxy()
 scanner = MalwareScanner()
@@ -84,6 +86,25 @@ def proxy_request(url: str, via: str = typer.Option("tor", help="tor|warp|direct
 @app.command()
 def proxy_health() -> None:
     print(proxy.health())
+
+
+@app.command("ip-block")
+def ip_block(ip: str, reason: str = typer.Option("manual operator block", help="Why the IP is being blocked")) -> None:
+    entry = ip_blocklist.block(ip, reason=reason, blocked_by="cli")
+    print({"status": "blocked", "entry": entry.__dict__})
+
+
+@app.command("ip-unblock")
+def ip_unblock(ip: str, reason: str = typer.Option("operator review cleared", help="Why the IP is being unblocked")) -> None:
+    removed = ip_blocklist.unblock(ip, reason=reason, unblocked_by="cli")
+    if not removed:
+        raise typer.Exit(code=1)
+    print({"status": "unblocked", "ip": ip, "reason": reason})
+
+
+@app.command("ip-list")
+def ip_list() -> None:
+    print({"blocked_ips": [entry.__dict__ for entry in ip_blocklist.list_entries()]})
 
 
 @app.command()

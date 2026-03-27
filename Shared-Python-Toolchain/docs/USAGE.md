@@ -16,6 +16,7 @@ uvicorn security_gateway.service:app --reload
 - `PUT /pam/secret`, `POST /pam/checkout`, `GET /pam/metrics` – manage privileged credentials + rotation insights.
 - `GET /dns/resolve` – DoH lookup that records DNSSEC status for downstream risk scoring.
 - `POST /tor/request`, `GET /proxy/health` – send proxied HTTP requests and verify Tor/WARP health.
+- `GET /network/blocked-ips`, `POST /network/blocked-ips`, `DELETE /network/blocked-ips/{ip}` – review, block, and unblock source IPs.
 - `POST /endpoint/scan` – malware scan uploads prior to privileged flows.
 - `WS /ws` – real-time channel (sends `{"type":"ready"}` on connect, `ping` -> `pong`, other messages echoed as `echo:<message>`).
 
@@ -28,6 +29,9 @@ security-gateway pam-checkout db --ttl-minutes 5
 security-gateway pam-metrics
 security-gateway proxy-request https://ifconfig.me --via tor
 security-gateway proxy-health
+security-gateway ip-block 203.0.113.10 --reason "confirmed attack"
+security-gateway ip-list
+security-gateway ip-unblock 203.0.113.10 --reason "false positive"
 security-gateway scan suspicious.bin
 security-gateway automation-run
 security-gateway mfa-register-webauthn user-123 cred-abc BASE64PUBLICKEY==

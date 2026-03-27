@@ -6,6 +6,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from security_gateway.mfa import MFAService
+from security_gateway.ip_controls import IPBlocklistManager
 from security_gateway.models import AccessRequest, DeviceCompliance, DeviceContext, Decision, UserContext, WebAuthnResponse
 from security_gateway.policy import PolicyEngine
 from security_gateway.utils import generate_totp
@@ -155,3 +156,16 @@ def test_traceroute_does_not_run_on_uncorroborated_high_score():
 
     assert decision.decision == Decision.deny
     assert trace_runner.calls == []
+
+
+def test_blocked_ip_is_denied_immediately(tmp_path):
+    blocklist = IPBlocklistManager(path=tmp_path / "blocked_ips.json")
+    blocklist.block("203.0.113.12", reason="confirmed abuse", blocked_by="test")
+    engine = PolicyEngine(ip_blocklist=blocklist)
+    request = _base_request()
+    request.source_ip = "203.0.113.12"
+
+    decision = engine.evaluate(request)
+
+    assert decision.decision == Decision.deny
+    assert any("blocked" in reason.lower() for reason in decision.reasons)

@@ -13,6 +13,7 @@ from .automation import AutomationSupervisor
 from .config import settings
 from .dns import SecureDNSResolver
 from .endpoint import EndpointTelemetryService, MalwareScanner
+from .ip_controls import IPBlocklistManager
 from .models import AccessDecision, AccessRequest, CredentialLease, DeviceContext
 from .pam import VaultClient
 from .policy import PolicyEngine
@@ -25,7 +26,8 @@ multipart_installed = importlib.util.find_spec("multipart") is not None
 audit_logger = AuditLogger(settings.audit_log_path)
 vault = VaultClient(audit_logger=audit_logger)
 threat_responder = ThreatResponseCoordinator(vault, audit_logger, alert_manager)
-policy_engine = PolicyEngine(threat_responder=threat_responder)
+ip_blocklist = IPBlocklistManager(audit_logger=audit_logger)
+policy_engine = PolicyEngine(threat_responder=threat_responder, ip_blocklist=ip_blocklist)
 resolver = SecureDNSResolver()
 proxy = OutboundProxy()
 telemetry = EndpointTelemetryService()
@@ -148,6 +150,15 @@ class ProxyPayload(BaseModel):
     via: str = "tor"
 
 
+class BlockIPPayload(BaseModel):
+    ip: str
+    reason: str = "manual operator block"
+
+
+class UnblockIPPayload(BaseModel):
+    reason: str = "operator review cleared"
+
+
 @app.post("/tor/request")
 async def proxy_request(payload: ProxyPayload) -> dict:
     try:
@@ -164,6 +175,25 @@ async def proxy_request(payload: ProxyPayload) -> dict:
 @app.get("/proxy/health")
 async def proxy_health() -> dict:
     return proxy.health()
+
+
+@app.get("/network/blocked-ips")
+async def list_blocked_ips() -> dict:
+    return {"blocked_ips": [entry.__dict__ for entry in ip_blocklist.list_entries()]}
+
+
+@app.post("/network/blocked-ips")
+async def block_ip(payload: BlockIPPayload) -> dict:
+    entry = ip_blocklist.block(payload.ip, reason=payload.reason, blocked_by="api")
+    return {"status": "blocked", "entry": entry.__dict__}
+
+
+@app.delete("/network/blocked-ips/{ip}")
+async def unblock_ip(ip: str, payload: UnblockIPPayload | None = None) -> dict:
+    removed = ip_blocklist.unblock(ip, reason=payload.reason if payload else None, unblocked_by="api")
+    if not removed:
+        raise HTTPException(status_code=404, detail="IP address not blocked")
+    return {"status": "unblocked", "ip": ip}
 
 
 @app.get("/automation/status")
