@@ -29,36 +29,67 @@ BUILTIN_TRACKER_DOMAINS = [
 
 TRACKER_HOST_LABELS = {
     "analytics",
+    "api-analytics",
     "beacon",
+    "capture",
     "collect",
+    "events",
+    "fingerprint",
+    "ingest",
     "metric",
     "metrics",
     "pixel",
+    "replay",
+    "rum",
+    "session-replay",
     "tagmanager",
     "telemetry",
     "track",
     "tracker",
+    "trk",
 }
 
-TRACKER_PATH_MARKERS = (
+STRONG_TRACKER_PATH_MARKERS = (
     "/analytics",
     "/beacon",
     "/collect",
-    "/events",
+    "/fingerprint",
     "/pixel",
+    "/replay",
+    "/rum",
+    "/session-replay",
     "/telemetry",
     "/track",
 )
 
+WEAK_TRACKER_PATH_MARKERS = (
+    "/capture",
+    "/events",
+    "/identify",
+    "/ingest",
+)
+
 TRACKER_QUERY_KEYS = {
+    "_fbc",
+    "_fbp",
+    "_ga",
+    "_gid",
+    "aid",
+    "anonymous_id",
+    "cid",
+    "client_id",
     "clickid",
+    "device_id",
     "dclid",
+    "distinct_id",
     "fbclid",
+    "fingerprint",
     "gclid",
     "mc_eid",
     "msclkid",
     "rb_clickid",
     "scid",
+    "session_id",
     "ttclid",
     "twclid",
     "utm_campaign",
@@ -66,6 +97,21 @@ TRACKER_QUERY_KEYS = {
     "utm_medium",
     "utm_source",
     "utm_term",
+    "visitor_id",
+}
+
+TRACKER_PATH_TOKENS = {
+    "capture",
+    "collect",
+    "fingerprint",
+    "identify",
+    "ingest",
+    "pixel",
+    "replay",
+    "rum",
+    "session-replay",
+    "telemetry",
+    "track",
 }
 
 
@@ -163,14 +209,52 @@ class TrackerIntel:
             reasons.append(f"Tracker-style host labels: {', '.join(matching_labels)}")
 
         lowered_path = path.lower()
-        matching_paths = [marker for marker in TRACKER_PATH_MARKERS if marker in lowered_path]
-        if matching_paths:
+        strong_matching_paths = [marker for marker in STRONG_TRACKER_PATH_MARKERS if marker in lowered_path]
+        if strong_matching_paths:
             score += 2
-            reasons.append(f"Tracker-style URL path markers: {', '.join(matching_paths)}")
+            reasons.append(f"Tracker-style URL path markers: {', '.join(strong_matching_paths)}")
 
         normalized_keys = sorted({key.lower() for key in query_keys if key.lower() in TRACKER_QUERY_KEYS})
+
+        weak_matching_paths = [marker for marker in WEAK_TRACKER_PATH_MARKERS if marker in lowered_path]
+        if weak_matching_paths and (matching_labels or normalized_keys):
+            score += 1
+            reasons.append(f"Weak tracker path markers with corroborating signals: {', '.join(weak_matching_paths)}")
+
+        normalized_path_tokens = sorted(
+            {
+                token
+                for token in lowered_path.replace("_", "-").split("/")
+                if token in TRACKER_PATH_TOKENS
+            }
+        )
+        if normalized_path_tokens and (matching_labels or normalized_keys or strong_matching_paths):
+            score += 1
+            reasons.append(f"Tracker-style path tokens: {', '.join(normalized_path_tokens)}")
+
         if normalized_keys:
             score += min(2, len(normalized_keys))
             reasons.append(f"Tracking query keys: {', '.join(normalized_keys)}")
 
+        if self._looks_like_first_party_cloaked_tracker(hostname, matching_labels, lowered_path, normalized_keys):
+            score += 1
+            reasons.append("First-party tracker cloaking pattern")
+
         return score, reasons
+
+    def _looks_like_first_party_cloaked_tracker(
+        self,
+        hostname: str,
+        matching_labels: list[str],
+        lowered_path: str,
+        normalized_keys: list[str],
+    ) -> bool:
+        if not hostname or not matching_labels:
+            return False
+        host_parts = [part for part in hostname.split(".") if part]
+        if len(host_parts) < 3:
+            return False
+        if not any(key in normalized_keys for key in {"_ga", "_gid", "_fbp", "_fbc", "distinct_id", "anonymous_id", "fingerprint"}):
+            if not any(marker in lowered_path for marker in ("/collect", "/ingest", "/rum", "/replay", "/session-replay", "/fingerprint")):
+                return False
+        return True
