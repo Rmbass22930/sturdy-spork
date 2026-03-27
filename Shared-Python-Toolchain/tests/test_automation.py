@@ -34,6 +34,20 @@ class DummyAlerts:
         self.events.append(event)
 
 
+class DummyTrackerIntel:
+    def __init__(self):
+        self.refresh_calls = 0
+
+    def refresh_feed_cache(self):
+        self.refresh_calls += 1
+        return {
+            "domain_count": 123,
+            "last_refresh_result": "success",
+            "last_error": None,
+            "sources": [{"url": "https://feed.local/example", "domain_count": 123}],
+        }
+
+
 def test_perform_tasks_records_metrics():
     vault = DummyVault()
     proxy = DummyProxy()
@@ -51,3 +65,51 @@ def test_perform_tasks_records_metrics():
     assert any(event == "automation.tick" for event, _ in audit.events)
     status = supervisor.status()
     assert status["last_run"] is not None
+
+
+def test_tracker_feed_refresh_is_disabled_by_default():
+    vault = DummyVault()
+    proxy = DummyProxy()
+    audit = DummyAudit()
+    alerts = DummyAlerts()
+    tracker = DummyTrackerIntel()
+    supervisor = AutomationSupervisor(
+        vault=vault,
+        proxy=proxy,
+        audit_logger=audit,
+        alert_manager=alerts,
+        tracker_intel=tracker,
+        interval_seconds=0.1,
+    )
+
+    supervisor.perform_tasks()
+
+    assert tracker.refresh_calls == 0
+    assert supervisor.status()["tracker_feed_refresh"]["enabled"] is False
+
+
+def test_tracker_feed_refresh_runs_on_configured_tick():
+    vault = DummyVault()
+    proxy = DummyProxy()
+    audit = DummyAudit()
+    alerts = DummyAlerts()
+    tracker = DummyTrackerIntel()
+    supervisor = AutomationSupervisor(
+        vault=vault,
+        proxy=proxy,
+        audit_logger=audit,
+        alert_manager=alerts,
+        tracker_intel=tracker,
+        interval_seconds=0.1,
+        tracker_feed_refresh_enabled=True,
+        tracker_feed_refresh_every_ticks=2,
+    )
+
+    supervisor.perform_tasks()
+    supervisor.perform_tasks()
+
+    assert tracker.refresh_calls == 1
+    status = supervisor.status()["tracker_feed_refresh"]
+    assert status["enabled"] is True
+    assert status["last_result"] == "success"
+    assert any(event == "automation.tracker_feed_refresh" for event, _ in audit.events)

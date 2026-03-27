@@ -59,6 +59,18 @@ This now works directly from a normal checkout because pytest is configured to a
 
 The staged Security Gateway build is pinned to `Python 3.13`.
 
+## Automation
+- Background automation can now refresh tracker feeds, but it is off by default.
+- Enable it with:
+```
+SECURITY_GATEWAY_AUTOMATION_TRACKER_FEED_REFRESH_ENABLED=true
+```
+- Control how often it runs relative to the main automation loop:
+```
+SECURITY_GATEWAY_AUTOMATION_TRACKER_FEED_REFRESH_EVERY_TICKS=12
+```
+- The automation status output includes tracker-feed refresh state, last result, and last error.
+
 ## HashiCorp Vault backend
 Set the following environment variables (or `.env`) to push PAM secrets into Vault KV v2:
 ```

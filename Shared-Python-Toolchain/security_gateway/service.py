@@ -53,7 +53,10 @@ automation = AutomationSupervisor(
     proxy=proxy,
     audit_logger=audit_logger,
     alert_manager=alert_manager,
+    tracker_intel=tracker_intel,
     interval_seconds=settings.automation_interval_seconds,
+    tracker_feed_refresh_enabled=settings.automation_tracker_feed_refresh_enabled,
+    tracker_feed_refresh_every_ticks=settings.automation_tracker_feed_refresh_every_ticks,
 )
 
 

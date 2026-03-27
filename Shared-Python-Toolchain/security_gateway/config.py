@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     max_risk_score: float = 75.0
     totp_window: int = 1
     automation_interval_seconds: float = 300.0
+    automation_tracker_feed_refresh_enabled: bool = False
+    automation_tracker_feed_refresh_every_ticks: int = 12
     alert_webhook_url: Optional[str] = None
     alert_enable_toast: bool = False
     threat_rotation_enabled: bool = True
