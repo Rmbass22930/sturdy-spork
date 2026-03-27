@@ -44,6 +44,16 @@ class ExternalDependency:
     winget_args: Optional[List[str]] = None
 
 
+@dataclass
+class InstallTransaction:
+    installed_path: Optional[Path] = None
+    previous_user_path: Optional[str] = None
+    backup_file: Optional[Path] = None
+    shortcut_path: Optional[Path] = None
+    uninstall_script: Optional[Path] = None
+    automation_task_registered: bool = False
+
+
 def resolve_powershell_executable() -> str:
     return (
         shutil.which("pwsh")
@@ -136,7 +146,14 @@ def update_user_path(dir_path: Path) -> str:
     return ""
 
 
-def create_shortcut(exe_path: Path) -> None:
+def restore_user_path(previous: str) -> None:
+    import winreg
+
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_ALL_ACCESS) as key:
+        winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, previous)
+
+
+def create_shortcut(exe_path: Path) -> Path:
     desktop = Path(os.path.join(os.environ["USERPROFILE"], "Desktop"))
     shortcut_path = desktop / "SecurityGateway.lnk"
     ps_script = f"$s=(New-Object -ComObject WScript.Shell).CreateShortcut(\"{shortcut_path}\");"
@@ -145,6 +162,7 @@ def create_shortcut(exe_path: Path) -> None:
     ps_script += f"$s.WorkingDirectory=\"{exe_path.parent}\";"
     ps_script += "$s.Save()"
     subprocess.run([resolve_powershell_executable(), "-NoProfile", "-Command", ps_script], check=True)
+    return shortcut_path
 
 
 def _ps_quote(value: str) -> str:
@@ -162,6 +180,19 @@ if ($existing) {{
     Unregister-ScheduledTask -TaskName {_ps_quote(TASK_NAME)} -Confirm:$false
 }}
 Register-ScheduledTask -TaskName {_ps_quote(TASK_NAME)} -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
+"""
+    subprocess.run(
+        [resolve_powershell_executable(), "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_script],
+        check=True,
+    )
+
+
+def unregister_automation_task() -> None:
+    ps_script = f"""
+$task = Get-ScheduledTask -TaskName {_ps_quote(TASK_NAME)} -ErrorAction SilentlyContinue
+if ($task) {{
+    Unregister-ScheduledTask -TaskName {_ps_quote(TASK_NAME)} -Confirm:$false
+}}
 """
     subprocess.run(
         [resolve_powershell_executable(), "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_script],
@@ -236,6 +267,42 @@ try {{
 """
     script_path.write_text(script, encoding="utf-8")
     return script_path
+
+
+def rollback_install(transaction: InstallTransaction) -> None:
+    cleanup_errors: list[str] = []
+
+    if transaction.automation_task_registered:
+        try:
+            unregister_automation_task()
+        except Exception as exc:  # noqa: BLE001
+            cleanup_errors.append(f"scheduled task rollback failed: {exc}")
+
+    for path in (transaction.uninstall_script, transaction.shortcut_path, transaction.backup_file, transaction.installed_path):
+        if not path:
+            continue
+        try:
+            if path.exists():
+                path.unlink()
+        except Exception as exc:  # noqa: BLE001
+            cleanup_errors.append(f"cleanup failed for {path}: {exc}")
+
+    if transaction.previous_user_path is not None:
+        try:
+            restore_user_path(transaction.previous_user_path)
+        except Exception as exc:  # noqa: BLE001
+            cleanup_errors.append(f"PATH rollback failed: {exc}")
+
+    if transaction.installed_path:
+        try:
+            install_dir = transaction.installed_path.parent
+            if install_dir.exists() and not any(install_dir.iterdir()):
+                install_dir.rmdir()
+        except Exception as exc:  # noqa: BLE001
+            cleanup_errors.append(f"install directory cleanup failed: {exc}")
+
+    if cleanup_errors:
+        raise RuntimeError("Install rollback was incomplete: " + " | ".join(cleanup_errors))
 
 
 def show_install_guide(override_url: Optional[str] = None) -> None:
@@ -357,13 +424,23 @@ def main(argv: Optional[list[str]] = None) -> int:
     dependencies = load_dependency_manifest(manifest_path)
     install_external_dependencies(dependencies)
 
-    installed_path = copy_binary(resource, INSTALL_DIR)
-    previous_path = update_user_path(INSTALL_DIR)
-    backup_file = installed_path.parent / PATH_BACKUP_NAME
-    backup_file.write_text(previous_path, encoding="utf-8")
-    create_shortcut(installed_path)
-    register_automation_task(installed_path)
-    uninstall_script = write_uninstall_script(installed_path, backup_file)
+    transaction = InstallTransaction()
+    try:
+        installed_path = copy_binary(resource, INSTALL_DIR)
+        transaction.installed_path = installed_path
+        previous_path = update_user_path(INSTALL_DIR)
+        transaction.previous_user_path = previous_path
+        backup_file = installed_path.parent / PATH_BACKUP_NAME
+        backup_file.write_text(previous_path, encoding="utf-8")
+        transaction.backup_file = backup_file
+        transaction.shortcut_path = create_shortcut(installed_path)
+        register_automation_task(installed_path)
+        transaction.automation_task_registered = True
+        uninstall_script = write_uninstall_script(installed_path, backup_file)
+        transaction.uninstall_script = uninstall_script
+    except Exception:
+        rollback_install(transaction)
+        raise
     print(f"SecurityGateway installed to {installed_path}")
     print("PATH updated for current user. Sign out/in or restart terminal to use immediately.")
     print("Desktop shortcut created for automation mode.")

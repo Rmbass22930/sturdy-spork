@@ -1,11 +1,21 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import os
+from pathlib import Path
+
+project_root = Path.cwd()
+payload_env = os.environ.get("SECURITY_GATEWAY_PAYLOAD_PATH")
+if not payload_env:
+    raise SystemExit("SECURITY_GATEWAY_PAYLOAD_PATH is required. Use scripts/build-security-gateway.ps1.")
+payload_path = Path(payload_env)
+if not payload_path.exists():
+    raise SystemExit(f"Security Gateway payload missing: {payload_path}")
 
 a = Analysis(
     ['installer\\installer.py'],
     pathex=[],
     binaries=[],
-    datas=[('dist/SecurityGateway.exe', 'payload'), ('docs/INSTALL_GUIDE.pdf', 'docs'), ('installer/dependencies.json', 'installer')],
+    datas=[(str(payload_path), 'payload'), ('docs/INSTALL_GUIDE.pdf', 'docs'), ('installer/dependencies.json', 'installer')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

@@ -36,7 +36,14 @@ security-gateway alert-test --level warning --title \"Suspicious\" --message \"U
 
 ## Tests
 ```
-python -m pytest
+py -3.14 -m pytest
+```
+
+This now works directly from a normal checkout because pytest is configured to add the project root to `sys.path`.
+
+## Security Gateway builds
+```
+.\scripts\build-security-gateway.ps1
 ```
 
 ## HashiCorp Vault backend

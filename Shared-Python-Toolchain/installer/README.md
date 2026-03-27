@@ -2,6 +2,16 @@
 
 The PyInstaller bootstrap (`installer/installer.py`) can now fetch external programs and payloads from the internet before finishing setup.
 
+## Build flow
+
+Use [scripts/build-security-gateway.ps1](/J:/sturdy-spork/Shared-Python-Toolchain/scripts/build-security-gateway.ps1) to build the app and installer together.
+
+- It builds `SecurityGateway.exe` first into a staged location.
+- It passes that exact staged payload into `SecurityGatewayInstaller.spec`.
+- The installer spec now fails fast if `SECURITY_GATEWAY_PAYLOAD_PATH` is not provided.
+
+This avoids silently embedding a stale `dist\SecurityGateway.exe`.
+
 ## Payload / Guide Overrides
 
 - `SECURITY_GATEWAY_PAYLOAD_URL` (or pass `--payload-url`) points to the latest `SecurityGateway.exe`. Optionally pair with `SECURITY_GATEWAY_PAYLOAD_SHA256`.
