@@ -82,6 +82,28 @@ SECURITY_GATEWAY_AUTO_BLOCK_ENABLED=true
 SECURITY_GATEWAY_AUTO_BLOCK_DURATION_MINUTES=30
 ```
 
+## Anti-tracker blocking
+- Tracker destinations are blocked at the application layer by default.
+- Blocking applies to:
+  - `GET /dns/resolve` for known or strongly heuristic tracker hostnames
+  - `POST /tor/request` for known or strongly heuristic tracker URLs
+- Known tracker domains are blocked immediately.
+- Newer tracking methods are detected heuristically from combinations of:
+  - tracker-style host labels
+  - tracker-style URL path markers
+  - tracking query parameters such as `gclid`, `fbclid`, `utm_*`, and similar keys
+- Tracker blocks are audited as `privacy.tracker_block`.
+- Review recent tracker blocks with:
+  - `GET /privacy/tracker-events`
+- To disable tracker blocking:
+```
+SECURITY_GATEWAY_TRACKER_BLOCK_ENABLED=false
+```
+- To add custom tracker domains, point this setting at a JSON array of domains:
+```
+SECURITY_GATEWAY_TRACKER_DOMAIN_LIST_PATH=C:\path\to\tracker-domains.json
+```
+
 ## Quiet operation defaults
 - Desktop toast alerts are disabled by default.
 - Traceroute confirmation prompts are disabled by default.

@@ -214,3 +214,30 @@ def test_reports_endpoints_list_and_fetch_saved_pdf(monkeypatch, tmp_path):
         assert fetched.status_code == 200
         assert fetched.headers["content-type"] == "application/pdf"
         assert fetched.content.startswith(b"%PDF")
+
+
+def test_dns_resolve_blocks_tracker_domains(monkeypatch, tmp_path):
+    audit, _, _ = _install_test_managers(monkeypatch, tmp_path)
+
+    with TestClient(service.app) as client:
+        response = client.get("/dns/resolve", params={"hostname": "www.google-analytics.com", "record_type": "A"})
+
+    assert response.status_code == 403
+    assert "Tracker domain blocked" in response.json()["detail"]
+    assert any(event == "privacy.tracker_block" for event, _ in audit.events)
+
+
+def test_proxy_request_blocks_tracker_like_urls(monkeypatch, tmp_path):
+    audit, _, _ = _install_test_managers(monkeypatch, tmp_path)
+
+    with TestClient(service.app) as client:
+        response = client.post(
+            "/tor/request",
+            json={"url": "https://metrics.example.com/collect?utm_source=email&gclid=abc123", "method": "GET", "via": "direct"},
+        )
+
+    assert response.status_code == 403
+    assert "Tracker destination blocked" in response.json()["detail"]
+    tracker_events = [data for event, data in audit.events if event == "privacy.tracker_block"]
+    assert tracker_events
+    assert tracker_events[0]["source"] == "heuristic"

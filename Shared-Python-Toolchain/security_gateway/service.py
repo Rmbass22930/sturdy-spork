@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from contextlib import asynccontextmanager
+from pathlib import Path
 from fastapi.responses import FileResponse, Response
 
 from fastapi import FastAPI, File, HTTPException, UploadFile, Request, WebSocket, WebSocketDisconnect
@@ -20,6 +22,7 @@ from .pam import VaultClient
 from .policy import PolicyEngine
 from .reports import SecurityReportBuilder
 from .state import dns_security_cache
+from .tracker_intel import TrackerIntel
 from .tor import OutboundProxy
 from .threat_response import ThreatResponseCoordinator
 
@@ -35,6 +38,7 @@ proxy = OutboundProxy()
 telemetry = EndpointTelemetryService()
 scanner = MalwareScanner()
 report_builder = SecurityReportBuilder()
+tracker_intel = TrackerIntel(extra_domains_path=settings.tracker_domain_list_path)
 automation = AutomationSupervisor(
     vault=vault,
     proxy=proxy,
@@ -110,6 +114,21 @@ async def pam_metrics() -> dict:
 
 @app.get("/dns/resolve")
 async def resolve_dns(hostname: str, record_type: str = "A") -> dict:
+    tracker_match = tracker_intel.is_tracker_hostname(hostname) if settings.tracker_block_enabled else None
+    if tracker_match:
+        audit_logger.log(
+            "privacy.tracker_block",
+            {
+                "target_type": "dns",
+                "hostname": tracker_match.hostname,
+                "matched_domain": tracker_match.matched_domain,
+                "source": tracker_match.source,
+                "confidence": tracker_match.confidence,
+                "reason": tracker_match.reason,
+                "record_type": record_type,
+            },
+        )
+        raise HTTPException(status_code=403, detail=f"Tracker domain blocked: {tracker_match.hostname}")
     result = resolver.resolve(hostname, record_type)
     dns_security_cache.record(hostname, result.secure)
     return {
@@ -169,6 +188,22 @@ class PromoteIPPayload(BaseModel):
 
 @app.post("/tor/request")
 async def proxy_request(payload: ProxyPayload) -> dict:
+    tracker_match = tracker_intel.is_tracker_url(payload.url) if settings.tracker_block_enabled else None
+    if tracker_match:
+        audit_logger.log(
+            "privacy.tracker_block",
+            {
+                "target_type": "proxy",
+                "url": payload.url,
+                "hostname": tracker_match.hostname,
+                "matched_domain": tracker_match.matched_domain,
+                "source": tracker_match.source,
+                "confidence": tracker_match.confidence,
+                "reason": tracker_match.reason,
+                "via": payload.via,
+            },
+        )
+        raise HTTPException(status_code=403, detail=f"Tracker destination blocked: {tracker_match.hostname}")
     try:
         result = proxy.request(payload.method.upper(), payload.url, via=payload.via)
     except Exception as exc:  # noqa: BLE001
@@ -183,6 +218,22 @@ async def proxy_request(payload: ProxyPayload) -> dict:
 @app.get("/proxy/health")
 async def proxy_health() -> dict:
     return proxy.health()
+
+
+@app.get("/privacy/tracker-events")
+async def tracker_events(max_events: int = 50) -> dict:
+    events: list[dict] = []
+    audit_path = Path(settings.audit_log_path)
+    if audit_path.exists():
+        lines = audit_path.read_text(encoding="utf-8").splitlines()
+        for raw in lines[-max_events:]:
+            try:
+                event = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if event.get("type") == "privacy.tracker_block":
+                events.append(event)
+    return {"events": events}
 
 
 @app.get("/network/blocked-ips")
