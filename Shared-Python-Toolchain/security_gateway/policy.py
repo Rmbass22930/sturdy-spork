@@ -117,6 +117,7 @@ class PolicyEngine:
             reasons.append("DNSSEC validation failed for resource")
 
         trace_details: TraceRouteResult | None = None
+        auto_block_entry = None
         if (
             score >= settings.max_risk_score
             and request.source_ip
@@ -126,7 +127,20 @@ class PolicyEngine:
             trace_details = self.traceroute_runner.trace(request.source_ip, context=trace_context)
 
         if score >= settings.max_risk_score:
+            if request.source_ip and self._should_auto_block_real_threat(request, dns_secure=dns_secure):
+                auto_block_entry = self.ip_blocklist.block(
+                    request.source_ip,
+                    reason=f"automatic high-risk deny for {request.resource}",
+                    blocked_by="policy",
+                    duration_minutes=settings.auto_block_duration_minutes,
+                )
             context = {"risk_score": score, "reasons": reasons, "source_ip": request.source_ip}
+            if auto_block_entry:
+                context["auto_block"] = {
+                    "ip": auto_block_entry.ip,
+                    "expires_at": auto_block_entry.expires_at,
+                    "reason": auto_block_entry.reason,
+                }
             if trace_details:
                 context["traceroute"] = {
                     "target": trace_details.target,
@@ -184,6 +198,16 @@ class PolicyEngine:
             self.threat_responder.trigger_rotation("risk_score", score, metadata)
 
     def _should_trace_real_threat(self, request: AccessRequest, dns_secure: Optional[bool]) -> bool:
+        return self._corroborating_signal_count(request, dns_secure=dns_secure) >= 2
+
+    def _should_auto_block_real_threat(self, request: AccessRequest, dns_secure: Optional[bool]) -> bool:
+        if not settings.auto_block_enabled or not request.source_ip:
+            return False
+        if self.ip_blocklist.is_blocked(request.source_ip):
+            return False
+        return self._corroborating_signal_count(request, dns_secure=dns_secure) >= 2
+
+    def _corroborating_signal_count(self, request: AccessRequest, dns_secure: Optional[bool]) -> int:
         corroborating_signals = 0
         if request.device.compliance == DeviceCompliance.compromised:
             corroborating_signals += 1
@@ -197,4 +221,4 @@ class PolicyEngine:
             corroborating_signals += 1
         if any(value >= settings.threat_rotation_signal_threshold for value in request.threat_signals.values()):
             corroborating_signals += 1
-        return corroborating_signals >= 2
+        return corroborating_signals

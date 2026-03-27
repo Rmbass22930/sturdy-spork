@@ -160,6 +160,10 @@ class UnblockIPPayload(BaseModel):
     reason: str = "operator review cleared"
 
 
+class PromoteIPPayload(BaseModel):
+    reason: str = "confirmed attacker - permanent block"
+
+
 @app.post("/tor/request")
 async def proxy_request(payload: ProxyPayload) -> dict:
     try:
@@ -200,6 +204,18 @@ async def unblock_ip(ip: str, payload: UnblockIPPayload | None = None) -> dict:
     if not removed:
         raise HTTPException(status_code=404, detail="IP address not blocked")
     return {"status": "unblocked", "ip": ip}
+
+
+@app.post("/network/blocked-ips/{ip}/promote")
+async def promote_ip_block(ip: str, payload: PromoteIPPayload | None = None) -> dict:
+    entry = ip_blocklist.promote_to_permanent(
+        ip,
+        reason=payload.reason if payload else None,
+        promoted_by="api",
+    )
+    if not entry:
+        raise HTTPException(status_code=404, detail="IP address not blocked")
+    return {"status": "promoted", "entry": entry.__dict__}
 
 
 @app.get("/automation/status")

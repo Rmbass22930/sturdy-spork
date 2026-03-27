@@ -125,9 +125,9 @@ class DummyTraceRunner:
         return None
 
 
-def test_traceroute_runs_only_for_corroborated_real_threat():
+def test_traceroute_runs_only_for_corroborated_real_threat(tmp_path):
     trace_runner = DummyTraceRunner()
-    engine = PolicyEngine(traceroute_runner=trace_runner)
+    engine = PolicyEngine(traceroute_runner=trace_runner, ip_blocklist=IPBlocklistManager(path=tmp_path / "blocked_ips.json"))
     request = _base_request(privilege="privileged")
     request.source_ip = "203.0.113.10"
     request.device.compliance = DeviceCompliance.compromised
@@ -142,9 +142,9 @@ def test_traceroute_runs_only_for_corroborated_real_threat():
     assert trace_runner.calls[0]["target"] == "203.0.113.10"
 
 
-def test_traceroute_does_not_run_on_uncorroborated_high_score():
+def test_traceroute_does_not_run_on_uncorroborated_high_score(tmp_path):
     trace_runner = DummyTraceRunner()
-    engine = PolicyEngine(traceroute_runner=trace_runner)
+    engine = PolicyEngine(traceroute_runner=trace_runner, ip_blocklist=IPBlocklistManager(path=tmp_path / "blocked_ips.json"))
     request = _base_request()
     request.source_ip = "203.0.113.11"
 
@@ -192,3 +192,39 @@ def test_expired_blocked_ip_is_not_denied(tmp_path):
     decision = engine.evaluate(request)
 
     assert not any("blocked" in reason.lower() for reason in decision.reasons)
+
+
+def test_corroborated_high_risk_denial_auto_blocks_ip(tmp_path):
+    blocklist = IPBlocklistManager(path=tmp_path / "blocked_ips.json")
+    engine = PolicyEngine(ip_blocklist=blocklist)
+    request = _base_request(privilege="privileged")
+    request.source_ip = "203.0.113.20"
+    request.device.compliance = DeviceCompliance.compromised
+    request.device.is_encrypted = False
+    request.device.edr_active = False
+    request.dns_secure = False
+
+    decision = engine.evaluate(request)
+
+    assert decision.decision == Decision.deny
+    assert blocklist.is_blocked("203.0.113.20") is True
+    entry = blocklist.list_entries()[0]
+    assert entry.blocked_by == "policy"
+    assert entry.expires_at is not None
+
+
+def test_uncorroborated_high_risk_denial_does_not_auto_block(tmp_path):
+    blocklist = IPBlocklistManager(path=tmp_path / "blocked_ips.json")
+    engine = PolicyEngine(ip_blocklist=blocklist)
+    request = _base_request()
+    request.source_ip = "203.0.113.21"
+
+    class FixedRisk:
+        def score(self, request, dns_secure=None):
+            return settings.max_risk_score
+
+    engine.risk_calculator = FixedRisk()
+    decision = engine.evaluate(request)
+
+    assert decision.decision == Decision.deny
+    assert blocklist.is_blocked("203.0.113.21") is False

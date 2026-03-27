@@ -16,7 +16,7 @@ uvicorn security_gateway.service:app --reload
 - `PUT /pam/secret`, `POST /pam/checkout`, `GET /pam/metrics` – manage privileged credentials + rotation insights.
 - `GET /dns/resolve` – DoH lookup that records DNSSEC status for downstream risk scoring.
 - `POST /tor/request`, `GET /proxy/health` – send proxied HTTP requests and verify Tor/WARP health.
-- `GET /network/blocked-ips`, `POST /network/blocked-ips`, `DELETE /network/blocked-ips/{ip}` – review, block, and unblock source IPs.
+- `GET /network/blocked-ips`, `POST /network/blocked-ips`, `DELETE /network/blocked-ips/{ip}`, `POST /network/blocked-ips/{ip}/promote` – review, block, unblock, and promote source IP blocks to permanent.
 - `POST /endpoint/scan` – malware scan uploads prior to privileged flows.
 - `WS /ws` – real-time channel (sends `{"type":"ready"}` on connect, `ping` -> `pong`, other messages echoed as `echo:<message>`).
 
@@ -31,6 +31,7 @@ security-gateway proxy-request https://ifconfig.me --via tor
 security-gateway proxy-health
 security-gateway ip-block 203.0.113.10 --reason "confirmed attack" --duration-minutes 60
 security-gateway ip-list
+security-gateway ip-promote 203.0.113.10 --reason "confirmed attacker"
 security-gateway ip-unblock 203.0.113.10 --reason "false positive"
 security-gateway scan suspicious.bin
 security-gateway automation-run
@@ -65,6 +66,15 @@ With these in place, `VaultClient` stores each rotated version at `secret/data/s
 ## Encryption defaults
 - Privileged secrets use a shared `common_crypto.AES256GCMCipher`, which derives 256-bit AES keys via PBKDF2-HMAC-SHA256 (310k iterations) and seals data with AES-256-GCM.
 - Associated data can be supplied by callers that need to bind ciphertexts to contextual metadata (e.g., service identifiers) without re-implementing crypto primitives.
+
+## IP blocking
+- Manual IP blocks can be created through the CLI or API and can expire automatically.
+- Corroborated high-risk denials can trigger an automatic temporary IP block.
+- Configure this with:
+```
+SECURITY_GATEWAY_AUTO_BLOCK_ENABLED=true
+SECURITY_GATEWAY_AUTO_BLOCK_DURATION_MINUTES=30
+```
 
 ## Uninstall
 - After running the installer, an elevated script is dropped at `C:\Program Files\SecurityGateway\Uninstall-SecurityGateway.ps1`. Run it as Administrator to remove the binary, PATH entry, desktop shortcut, and any residual data under `%ProgramData%\SecurityGateway` and `%LOCALAPPDATA%\SecurityGateway`.

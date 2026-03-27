@@ -111,6 +111,17 @@ def ip_list() -> None:
     print({"blocked_ips": [entry.__dict__ for entry in ip_blocklist.list_entries()]})
 
 
+@app.command("ip-promote")
+def ip_promote(
+    ip: str,
+    reason: str = typer.Option("confirmed attacker - permanent block", help="Reason to convert the block to permanent"),
+) -> None:
+    entry = ip_blocklist.promote_to_permanent(ip, reason=reason, promoted_by="cli")
+    if not entry:
+        raise typer.Exit(code=1)
+    print({"status": "promoted", "entry": entry.__dict__})
+
+
 @app.command()
 def scan(path: Path) -> None:
     malicious, verdict = scanner.scan_path(path)

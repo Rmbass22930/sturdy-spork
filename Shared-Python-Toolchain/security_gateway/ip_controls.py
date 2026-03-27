@@ -105,6 +105,36 @@ class IPBlocklistManager:
             )
         return removed
 
+    def promote_to_permanent(
+        self,
+        ip: str,
+        *,
+        reason: Optional[str] = None,
+        promoted_by: str = "operator",
+    ) -> Optional[BlockedIPEntry]:
+        normalized = self._normalize_ip(ip)
+        with self._lock:
+            data = self._load_data()
+            data, expired = self._prune_expired_locked(data)
+            item = data.get(normalized)
+            if expired:
+                self._save_data(data)
+            if not item:
+                self._log_expired(expired)
+                return None
+            item["expires_at"] = None
+            if reason:
+                item["reason"] = reason
+            item["blocked_by"] = promoted_by
+            data[normalized] = item
+            self._save_data(data)
+        self._log_expired(expired)
+        self._audit.log(
+            "network.ip_block_promote_permanent",
+            {"source_ip": normalized, "reason": reason or "", "promoted_by": promoted_by},
+        )
+        return BlockedIPEntry(**item)
+
     def _normalize_ip(self, ip: str) -> str:
         return str(ipaddress.ip_address(ip.strip()))
 

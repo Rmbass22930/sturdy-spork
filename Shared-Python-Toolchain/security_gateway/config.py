@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     threat_rotation_signal_threshold: float = 8.0
     threat_rotation_risk_threshold: float = 60.0
     threat_rotation_cooldown_seconds: float = 120.0
+    auto_block_enabled: bool = True
+    auto_block_duration_minutes: int = 30
     traceroute_require_confirmation: bool = True
     traceroute_show_popup_results: bool = True
     traceroute_preview_lines: int = 6

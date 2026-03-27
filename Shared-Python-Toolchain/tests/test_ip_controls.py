@@ -65,3 +65,25 @@ def test_temporary_block_expires_automatically(tmp_path: Path) -> None:
     assert manager.is_blocked("203.0.113.12") is False
     assert manager.list_entries() == []
     assert any(event == "network.ip_unblock_expired" for event, _ in audit.events)
+
+
+def test_promote_temporary_block_to_permanent(tmp_path: Path) -> None:
+    audit = DummyAuditLogger()
+    manager = IPBlocklistManager(path=tmp_path / "blocked_ips.json", audit_logger=audit)
+    manager.block("203.0.113.14", reason="temporary hold", blocked_by="test", duration_minutes=10)
+
+    entry = manager.promote_to_permanent("203.0.113.14", reason="confirmed attacker", promoted_by="test")
+
+    assert entry is not None
+    assert entry.expires_at is None
+    assert entry.reason == "confirmed attacker"
+    assert entry.blocked_by == "test"
+    assert any(event == "network.ip_block_promote_permanent" for event, _ in audit.events)
+
+
+def test_promote_missing_block_returns_none(tmp_path: Path) -> None:
+    manager = IPBlocklistManager(path=tmp_path / "blocked_ips.json", audit_logger=DummyAuditLogger())
+
+    entry = manager.promote_to_permanent("203.0.113.15", reason="confirmed attacker", promoted_by="test")
+
+    assert entry is None
