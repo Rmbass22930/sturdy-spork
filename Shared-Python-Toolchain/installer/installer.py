@@ -6,15 +6,24 @@ import ctypes
 import hashlib
 import json
 import os
+import queue
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
+
+try:
+    import tkinter as tk
+    from tkinter import ttk
+except Exception:  # pragma: no cover
+    tk = None
+    ttk = None
 
 INSTALL_DIR = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "SecurityGateway"
 RESOURCE_RELATIVE = Path("payload") / "SecurityGateway.exe"
@@ -71,6 +80,248 @@ class InstallSummary:
     shortcut_paths: List[Path]
     uninstall_script: Path
     dependency_results: List[DependencyInstallResult]
+
+
+class InstallReporter:
+    def stage(self, title: str) -> None:
+        print(f"[stage] {title}")
+
+    def info(self, message: str) -> None:
+        print(message)
+
+    def dependency_failure(self, dep: ExternalDependency, message: str) -> str:
+        return prompt_dependency_failure(dep, message)
+
+    def summary(self, summary: InstallSummary) -> None:
+        print_install_summary(summary)
+
+    def error(self, message: str) -> None:
+        print(message, file=sys.stderr)
+
+
+class InstallerUI(InstallReporter):
+    STAGES = [
+        "Opening install guide",
+        "Resolving payload",
+        "Installing prerequisites",
+        "Copying application files",
+        "Updating PATH",
+        "Creating shortcuts",
+        "Registering automation task",
+        "Writing uninstall script",
+        "Finishing",
+    ]
+
+    def __init__(self, args: argparse.Namespace):
+        if tk is None or ttk is None:
+            raise RuntimeError("Tk installer UI is unavailable on this machine.")
+        self.args = args
+        self.root = tk.Tk()
+        self.root.title("SecurityGateway Installer")
+        self.root.geometry("820x620")
+        self.root.minsize(760, 560)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._queue: "queue.Queue[tuple]" = queue.Queue()
+        self._decision_events: list[threading.Event] = []
+        self._install_thread: Optional[threading.Thread] = None
+        self._install_done = False
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(3, weight=1)
+
+        header = ttk.Frame(self.root, padding=(18, 16, 18, 8))
+        header.grid(row=0, column=0, sticky="ew")
+        header.columnconfigure(0, weight=1)
+        ttk.Label(header, text="SecurityGateway Installer", font=("Segoe UI", 18, "bold")).grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Label(
+            header,
+            text="Installs SecurityGateway, creates desktop shortcuts, and registers automation startup.",
+            wraplength=760,
+        ).grid(row=1, column=0, sticky="w", pady=(6, 0))
+
+        progress_frame = ttk.Frame(self.root, padding=(18, 4, 18, 8))
+        progress_frame.grid(row=1, column=0, sticky="ew")
+        progress_frame.columnconfigure(0, weight=1)
+        self.status_var = tk.StringVar(value="Ready to install.")
+        ttk.Label(progress_frame, textvariable=self.status_var, font=("Segoe UI", 10, "bold")).grid(
+            row=0, column=0, sticky="w"
+        )
+        self.progress = ttk.Progressbar(
+            progress_frame,
+            mode="determinate",
+            maximum=len(self.STAGES),
+            value=0,
+        )
+        self.progress.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+
+        body = ttk.Frame(self.root, padding=(18, 0, 18, 0))
+        body.grid(row=2, column=0, sticky="nsew")
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(0, weight=1)
+        self.log = tk.Text(body, height=20, wrap="word", font=("Consolas", 10))
+        self.log.grid(row=0, column=0, sticky="nsew")
+        self.log.configure(state="disabled")
+        scrollbar = ttk.Scrollbar(body, orient="vertical", command=self.log.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.log.configure(yscrollcommand=scrollbar.set)
+
+        footer = ttk.Frame(self.root, padding=(18, 12, 18, 18))
+        footer.grid(row=4, column=0, sticky="ew")
+        footer.columnconfigure(0, weight=1)
+        self.primary_button = ttk.Button(footer, text="Install", command=self._start_install)
+        self.primary_button.grid(row=0, column=1, sticky="e")
+        self.close_button = ttk.Button(footer, text="Close", command=self._on_close)
+        self.close_button.grid(row=0, column=2, sticky="e", padx=(8, 0))
+
+    def run(self) -> int:
+        self.root.after(100, self._pump_queue)
+        self.root.mainloop()
+        return 0
+
+    def _append_log(self, message: str) -> None:
+        self.log.configure(state="normal")
+        self.log.insert("end", message.rstrip() + "\n")
+        self.log.see("end")
+        self.log.configure(state="disabled")
+
+    def _on_close(self) -> None:
+        if self._install_thread and self._install_thread.is_alive() and not self._install_done:
+            return
+        self.root.destroy()
+
+    def _start_install(self) -> None:
+        if self._install_thread and self._install_thread.is_alive():
+            return
+        self.primary_button.configure(state="disabled")
+        self.status_var.set("Starting install...")
+        self._install_thread = threading.Thread(target=self._run_install, daemon=True)
+        self._install_thread.start()
+
+    def _run_install(self) -> None:
+        try:
+            perform_install(self.args, reporter=self)
+        except Exception as exc:  # noqa: BLE001
+            self._queue.put(("error", str(exc)))
+        else:
+            self._queue.put(("done", None))
+
+    def _pump_queue(self) -> None:
+        while True:
+            try:
+                item = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            kind = item[0]
+            if kind == "stage":
+                title = item[1]
+                try:
+                    stage_index = self.STAGES.index(title) + 1
+                except ValueError:
+                    stage_index = self.progress["value"]
+                self.status_var.set(title)
+                self.progress.configure(value=stage_index)
+                self._append_log(f"[stage] {title}")
+            elif kind == "info":
+                self._append_log(item[1])
+            elif kind == "summary":
+                self.status_var.set("Install complete.")
+                self.progress.configure(value=len(self.STAGES))
+                self._append_log("")
+                self._append_log("Install complete:")
+                summary: InstallSummary = item[1]
+                self._append_log(f"- Application: {summary.installed_path}")
+                self._append_log("- Desktop shortcuts:")
+                for shortcut_path in summary.shortcut_paths:
+                    self._append_log(f"  - {shortcut_path}")
+                if summary.dependency_results:
+                    self._append_log("- Dependencies:")
+                    for result in summary.dependency_results:
+                        target_suffix = f" ({result.target})" if result.target else ""
+                        detail_suffix = f" - {result.detail}" if result.detail else ""
+                        self._append_log(f"  - {result.name}: {result.status} via {result.method}{target_suffix}{detail_suffix}")
+                else:
+                    self._append_log("- Dependencies: none")
+                self._append_log(f"- Uninstall script: {summary.uninstall_script}")
+                self._append_log("- PATH updated for current user. Sign out/in or restart terminal to use immediately.")
+            elif kind == "error":
+                self.status_var.set("Install failed.")
+                self._append_log(f"[error] {item[1]}")
+                self._install_done = True
+                self.primary_button.configure(state="normal", text="Retry Install")
+                self.close_button.configure(text="Close")
+            elif kind == "done":
+                self._install_done = True
+                self.primary_button.configure(state="disabled")
+                self.close_button.configure(text="Finish")
+            elif kind == "dependency_prompt":
+                dep, message, response, event = item[1], item[2], item[3], item[4]
+                action = self._show_dependency_dialog(dep, message)
+                response["action"] = action
+                event.set()
+        if self.root.winfo_exists():
+            self.root.after(100, self._pump_queue)
+
+    def _show_dependency_dialog(self, dep: ExternalDependency, message: str) -> str:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Dependency issue")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+        dialog.columnconfigure(0, weight=1)
+        ttk.Label(
+            dialog,
+            text=f"Dependency install failed: {dep.name}",
+            font=("Segoe UI", 11, "bold"),
+            padding=(16, 16, 16, 6),
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            dialog,
+            text=message,
+            wraplength=460,
+            padding=(16, 0, 16, 0),
+        ).grid(row=1, column=0, sticky="w")
+        ttk.Label(
+            dialog,
+            text="Choose how setup should continue.",
+            padding=(16, 12, 16, 8),
+        ).grid(row=2, column=0, sticky="w")
+        result = {"action": "abort"}
+
+        buttons = ttk.Frame(dialog, padding=(16, 0, 16, 16))
+        buttons.grid(row=3, column=0, sticky="e")
+
+        def choose(action: str) -> None:
+            result["action"] = action
+            dialog.destroy()
+
+        ttk.Button(buttons, text="Retry", command=lambda: choose("retry")).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(buttons, text="Continue Without", command=lambda: choose("skip")).grid(row=0, column=1, padx=(0, 8))
+        ttk.Button(buttons, text="Abort", command=lambda: choose("abort")).grid(row=0, column=2)
+        dialog.wait_window()
+        return result["action"]
+
+    def stage(self, title: str) -> None:
+        self._queue.put(("stage", title))
+
+    def info(self, message: str) -> None:
+        self._queue.put(("info", message))
+
+    def dependency_failure(self, dep: ExternalDependency, message: str) -> str:
+        event = threading.Event()
+        response: dict[str, str] = {}
+        self._queue.put(("dependency_prompt", dep, message, response, event))
+        event.wait()
+        return response.get("action", "abort")
+
+    def summary(self, summary: InstallSummary) -> None:
+        self._queue.put(("summary", summary))
+
+    def error(self, message: str) -> None:
+        self._queue.put(("error", message))
 
 
 def resolve_powershell_executable() -> str:
@@ -138,6 +389,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--guide-url", help="Override install guide download URL")
     parser.add_argument("--dependency-manifest", help="Path or URL to dependency manifest JSON")
     parser.add_argument("--skip-dependencies", action="store_true", help="Skip prerequisite dependency installation")
+    parser.add_argument("--console", action="store_true", help="Use the console installer flow even when the GUI is available")
     return parser.parse_args(argv)
 
 
@@ -351,29 +603,30 @@ def rollback_install(transaction: InstallTransaction) -> None:
         raise RuntimeError("Install rollback was incomplete: " + " | ".join(cleanup_errors))
 
 
-def show_install_guide(override_url: Optional[str] = None) -> None:
+def show_install_guide(override_url: Optional[str] = None, reporter: Optional[InstallReporter] = None) -> None:
+    reporter = reporter or InstallReporter()
     if override_url:
         guide = download_file(override_url, "installation guide PDF")
     else:
         guide = resolve_resource(GUIDE_RELATIVE)
-    print(f"Opening installation guide: {guide}")
+    reporter.info(f"Opening installation guide: {guide}")
     opened = False
     try:
         os.startfile(guide)  # type: ignore[attr-defined]
         opened = True
     except OSError as exc:
-        print(f"Unable to open guide automatically (no default PDF app?): {exc}")
+        reporter.info(f"Unable to open guide automatically (no default PDF app?): {exc}")
         try:
             subprocess.run(["explorer", "/select,", str(guide)], check=False)
-            print("Opened File Explorer so you can launch the PDF manually.")
+            reporter.info("Opened File Explorer so you can launch the PDF manually.")
         except Exception as explorer_exc:  # pragma: no cover
-            print(f"Also failed to open File Explorer: {explorer_exc}")
-        print("If you do not have a PDF reader installed, install one (e.g., Edge, Acrobat) and open the guide manually.")
+            reporter.info(f"Also failed to open File Explorer: {explorer_exc}")
+        reporter.info("If you do not have a PDF reader installed, install one (e.g., Edge, Acrobat) and open the guide manually.")
     if opened:
-        print("Installation guide opened. Setup will continue immediately.")
+        reporter.info("Installation guide opened. Setup will continue immediately.")
     else:
-        print(f"Guide path: {guide}")
-        print("Setup will continue immediately.")
+        reporter.info(f"Guide path: {guide}")
+        reporter.info("Setup will continue immediately.")
 
 
 def resolve_manifest_reference(ref: Optional[str]) -> Optional[Path]:
@@ -409,19 +662,23 @@ def load_dependency_manifest(path: Optional[Path]) -> List[ExternalDependency]:
     return dependencies
 
 
-def install_external_dependencies(dependencies: List[ExternalDependency]) -> List[DependencyInstallResult]:
+def install_external_dependencies(
+    dependencies: List[ExternalDependency],
+    reporter: Optional[InstallReporter] = None,
+) -> List[DependencyInstallResult]:
+    reporter = reporter or InstallReporter()
     if not dependencies:
         return []
     results: list[DependencyInstallResult] = []
-    print(f"Installing {len(dependencies)} prerequisite program(s)...")
+    reporter.info(f"Installing {len(dependencies)} prerequisite program(s)...")
     for dep in dependencies:
-        print(f"- Ensuring {dep.name}")
+        reporter.info(f"- Ensuring {dep.name}")
         while True:
             try:
                 results.append(install_dependency(dep))
                 break
             except Exception as exc:  # noqa: BLE001
-                action = prompt_dependency_failure(dep, str(exc))
+                action = reporter.dependency_failure(dep, str(exc))
                 if action == "retry":
                     continue
                 if action == "skip":
@@ -512,15 +769,17 @@ def prompt_dependency_failure(dep: ExternalDependency, message: str) -> str:
     return "abort"
 
 
-def main(argv: Optional[list[str]] = None) -> int:
-    args = parse_args(argv)
+def perform_install(args: argparse.Namespace, reporter: Optional[InstallReporter] = None) -> int:
+    reporter = reporter or InstallReporter()
     ensure_admin()
 
     guide_url = args.guide_url or os.environ.get(GUIDE_URL_ENV)
-    show_install_guide(guide_url)
+    reporter.stage("Opening install guide")
+    show_install_guide(guide_url, reporter=reporter)
 
     payload_url = args.payload_url or os.environ.get(PAYLOAD_URL_ENV)
     payload_sha = args.payload_sha256 or os.environ.get(PAYLOAD_SHA_ENV)
+    reporter.stage("Resolving payload")
     resource = (
         download_file(payload_url, "SecurityGateway payload", payload_sha)
         if payload_url
@@ -529,7 +788,8 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     dependency_results: List[DependencyInstallResult] = []
     if args.skip_dependencies:
-        print("Skipping prerequisite dependency installation.")
+        reporter.stage("Installing prerequisites")
+        reporter.info("Skipping prerequisite dependency installation.")
     else:
         manifest_ref = (
             args.dependency_manifest
@@ -538,29 +798,40 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         manifest_path = resolve_manifest_reference(manifest_ref)
         dependencies = load_dependency_manifest(manifest_path)
-        dependency_results = install_external_dependencies(dependencies)
+        reporter.stage("Installing prerequisites")
+        dependency_results = install_external_dependencies(dependencies, reporter=reporter)
 
     transaction = InstallTransaction()
     try:
+        reporter.stage("Copying application files")
         installed_path = copy_binary(resource, INSTALL_DIR)
         transaction.installed_path = installed_path
+        reporter.stage("Updating PATH")
         previous_path = update_user_path(INSTALL_DIR)
         transaction.previous_user_path = previous_path
         backup_file = installed_path.parent / PATH_BACKUP_NAME
         backup_file.write_text(previous_path, encoding="utf-8")
         transaction.backup_file = backup_file
+        reporter.stage("Creating shortcuts")
         transaction.shortcut_paths = create_shortcut(installed_path)
+        reporter.stage("Registering automation task")
         register_automation_task(installed_path)
         transaction.automation_task_registered = True
+        reporter.stage("Writing uninstall script")
         uninstall_script = write_uninstall_script(installed_path, backup_file)
         transaction.uninstall_script = uninstall_script
     except Exception as exc:
         try:
             rollback_install(transaction)
         except Exception as rollback_exc:
-            raise RuntimeError(f"Installer failed: {exc}. Rollback also failed: {rollback_exc}") from exc
-        raise RuntimeError(f"Installer failed before completion: {exc}") from exc
-    print_install_summary(
+            message = f"Installer failed: {exc}. Rollback also failed: {rollback_exc}"
+            reporter.error(message)
+            raise RuntimeError(message) from exc
+        message = f"Installer failed before completion: {exc}"
+        reporter.error(message)
+        raise RuntimeError(message) from exc
+    reporter.stage("Finishing")
+    reporter.summary(
         InstallSummary(
             installed_path=installed_path,
             shortcut_paths=transaction.shortcut_paths or [],
@@ -569,6 +840,22 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
     )
     return 0
+
+
+def should_use_installer_ui(args: argparse.Namespace) -> bool:
+    return bool(getattr(sys, "frozen", False) and not args.console and tk is not None and ttk is not None)
+
+
+def run_installer_ui(args: argparse.Namespace) -> int:
+    ui = InstallerUI(args)
+    return ui.run()
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    args = parse_args(argv)
+    if should_use_installer_ui(args):
+        return run_installer_ui(args)
+    return perform_install(args, reporter=InstallReporter())
 
 
 if __name__ == "__main__":

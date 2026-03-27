@@ -116,11 +116,11 @@ def test_main_wraps_rollback_failures(monkeypatch, tmp_path: Path) -> None:
     installed_path = tmp_path / "SecurityGateway.exe"
     installed_path.write_text("binary", encoding="utf-8")
     monkeypatch.setattr(installer, "ensure_admin", lambda: None)
-    monkeypatch.setattr(installer, "show_install_guide", lambda url=None: None)
+    monkeypatch.setattr(installer, "show_install_guide", lambda url=None, reporter=None: None)
     monkeypatch.setattr(installer, "resolve_resource", lambda rel: installed_path)
     monkeypatch.setattr(installer, "resolve_manifest_reference", lambda ref: None)
     monkeypatch.setattr(installer, "load_dependency_manifest", lambda path: [])
-    monkeypatch.setattr(installer, "install_external_dependencies", lambda deps: [])
+    monkeypatch.setattr(installer, "install_external_dependencies", lambda deps, reporter=None: [])
     monkeypatch.setattr(installer, "copy_binary", lambda src, dest: installed_path)
     monkeypatch.setattr(installer, "update_user_path", lambda path: "C:\\Existing\\Path")
     monkeypatch.setattr(installer, "create_shortcut", lambda path: [tmp_path / "Desktop" / "SecurityGateway.lnk"])
@@ -152,11 +152,11 @@ def test_main_skips_dependencies_when_requested(monkeypatch, tmp_path: Path) -> 
     dependency_calls = []
 
     monkeypatch.setattr(installer, "ensure_admin", lambda: None)
-    monkeypatch.setattr(installer, "show_install_guide", lambda url=None: None)
+    monkeypatch.setattr(installer, "show_install_guide", lambda url=None, reporter=None: None)
     monkeypatch.setattr(installer, "resolve_resource", lambda rel: installed_path)
     monkeypatch.setattr(installer, "resolve_manifest_reference", lambda ref: (_ for _ in ()).throw(AssertionError("manifest should not be resolved")))
     monkeypatch.setattr(installer, "load_dependency_manifest", lambda path: (_ for _ in ()).throw(AssertionError("dependencies should not load")))
-    monkeypatch.setattr(installer, "install_external_dependencies", lambda deps: dependency_calls.append(deps))
+    monkeypatch.setattr(installer, "install_external_dependencies", lambda deps, reporter=None: dependency_calls.append(deps))
     monkeypatch.setattr(installer, "copy_binary", lambda src, dest: installed_path)
     monkeypatch.setattr(installer, "update_user_path", lambda path: "C:\\Existing\\Path")
     monkeypatch.setattr(installer, "create_shortcut", lambda path: [tmp_path / "Desktop" / "SecurityGateway.lnk"])
@@ -224,3 +224,46 @@ def test_install_external_dependencies_can_abort(monkeypatch) -> None:
 
     with pytest.raises(RuntimeError, match="Dependency installation aborted"):
         installer.install_external_dependencies([dep])
+
+
+def test_main_uses_console_flow_when_not_frozen(monkeypatch) -> None:
+    args = installer.parse_args([])
+    perform_calls = []
+
+    monkeypatch.delattr(installer.sys, "frozen", raising=False)
+    monkeypatch.setattr(installer, "parse_args", lambda argv=None: args)
+    monkeypatch.setattr(installer, "perform_install", lambda parsed_args, reporter=None: perform_calls.append((parsed_args, reporter)) or 0)
+
+    result = installer.main([])
+
+    assert result == 0
+    assert len(perform_calls) == 1
+    assert perform_calls[0][0] is args
+    assert isinstance(perform_calls[0][1], installer.InstallReporter)
+
+
+def test_main_uses_tk_ui_when_frozen(monkeypatch) -> None:
+    args = installer.parse_args([])
+
+    monkeypatch.setattr(installer.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(installer, "parse_args", lambda argv=None: args)
+    monkeypatch.setattr(installer, "run_installer_ui", lambda parsed_args: 17)
+
+    result = installer.main([])
+
+    assert result == 17
+
+
+def test_main_console_flag_overrides_frozen_ui(monkeypatch) -> None:
+    args = installer.parse_args(["--console"])
+    perform_calls = []
+
+    monkeypatch.setattr(installer.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(installer, "parse_args", lambda argv=None: args)
+    monkeypatch.setattr(installer, "perform_install", lambda parsed_args, reporter=None: perform_calls.append((parsed_args, reporter)) or 0)
+
+    result = installer.main(["--console"])
+
+    assert result == 0
+    assert len(perform_calls) == 1
+    assert perform_calls[0][0] is args
