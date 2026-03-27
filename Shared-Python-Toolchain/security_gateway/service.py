@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, File, HTTPException, UploadFile, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
@@ -19,7 +20,6 @@ from .state import dns_security_cache
 from .tor import OutboundProxy
 from .threat_response import ThreatResponseCoordinator
 
-app = FastAPI(title="Security Gateway", version="0.1.0")
 multipart_installed = importlib.util.find_spec("multipart") is not None
 
 audit_logger = AuditLogger(settings.audit_log_path)
@@ -37,6 +37,19 @@ automation = AutomationSupervisor(
     alert_manager=alert_manager,
     interval_seconds=settings.automation_interval_seconds,
 )
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    automation.start()
+    try:
+        yield
+    finally:
+        automation.stop()
+        resolver.close()
+
+
+app = FastAPI(title="Security Gateway", version="0.1.0", lifespan=lifespan)
 
 
 @app.post("/access/evaluate", response_model=AccessDecision)
@@ -160,14 +173,3 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 await websocket.send_text(f"echo:{payload}")
     except WebSocketDisconnect:
         return
-
-
-@app.on_event("shutdown")
-async def shutdown_event() -> None:
-    automation.stop()
-    resolver.close()
-
-
-@app.on_event("startup")
-async def startup_event() -> None:
-    automation.start()
