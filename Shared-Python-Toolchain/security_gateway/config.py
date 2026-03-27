@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     totp_window: int = 1
     automation_interval_seconds: float = 300.0
     alert_webhook_url: Optional[str] = None
-    alert_enable_toast: bool = True
+    alert_enable_toast: bool = False
     threat_rotation_enabled: bool = True
     threat_rotation_signal_threshold: float = 8.0
     threat_rotation_risk_threshold: float = 60.0
@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     auto_block_enabled: bool = True
     auto_block_duration_minutes: int = 30
     traceroute_require_confirmation: bool = True
-    traceroute_show_popup_results: bool = True
+    traceroute_show_popup_results: bool = False
     traceroute_preview_lines: int = 6
 
 @lru_cache()

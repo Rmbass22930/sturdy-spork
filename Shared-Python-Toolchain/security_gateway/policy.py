@@ -134,6 +134,10 @@ class PolicyEngine:
                     blocked_by="policy",
                     duration_minutes=settings.auto_block_duration_minutes,
                 )
+                if auto_block_entry.expires_at:
+                    reasons.append(f"Source IP {auto_block_entry.ip} auto-blocked until {auto_block_entry.expires_at}")
+                else:
+                    reasons.append(f"Source IP {auto_block_entry.ip} auto-blocked permanently")
             context = {"risk_score": score, "reasons": reasons, "source_ip": request.source_ip}
             if auto_block_entry:
                 context["auto_block"] = {

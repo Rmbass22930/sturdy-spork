@@ -76,5 +76,15 @@ SECURITY_GATEWAY_AUTO_BLOCK_ENABLED=true
 SECURITY_GATEWAY_AUTO_BLOCK_DURATION_MINUTES=30
 ```
 
+## Quiet operation defaults
+- Desktop toast alerts are disabled by default.
+- Traceroute popup previews are disabled by default.
+- Detection evidence still goes to the audit log and any configured webhook.
+- To re-enable the local UI signals:
+```
+SECURITY_GATEWAY_ALERT_ENABLE_TOAST=true
+SECURITY_GATEWAY_TRACEROUTE_SHOW_POPUP_RESULTS=true
+```
+
 ## Uninstall
 - After running the installer, an elevated script is dropped at `C:\Program Files\SecurityGateway\Uninstall-SecurityGateway.ps1`. Run it as Administrator to remove the binary, PATH entry, desktop shortcut, and any residual data under `%ProgramData%\SecurityGateway` and `%LOCALAPPDATA%\SecurityGateway`.
