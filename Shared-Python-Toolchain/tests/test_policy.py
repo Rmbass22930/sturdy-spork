@@ -170,6 +170,9 @@ def test_blocked_ip_is_denied_immediately(tmp_path):
 
     assert decision.decision == Decision.deny
     assert any("blocked" in reason.lower() for reason in decision.reasons)
+    assert decision.ip_block is not None
+    assert decision.ip_block.status == "existing"
+    assert decision.ip_block.ip == "203.0.113.12"
 
 
 def test_expired_blocked_ip_is_not_denied(tmp_path):
@@ -207,6 +210,9 @@ def test_corroborated_high_risk_denial_auto_blocks_ip(tmp_path):
     decision = engine.evaluate(request)
 
     assert decision.decision == Decision.deny
+    assert decision.ip_block is not None
+    assert decision.ip_block.status == "auto_blocked"
+    assert decision.ip_block.ip == "203.0.113.20"
     assert blocklist.is_blocked("203.0.113.20") is True
     entry = blocklist.list_entries()[0]
     assert entry.blocked_by == "policy"

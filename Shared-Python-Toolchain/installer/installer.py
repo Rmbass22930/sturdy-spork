@@ -33,6 +33,7 @@ UNINSTALL_SCRIPT_NAME = "Uninstall-SecurityGateway.ps1"
 PATH_BACKUP_NAME = "user_path_backup.txt"
 SYSTEM_DATA_DIR = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "SecurityGateway"
 USER_DATA_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "SecurityGateway"
+REPORTS_DIR = USER_DATA_DIR / "reports"
 TASK_NAME = "SecurityGatewayAutomation"
 PAYLOAD_URL_ENV = "SECURITY_GATEWAY_PAYLOAD_URL"
 PAYLOAD_SHA_ENV = "SECURITY_GATEWAY_PAYLOAD_SHA256"
@@ -62,6 +63,7 @@ class InstallTransaction:
     backup_file: Optional[Path] = None
     shortcut_paths: Optional[List[Path]] = None
     uninstall_script: Optional[Path] = None
+    reports_dir: Optional[Path] = None
     automation_task_registered: bool = False
 
 
@@ -77,6 +79,7 @@ class DependencyInstallResult:
 @dataclass
 class InstallSummary:
     installed_path: Path
+    reports_dir: Path
     shortcut_paths: List[Path]
     uninstall_script: Path
     dependency_results: List[DependencyInstallResult]
@@ -234,6 +237,7 @@ class InstallerUI(InstallReporter):
                 self._append_log("Install complete:")
                 summary: InstallSummary = item[1]
                 self._append_log(f"- Application: {summary.installed_path}")
+                self._append_log(f"- Reports directory: {summary.reports_dir}")
                 self._append_log("- Desktop shortcuts:")
                 for shortcut_path in summary.shortcut_paths:
                     self._append_log(f"  - {shortcut_path}")
@@ -468,6 +472,11 @@ def create_shortcut(exe_path: Path) -> List[Path]:
     return shortcut_paths
 
 
+def create_reports_directory() -> Path:
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    return REPORTS_DIR
+
+
 def _ps_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
@@ -606,6 +615,15 @@ def rollback_install(transaction: InstallTransaction) -> None:
         except Exception as exc:  # noqa: BLE001
             cleanup_errors.append(f"install directory cleanup failed: {exc}")
 
+    if transaction.reports_dir:
+        try:
+            if transaction.reports_dir.exists() and not any(transaction.reports_dir.iterdir()):
+                transaction.reports_dir.rmdir()
+            if USER_DATA_DIR.exists() and not any(USER_DATA_DIR.iterdir()):
+                USER_DATA_DIR.rmdir()
+        except Exception as exc:  # noqa: BLE001
+            cleanup_errors.append(f"reports directory cleanup failed: {exc}")
+
     if cleanup_errors:
         raise RuntimeError("Install rollback was incomplete: " + " | ".join(cleanup_errors))
 
@@ -739,6 +757,7 @@ def print_install_summary(summary: InstallSummary) -> None:
     print("")
     print("Install complete:")
     print(f"- Application: {summary.installed_path}")
+    print(f"- Reports directory: {summary.reports_dir}")
     print("- Desktop shortcuts:")
     for shortcut_path in summary.shortcut_paths:
         print(f"  - {shortcut_path}")
@@ -813,6 +832,8 @@ def perform_install(args: argparse.Namespace, reporter: Optional[InstallReporter
         reporter.stage("Copying application files")
         installed_path = copy_binary(resource, INSTALL_DIR)
         transaction.installed_path = installed_path
+        transaction.reports_dir = create_reports_directory()
+        reporter.info(f"Reports will be stored at {transaction.reports_dir}")
         reporter.stage("Updating PATH")
         previous_path = update_user_path(INSTALL_DIR)
         transaction.previous_user_path = previous_path
@@ -841,6 +862,7 @@ def perform_install(args: argparse.Namespace, reporter: Optional[InstallReporter
     reporter.summary(
         InstallSummary(
             installed_path=installed_path,
+            reports_dir=transaction.reports_dir or REPORTS_DIR,
             shortcut_paths=transaction.shortcut_paths or [],
             uninstall_script=uninstall_script,
             dependency_results=dependency_results,

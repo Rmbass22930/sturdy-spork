@@ -1,12 +1,21 @@
 """Configuration primitives for the security gateway."""
 from __future__ import annotations
 
+import os
 import secrets
+import sys
 from functools import lru_cache
+from pathlib import Path
 from typing import List, Optional
 
 from pydantic import Field, HttpUrl
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _default_report_output_dir() -> str:
+    if getattr(sys, "frozen", False):
+        return str(Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "SecurityGateway" / "reports")
+    return "output/pdf"
 
 
 class Settings(BaseSettings):
@@ -14,6 +23,7 @@ class Settings(BaseSettings):
     environment: str = Field("dev", description="Deployment environment tag")
     audit_log_path: str = Field("logs/audit.jsonl")
     ip_blocklist_path: str = Field("logs/blocked_ips.json")
+    report_output_dir: str = Field(default_factory=_default_report_output_dir)
     hashicorp_vault_url: Optional[str] = None
     hashicorp_vault_token: Optional[str] = None
     hashicorp_vault_mount: str = "secret"

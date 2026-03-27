@@ -56,11 +56,20 @@ class Decision(str, Enum):
     step_up = "step_up"
 
 
+class AccessIPBlockInfo(BaseModel):
+    ip: str
+    status: str
+    reason: str
+    blocked_by: Optional[str] = None
+    expires_at: Optional[str] = None
+
+
 class AccessDecision(BaseModel):
     decision: Decision
     risk_score: float
     reasons: list[str]
     issued_challenge: Optional[str] = None
+    ip_block: Optional[AccessIPBlockInfo] = None
 
 
 class CredentialLease(BaseModel):

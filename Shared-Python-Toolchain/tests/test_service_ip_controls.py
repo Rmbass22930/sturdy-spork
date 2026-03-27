@@ -3,9 +3,11 @@ from datetime import datetime, timedelta, timezone
 from fastapi.testclient import TestClient
 
 from security_gateway import service
+from security_gateway.config import settings
 from security_gateway.ip_controls import IPBlocklistManager
 from security_gateway.models import DeviceCompliance
 from security_gateway.policy import PolicyEngine
+from security_gateway.reports import SecurityReportBuilder
 
 
 class DummyAuditLogger:
@@ -29,8 +31,15 @@ def _install_test_managers(monkeypatch, tmp_path):
     audit = DummyAuditLogger()
     blocklist = IPBlocklistManager(path=tmp_path / "blocked_ips.json", audit_logger=audit)
     traceroute = DummyTraceRunner()
+    report_dir = tmp_path / "reports"
+    monkeypatch.setattr(settings, "report_output_dir", str(report_dir))
     monkeypatch.setattr(service, "audit_logger", audit)
     monkeypatch.setattr(service, "ip_blocklist", blocklist)
+    monkeypatch.setattr(
+        service,
+        "report_builder",
+        SecurityReportBuilder(audit_log_path=tmp_path / "audit.jsonl", ip_blocklist_path=tmp_path / "blocked_ips.json"),
+    )
     monkeypatch.setattr(
         service,
         "policy_engine",
@@ -111,6 +120,8 @@ def test_access_evaluate_auto_block_message(monkeypatch, tmp_path):
     payload = response.json()
     assert payload["decision"] == "deny"
     assert any("auto-blocked" in reason for reason in payload["reasons"])
+    assert payload["ip_block"]["status"] == "auto_blocked"
+    assert payload["ip_block"]["ip"] == "203.0.113.31"
     assert blocklist.is_blocked("203.0.113.31") is True
     assert traceroute.calls
     assert any(event == "access.evaluate" for event, _ in audit.events)
@@ -175,4 +186,28 @@ def test_access_evaluate_denies_already_blocked_ip(monkeypatch, tmp_path):
     payload = response.json()
     assert payload["decision"] == "deny"
     assert any("blocked" in reason.lower() for reason in payload["reasons"])
+    assert payload["ip_block"]["status"] == "existing"
+    assert payload["ip_block"]["ip"] == "203.0.113.42"
     assert any(event == "access.evaluate" for event, _ in audit.events)
+
+
+def test_reports_endpoints_list_and_fetch_saved_pdf(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+
+    with TestClient(service.app) as client:
+        generated = client.get("/reports/security-summary.pdf")
+        assert generated.status_code == 200
+        assert generated.headers["content-type"] == "application/pdf"
+        assert generated.content.startswith(b"%PDF")
+
+        saved_path = service.report_builder.write_summary_pdf(max_events=5)
+        listing = client.get("/reports")
+        assert listing.status_code == 200
+        payload = listing.json()
+        assert payload["reports"]
+        assert payload["reports"][0]["name"] == saved_path.name
+
+        fetched = client.get(f"/reports/{saved_path.name}")
+        assert fetched.status_code == 200
+        assert fetched.headers["content-type"] == "application/pdf"
+        assert fetched.content.startswith(b"%PDF")

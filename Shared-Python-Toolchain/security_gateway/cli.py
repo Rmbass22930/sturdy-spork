@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from security_gateway.ip_controls import IPBlocklistManager
 from security_gateway.models import AccessRequest
 from security_gateway.pam import VaultClient
 from security_gateway.policy import PolicyEngine
+from security_gateway.reports import SecurityReportBuilder
 from security_gateway.state import dns_security_cache
 from security_gateway.tor import OutboundProxy
 from security_gateway.threat_response import ThreatResponseCoordinator
@@ -35,6 +37,7 @@ policy_engine = PolicyEngine(threat_responder=threat_responder, ip_blocklist=ip_
 resolver = SecureDNSResolver()
 proxy = OutboundProxy()
 scanner = MalwareScanner()
+report_builder = SecurityReportBuilder()
 
 
 @app.command()
@@ -158,6 +161,44 @@ def mfa_register_webauthn(user_id: str, credential_id: str, public_key_b64: str)
     """Register a WebAuthn/Passkey credential (Ed25519 public key in base64)."""
     policy_engine.mfa_service.register_webauthn(user_id, credential_id, public_key_b64)
     print({"status": "registered", "user": user_id, "credential": credential_id})
+
+
+@app.command("report-pdf")
+def report_pdf(
+    output: Path | None = typer.Option(None, help="Write the PDF to this path"),
+    max_events: int = typer.Option(25, help="Number of recent audit events to include"),
+    open_file: bool = typer.Option(False, "--open", help="Open the PDF after generating it"),
+) -> None:
+    target = report_builder.write_summary_pdf(output, max_events=max_events)
+    print({"status": "written", "path": str(target)})
+    if open_file:
+        try:
+            os.startfile(target)  # type: ignore[attr-defined]
+        except OSError as exc:
+            typer.echo(f"Unable to open generated report: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+
+
+@app.command("report-list")
+def report_list() -> None:
+    print({"reports": report_builder.list_saved_reports()})
+
+
+@app.command("report-open")
+def report_open(
+    name: str | None = typer.Argument(None, help="Saved report file name. Defaults to the newest report."),
+    print_after_open: bool = typer.Option(False, "--print", help="Send the report to the default printer instead of opening it"),
+) -> None:
+    action = "print" if print_after_open else "open"
+    try:
+        target = report_builder.open_saved_report(name, action=action)
+    except FileNotFoundError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    except OSError as exc:
+        typer.echo(f"Unable to {action} report: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    print({"status": action, "path": str(target)})
 
 
 if __name__ == "__main__":

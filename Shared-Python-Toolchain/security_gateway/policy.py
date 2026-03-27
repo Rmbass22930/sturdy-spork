@@ -9,7 +9,7 @@ from .alerts import AlertEvent, AlertLevel, alert_manager
 from .config import settings
 from .ip_controls import IPBlocklistManager
 from .mfa import MFAService
-from .models import AccessDecision, AccessRequest, Decision, DeviceCompliance
+from .models import AccessDecision, AccessIPBlockInfo, AccessRequest, Decision, DeviceCompliance
 from .threat_response import ThreatResponseCoordinator
 from .state import dns_security_cache
 from .traceroute import TraceRouteRunner, TraceRouteResult
@@ -89,6 +89,7 @@ class PolicyEngine:
     def evaluate(self, request: AccessRequest) -> AccessDecision:
         if request.source_ip and self.ip_blocklist.is_blocked(request.source_ip):
             reason = f"Source IP {request.source_ip} is blocked"
+            existing_entry = next((entry for entry in self.ip_blocklist.list_entries() if entry.ip == request.source_ip), None)
             alert_manager.emit(
                 AlertEvent(
                     level=AlertLevel.warning,
@@ -97,7 +98,18 @@ class PolicyEngine:
                     context={"source_ip": request.source_ip, "resource": request.resource},
                 )
             )
-            return AccessDecision(decision=Decision.deny, risk_score=settings.max_risk_score, reasons=[reason])
+            return AccessDecision(
+                decision=Decision.deny,
+                risk_score=settings.max_risk_score,
+                reasons=[reason],
+                ip_block=AccessIPBlockInfo(
+                    ip=request.source_ip,
+                    status="existing",
+                    reason=existing_entry.reason if existing_entry else "blocked source IP",
+                    blocked_by=existing_entry.blocked_by if existing_entry else None,
+                    expires_at=existing_entry.expires_at if existing_entry else None,
+                ),
+            )
         dns_secure = request.dns_secure
         if dns_secure is None and request.resource:
             dns_secure = self.dns_cache.get(request.resource)
@@ -165,7 +177,22 @@ class PolicyEngine:
                     context=context,
                 )
             )
-            return AccessDecision(decision=Decision.deny, risk_score=score, reasons=reasons + ["Risk above threshold"])
+            return AccessDecision(
+                decision=Decision.deny,
+                risk_score=score,
+                reasons=reasons + ["Risk above threshold"],
+                ip_block=(
+                    AccessIPBlockInfo(
+                        ip=auto_block_entry.ip,
+                        status="auto_blocked",
+                        reason=auto_block_entry.reason,
+                        blocked_by=auto_block_entry.blocked_by,
+                        expires_at=auto_block_entry.expires_at,
+                    )
+                    if auto_block_entry
+                    else None
+                ),
+            )
 
         requires_mfa = score >= settings.max_risk_score / 2 or request.privilege_level == "privileged"
         if requires_mfa:

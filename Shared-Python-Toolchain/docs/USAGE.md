@@ -33,6 +33,10 @@ security-gateway ip-block 203.0.113.10 --reason "confirmed attack" --duration-mi
 security-gateway ip-list
 security-gateway ip-promote 203.0.113.10 --reason "confirmed attacker"
 security-gateway ip-unblock 203.0.113.10 --reason "false positive"
+security-gateway report-pdf
+security-gateway report-list
+security-gateway report-open
+security-gateway report-open security-summary-20260327-120000.pdf --print
 security-gateway scan suspicious.bin
 security-gateway automation-run
 security-gateway mfa-register-webauthn user-123 cred-abc BASE64PUBLICKEY==
@@ -85,6 +89,17 @@ SECURITY_GATEWAY_AUTO_BLOCK_DURATION_MINUTES=30
 SECURITY_GATEWAY_ALERT_ENABLE_TOAST=true
 SECURITY_GATEWAY_TRACEROUTE_SHOW_POPUP_RESULTS=true
 ```
+
+## Reports
+- In development, reports default to [J:\sturdy-spork\Shared-Python-Toolchain\output\pdf](/J:/sturdy-spork/Shared-Python-Toolchain/output/pdf).
+- In the installed build, the default reports directory is `%LOCALAPPDATA%\SecurityGateway\reports`.
+- The installer now creates that reports directory as part of setup.
+- Use `security-gateway report-pdf` to generate a PDF, `security-gateway report-list` to see saved reports, and `security-gateway report-open [name]` to view the newest or named report.
+- Add `--print` to `report-open` to send the report to the default printer.
+- API support:
+  - `GET /reports` lists saved PDFs
+  - `GET /reports/security-summary.pdf` generates a current summary PDF
+  - `GET /reports/{name}` fetches a saved PDF
 
 ## Uninstall
 - After running the installer, an elevated script is dropped at `C:\Program Files\SecurityGateway\Uninstall-SecurityGateway.ps1`. Run it as Administrator to remove the binary, PATH entry, desktop shortcut, and any residual data under `%ProgramData%\SecurityGateway` and `%LOCALAPPDATA%\SecurityGateway`.

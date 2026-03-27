@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 from contextlib import asynccontextmanager
+from fastapi.responses import FileResponse, Response
 
 from fastapi import FastAPI, File, HTTPException, UploadFile, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
@@ -17,6 +18,7 @@ from .ip_controls import IPBlocklistManager
 from .models import AccessDecision, AccessRequest, CredentialLease, DeviceContext
 from .pam import VaultClient
 from .policy import PolicyEngine
+from .reports import SecurityReportBuilder
 from .state import dns_security_cache
 from .tor import OutboundProxy
 from .threat_response import ThreatResponseCoordinator
@@ -32,6 +34,7 @@ resolver = SecureDNSResolver()
 proxy = OutboundProxy()
 telemetry = EndpointTelemetryService()
 scanner = MalwareScanner()
+report_builder = SecurityReportBuilder()
 automation = AutomationSupervisor(
     vault=vault,
     proxy=proxy,
@@ -221,6 +224,27 @@ async def promote_ip_block(ip: str, payload: PromoteIPPayload | None = None) -> 
 @app.get("/automation/status")
 async def automation_status() -> dict:
     return automation.status()
+
+
+@app.get("/reports/security-summary.pdf")
+async def security_summary_report(max_events: int = 25) -> Response:
+    pdf_bytes = report_builder.build_summary_pdf(max_events=max_events)
+    headers = {"Content-Disposition": 'attachment; filename="security-summary.pdf"'}
+    return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
+
+
+@app.get("/reports")
+async def list_reports() -> dict:
+    return {"reports": report_builder.list_saved_reports(), "report_output_dir": str(report_builder.get_output_dir())}
+
+
+@app.get("/reports/{report_name}")
+async def fetch_report(report_name: str) -> FileResponse:
+    try:
+        target = report_builder.resolve_saved_report(report_name)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return FileResponse(path=target, media_type="application/pdf", filename=target.name)
 
 
 @app.websocket("/ws")

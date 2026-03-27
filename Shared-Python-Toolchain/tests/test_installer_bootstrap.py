@@ -89,6 +89,7 @@ def test_install_dependency_reports_winget_method(monkeypatch) -> None:
 def test_print_install_summary_lists_shortcuts_and_dependencies(capsys, tmp_path: Path) -> None:
     summary = installer.InstallSummary(
         installed_path=tmp_path / "SecurityGateway.exe",
+        reports_dir=tmp_path / "LocalAppData" / "SecurityGateway" / "reports",
         shortcut_paths=[
             tmp_path / "Desktop" / "SecurityGateway.lnk",
             tmp_path / "OneDrive" / "Desktop" / "SecurityGateway.lnk",
@@ -108,8 +109,20 @@ def test_print_install_summary_lists_shortcuts_and_dependencies(capsys, tmp_path
     output = capsys.readouterr().out
 
     assert "Install complete:" in output
+    assert "Reports directory:" in output
     assert "Desktop shortcuts:" in output
     assert "Cloudflare WARP: installed via winget (Cloudflare.WARP)" in output
+
+
+def test_create_reports_directory(tmp_path: Path, monkeypatch) -> None:
+    target = tmp_path / "LocalAppData" / "SecurityGateway" / "reports"
+    monkeypatch.setattr(installer, "REPORTS_DIR", target)
+
+    created = installer.create_reports_directory()
+
+    assert created == target
+    assert target.exists()
+    assert target.is_dir()
 
 
 def test_main_wraps_rollback_failures(monkeypatch, tmp_path: Path) -> None:
