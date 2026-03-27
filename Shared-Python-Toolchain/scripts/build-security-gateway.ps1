@@ -24,7 +24,9 @@ Remove-Item -LiteralPath $appDist,$appWork,$installerDist,$installerWork -Force 
 New-Item -ItemType Directory -Force -Path $appDist,$appWork,$installerDist,$installerWork | Out-Null
 
 Push-Location $projectRoot
+$previousPythonPath = $env:PYTHONPATH
 try {
+    $env:PYTHONPATH = $projectRoot
     & $Python @PythonArgs -m PyInstaller `
         --noconfirm `
         --clean `
@@ -63,6 +65,11 @@ try {
 }
 finally {
     Remove-Item Env:\SECURITY_GATEWAY_PAYLOAD_PATH -ErrorAction SilentlyContinue
+    if ($null -eq $previousPythonPath) {
+        Remove-Item Env:\PYTHONPATH -ErrorAction SilentlyContinue
+    } else {
+        $env:PYTHONPATH = $previousPythonPath
+    }
     Pop-Location
 }
 
