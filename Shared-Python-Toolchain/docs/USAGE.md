@@ -84,11 +84,13 @@ SECURITY_GATEWAY_AUTO_BLOCK_DURATION_MINUTES=30
 
 ## Quiet operation defaults
 - Desktop toast alerts are disabled by default.
+- Traceroute confirmation prompts are disabled by default.
 - Traceroute popup previews are disabled by default.
 - Detection evidence still goes to the audit log and any configured webhook.
 - To re-enable the local UI signals:
 ```
 SECURITY_GATEWAY_ALERT_ENABLE_TOAST=true
+SECURITY_GATEWAY_TRACEROUTE_REQUIRE_CONFIRMATION=true
 SECURITY_GATEWAY_TRACEROUTE_SHOW_POPUP_RESULTS=true
 ```
 

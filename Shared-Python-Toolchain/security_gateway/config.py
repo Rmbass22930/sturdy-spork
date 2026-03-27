@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     threat_rotation_cooldown_seconds: float = 120.0
     auto_block_enabled: bool = True
     auto_block_duration_minutes: int = 30
-    traceroute_require_confirmation: bool = True
+    traceroute_require_confirmation: bool = False
     traceroute_show_popup_results: bool = False
     traceroute_preview_lines: int = 6
 
