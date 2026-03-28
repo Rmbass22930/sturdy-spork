@@ -36,7 +36,26 @@ policy_engine = PolicyEngine(threat_responder=threat_responder, ip_blocklist=ip_
 resolver = SecureDNSResolver()
 proxy = OutboundProxy()
 telemetry = EndpointTelemetryService()
-scanner = MalwareScanner()
+scanner = MalwareScanner(
+    feed_cache_path=settings.malware_feed_cache_path,
+    feed_urls=settings.malware_feed_urls,
+    stale_after_hours=settings.malware_feed_stale_hours,
+    disabled_feed_urls=settings.malware_feed_disabled_urls,
+    min_hashes_per_source=settings.malware_feed_min_hashes_per_source,
+    min_total_hashes=settings.malware_feed_min_total_hashes,
+    replace_ratio_floor=settings.malware_feed_replace_ratio_floor,
+    verify_tls=settings.malware_feed_verify_tls,
+    ca_bundle_path=settings.malware_feed_ca_bundle_path,
+    rule_feed_cache_path=settings.malware_rule_feed_cache_path,
+    rule_feed_urls=settings.malware_rule_feed_urls,
+    rule_feed_stale_after_hours=settings.malware_rule_feed_stale_hours,
+    disabled_rule_feed_urls=settings.malware_rule_feed_disabled_urls,
+    min_rules_per_source=settings.malware_rule_feed_min_rules_per_source,
+    min_total_rules=settings.malware_rule_feed_min_total_rules,
+    rule_replace_ratio_floor=settings.malware_rule_feed_replace_ratio_floor,
+    rule_feed_verify_tls=settings.malware_rule_feed_verify_tls,
+    rule_feed_ca_bundle_path=settings.malware_rule_feed_ca_bundle_path,
+)
 report_builder = SecurityReportBuilder()
 tracker_intel = TrackerIntel(
     extra_domains_path=settings.tracker_domain_list_path,
@@ -47,6 +66,8 @@ tracker_intel = TrackerIntel(
     min_domains_per_source=settings.tracker_feed_min_domains_per_source,
     min_total_domains=settings.tracker_feed_min_total_domains,
     replace_ratio_floor=settings.tracker_feed_replace_ratio_floor,
+    verify_tls=settings.tracker_feed_verify_tls,
+    ca_bundle_path=settings.tracker_feed_ca_bundle_path,
 )
 automation = AutomationSupervisor(
     vault=vault,
@@ -54,14 +75,29 @@ automation = AutomationSupervisor(
     audit_logger=audit_logger,
     alert_manager=alert_manager,
     tracker_intel=tracker_intel,
+    malware_scanner=scanner,
     interval_seconds=settings.automation_interval_seconds,
     tracker_feed_refresh_enabled=settings.automation_tracker_feed_refresh_enabled,
     tracker_feed_refresh_every_ticks=settings.automation_tracker_feed_refresh_every_ticks,
+    malware_feed_refresh_enabled=settings.automation_malware_feed_refresh_enabled,
+    malware_feed_refresh_every_ticks=settings.automation_malware_feed_refresh_every_ticks,
+    malware_rule_feed_refresh_enabled=settings.automation_malware_rule_feed_refresh_enabled,
+    malware_rule_feed_refresh_every_ticks=settings.automation_malware_rule_feed_refresh_every_ticks,
 )
+
+
+def _seed_offline_feeds() -> None:
+    if settings.tracker_offline_seed_path and not Path(settings.tracker_feed_cache_path).exists():
+        tracker_intel.import_feed_cache(settings.tracker_offline_seed_path)
+    if settings.malware_offline_hash_seed_path and not Path(settings.malware_feed_cache_path).exists():
+        scanner.import_feed_cache(settings.malware_offline_hash_seed_path)
+    if settings.malware_offline_rule_seed_path and not Path(settings.malware_rule_feed_cache_path).exists():
+        scanner.import_rule_feed_cache(settings.malware_offline_rule_seed_path)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    _seed_offline_feeds()
     automation.start()
     try:
         yield
@@ -202,6 +238,64 @@ class RefreshTrackerFeedsPayload(BaseModel):
     urls: list[str] | None = None
 
 
+class RefreshMalwareFeedsPayload(BaseModel):
+    urls: list[str] | None = None
+
+
+class RefreshMalwareRuleFeedsPayload(BaseModel):
+    urls: list[str] | None = None
+
+
+class ImportFeedPayload(BaseModel):
+    source_path: str
+
+
+@app.get("/endpoint/malware-feeds/status")
+async def malware_feed_status() -> dict:
+    return scanner.feed_status()
+
+
+@app.post("/endpoint/malware-feeds/refresh")
+async def malware_feed_refresh(payload: RefreshMalwareFeedsPayload | None = None) -> dict:
+    try:
+        return scanner.refresh_feed_cache(payload.urls if payload else None)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Malware feed refresh failed: {exc}") from exc
+
+
+@app.post("/endpoint/malware-feeds/import")
+async def malware_feed_import(payload: ImportFeedPayload) -> dict:
+    try:
+        return scanner.import_feed_cache(payload.source_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/endpoint/malware-rule-feeds/status")
+async def malware_rule_feed_status() -> dict:
+    return scanner.rule_feed_status()
+
+
+@app.post("/endpoint/malware-rule-feeds/refresh")
+async def malware_rule_feed_refresh(payload: RefreshMalwareRuleFeedsPayload | None = None) -> dict:
+    try:
+        return scanner.refresh_rule_feed_cache(payload.urls if payload else None)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Malware rule feed refresh failed: {exc}") from exc
+
+
+@app.post("/endpoint/malware-rule-feeds/import")
+async def malware_rule_feed_import(payload: ImportFeedPayload) -> dict:
+    try:
+        return scanner.import_rule_feed_cache(payload.source_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/tor/request")
 async def proxy_request(payload: ProxyPayload) -> dict:
     tracker_match = tracker_intel.is_tracker_url(payload.url) if settings.tracker_block_enabled else None
@@ -267,6 +361,14 @@ async def tracker_feed_refresh(payload: RefreshTrackerFeedsPayload | None = None
         raise HTTPException(status_code=502, detail=f"Tracker feed refresh failed: {exc}") from exc
 
 
+@app.post("/privacy/tracker-feeds/import")
+async def tracker_feed_import(payload: ImportFeedPayload) -> dict:
+    try:
+        return tracker_intel.import_feed_cache(payload.source_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/network/blocked-ips")
 async def list_blocked_ips() -> dict:
     return {"blocked_ips": [entry.__dict__ for entry in ip_blocklist.list_entries()]}
@@ -306,6 +408,20 @@ async def promote_ip_block(ip: str, payload: PromoteIPPayload | None = None) -> 
 @app.get("/automation/status")
 async def automation_status() -> dict:
     return automation.status()
+
+
+@app.get("/health/security")
+async def security_health() -> dict:
+    tracker_health = tracker_intel.health_status()
+    malware_health = scanner.health_status()
+    warnings = [*tracker_health["warnings"], *malware_health["warnings"]]
+    return {
+        "healthy": not warnings,
+        "warnings": warnings,
+        "tracker_intel": tracker_health,
+        "malware_scanner": malware_health,
+        "automation": automation.status(),
+    }
 
 
 @app.get("/reports/security-summary.pdf")

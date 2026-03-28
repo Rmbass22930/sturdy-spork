@@ -18,6 +18,10 @@ uvicorn security_gateway.service:app --reload
 - `POST /tor/request`, `GET /proxy/health` – send proxied HTTP requests and verify Tor/WARP health.
 - `GET /network/blocked-ips`, `POST /network/blocked-ips`, `DELETE /network/blocked-ips/{ip}`, `POST /network/blocked-ips/{ip}/promote` – review, block, unblock, and promote source IP blocks to permanent.
 - `POST /endpoint/scan` – malware scan uploads prior to privileged flows.
+- `GET /endpoint/malware-feeds/status`, `POST /endpoint/malware-feeds/refresh` – inspect and refresh malware IOC/hash feeds for the scanner.
+- `GET /endpoint/malware-rule-feeds/status`, `POST /endpoint/malware-rule-feeds/refresh` – inspect and refresh malware rule/string feeds for the scanner.
+- `POST /privacy/tracker-feeds/import`, `POST /endpoint/malware-feeds/import`, `POST /endpoint/malware-rule-feeds/import` – seed local caches from offline files.
+- `GET /health/security` – consolidated detection/feed health summary for tracker intel, malware feeds, and automation state.
 - `WS /ws` – real-time channel (sends `{"type":"ready"}` on connect, `ping` -> `pong`, other messages echoed as `echo:<message>`).
 
 ## CLI examples
@@ -40,6 +44,16 @@ security-gateway report-open
 security-gateway report-open security-summary-20260327-120000.pdf --print
 security-gateway report-browser
 security-gateway scan suspicious.bin
+security-gateway malware-feed-status
+security-gateway malware-feed-refresh
+security-gateway malware-feed-refresh --url https://example.com/malware-hashes.txt
+security-gateway malware-feed-import .\offline-hashes.txt
+security-gateway malware-rule-feed-status
+security-gateway malware-rule-feed-refresh
+security-gateway malware-rule-feed-refresh --url https://example.com/malware-rules.json
+security-gateway malware-rule-feed-import .\offline-rules.txt
+security-gateway tracker-feed-import .\offline-trackers.txt
+security-gateway health-status
 security-gateway automation-run
 security-gateway mfa-register-webauthn user-123 cred-abc BASE64PUBLICKEY==
 security-gateway alert-test --level warning --title \"Suspicious\" --message \"Unusual login\"
@@ -69,7 +83,74 @@ SECURITY_GATEWAY_AUTOMATION_TRACKER_FEED_REFRESH_ENABLED=true
 ```
 SECURITY_GATEWAY_AUTOMATION_TRACKER_FEED_REFRESH_EVERY_TICKS=12
 ```
-- The automation status output includes tracker-feed refresh state, last result, and last error.
+- Malware feed refresh can also be enabled:
+```
+SECURITY_GATEWAY_AUTOMATION_MALWARE_FEED_REFRESH_ENABLED=true
+SECURITY_GATEWAY_AUTOMATION_MALWARE_FEED_REFRESH_EVERY_TICKS=12
+```
+- Malware rule feed refresh can also be enabled:
+```
+SECURITY_GATEWAY_AUTOMATION_MALWARE_RULE_FEED_REFRESH_ENABLED=true
+SECURITY_GATEWAY_AUTOMATION_MALWARE_RULE_FEED_REFRESH_EVERY_TICKS=12
+```
+- The automation status output includes tracker-feed, malware-feed, and malware-rule-feed refresh state, last result, and last error.
+
+## Malware feed refresh
+- Malware scanning can consume refreshable SHA-256 IOC/hash feeds in addition to the built-in heuristics.
+- Refresh feeds with:
+```
+security-gateway malware-feed-refresh
+security-gateway malware-feed-refresh --url https://example.com/malware-hashes.txt
+security-gateway malware-feed-status
+```
+- API support:
+  - `GET /endpoint/malware-feeds/status`
+  - `POST /endpoint/malware-feeds/refresh`
+  - `POST /endpoint/malware-feeds/import`
+- Feed status includes:
+  - last successful update time
+  - last refresh attempt result
+  - per-source hash counts
+  - failure details from the most recent refresh
+  - stale-cache detection
+- Configure feed caching with:
+```
+SECURITY_GATEWAY_MALWARE_FEED_CACHE_PATH=logs/malware_feed_hashes.json
+SECURITY_GATEWAY_MALWARE_FEED_STALE_HOURS=168
+SECURITY_GATEWAY_MALWARE_FEED_DISABLED_URLS=["https://example.com/list2.txt"]
+SECURITY_GATEWAY_MALWARE_FEED_MIN_HASHES_PER_SOURCE=1
+SECURITY_GATEWAY_MALWARE_FEED_MIN_TOTAL_HASHES=1
+SECURITY_GATEWAY_MALWARE_FEED_REPLACE_RATIO_FLOOR=0.5
+SECURITY_GATEWAY_MALWARE_FEED_VERIFY_TLS=true
+SECURITY_GATEWAY_MALWARE_FEED_CA_BUNDLE_PATH=C:\path\to\trusted-ca.pem
+SECURITY_GATEWAY_MALWARE_FEED_URLS=["https://example.com/list1.txt","https://example.com/list2.json"]
+```
+
+## Malware rule feeds
+- Malware scanning can also consume refreshable rule/string feeds for simple pattern-based detections.
+- Refresh or import them with:
+```
+security-gateway malware-rule-feed-refresh
+security-gateway malware-rule-feed-refresh --url https://example.com/malware-rules.json
+security-gateway malware-rule-feed-import .\offline-rules.txt
+security-gateway malware-rule-feed-status
+```
+- API support:
+  - `GET /endpoint/malware-rule-feeds/status`
+  - `POST /endpoint/malware-rule-feeds/refresh`
+  - `POST /endpoint/malware-rule-feeds/import`
+- Configure rule feeds with:
+```
+SECURITY_GATEWAY_MALWARE_RULE_FEED_CACHE_PATH=logs/malware_rule_feed_rules.json
+SECURITY_GATEWAY_MALWARE_RULE_FEED_STALE_HOURS=168
+SECURITY_GATEWAY_MALWARE_RULE_FEED_DISABLED_URLS=["https://example.com/list2.json"]
+SECURITY_GATEWAY_MALWARE_RULE_FEED_MIN_RULES_PER_SOURCE=1
+SECURITY_GATEWAY_MALWARE_RULE_FEED_MIN_TOTAL_RULES=1
+SECURITY_GATEWAY_MALWARE_RULE_FEED_REPLACE_RATIO_FLOOR=0.5
+SECURITY_GATEWAY_MALWARE_RULE_FEED_VERIFY_TLS=true
+SECURITY_GATEWAY_MALWARE_RULE_FEED_CA_BUNDLE_PATH=C:\path\to\trusted-ca.pem
+SECURITY_GATEWAY_MALWARE_RULE_FEED_URLS=["https://example.com/list1.txt","https://example.com/list2.json"]
+```
 
 ## HashiCorp Vault backend
 Set the following environment variables (or `.env`) to push PAM secrets into Vault KV v2:
@@ -129,6 +210,7 @@ security-gateway tracker-feed-status
 - API support:
   - `GET /privacy/tracker-feeds/status`
   - `POST /privacy/tracker-feeds/refresh`
+  - `POST /privacy/tracker-feeds/import`
 - Status reports include:
   - last successful update time
   - last refresh attempt result
@@ -163,6 +245,33 @@ SECURITY_GATEWAY_TRACKER_FEED_REPLACE_RATIO_FLOOR=0.5
 ```
 SECURITY_GATEWAY_TRACKER_FEED_URLS=["https://example.com/list1.txt","https://example.com/list2.json"]
 ```
+- TLS and CA controls:
+```
+SECURITY_GATEWAY_TRACKER_FEED_VERIFY_TLS=true
+SECURITY_GATEWAY_TRACKER_FEED_CA_BUNDLE_PATH=C:\path\to\trusted-ca.pem
+```
+
+## Offline seed files
+- Airgapped environments can seed tracker, malware hash, and malware rule caches from local files before any network refresh is attempted.
+- CLI import commands:
+```
+security-gateway tracker-feed-import .\offline-trackers.txt
+security-gateway malware-feed-import .\offline-hashes.txt
+security-gateway malware-rule-feed-import .\offline-rules.txt
+```
+- You can also point the service or CLI at seed files so they auto-populate empty caches on startup:
+```
+SECURITY_GATEWAY_TRACKER_OFFLINE_SEED_PATH=C:\feeds\trackers.txt
+SECURITY_GATEWAY_MALWARE_OFFLINE_HASH_SEED_PATH=C:\feeds\malware-hashes.txt
+SECURITY_GATEWAY_MALWARE_OFFLINE_RULE_SEED_PATH=C:\feeds\malware-rules.txt
+```
+
+## Security health
+- `GET /health/security` and `security-gateway health-status` provide a consolidated view of:
+  - tracker feed health
+  - malware hash feed health
+  - malware rule feed health
+  - warnings for stale caches, failed refreshes, or disabled TLS verification
 
 ## Quiet operation defaults
 - Desktop toast alerts are disabled by default.

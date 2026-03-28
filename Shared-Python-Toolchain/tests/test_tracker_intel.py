@@ -105,7 +105,7 @@ def test_refresh_feed_cache_parses_json_and_filter_lists(monkeypatch, tmp_path: 
 
     monkeypatch.setattr(
         "security_gateway.tracker_intel.urlopen",
-        lambda url, timeout=20.0: _FakeResponse(payloads[url]),
+        lambda url, timeout=20.0, context=None: _FakeResponse(payloads[url]),
     )
 
     result = intel.refresh_feed_cache()
@@ -166,7 +166,7 @@ def test_failed_feed_refresh_records_failure_details(monkeypatch, tmp_path: Path
     cache_path = tmp_path / "tracker-feeds.json"
     intel = TrackerIntel(feed_cache_path=cache_path, feed_urls=["https://feed.local/fail"], min_total_domains=1)
 
-    def _raise(url, timeout=20.0):
+    def _raise(url, timeout=20.0, context=None):
         raise OSError(f"down: {url}")
 
     monkeypatch.setattr("security_gateway.tracker_intel.urlopen", _raise)
@@ -196,7 +196,7 @@ def test_disabled_feed_urls_are_skipped(monkeypatch, tmp_path: Path) -> None:
 
     seen_urls: list[str] = []
 
-    def _fake_urlopen(url, timeout=20.0):
+    def _fake_urlopen(url, timeout=20.0, context=None):
         seen_urls.append(url)
         return _FakeResponse("||tracker.example^\n")
 
@@ -236,7 +236,7 @@ def test_suspiciously_small_refresh_preserves_existing_cache(monkeypatch, tmp_pa
 
     monkeypatch.setattr(
         "security_gateway.tracker_intel.urlopen",
-        lambda url, timeout=20.0: _FakeResponse("||tiny.example^\n"),
+        lambda url, timeout=20.0, context=None: _FakeResponse("||tiny.example^\n"),
     )
 
     try:
@@ -250,3 +250,22 @@ def test_suspiciously_small_refresh_preserves_existing_cache(monkeypatch, tmp_pa
     assert status["last_refresh_result"] == "failed"
     assert "replacement floor" in status["last_error"]
     assert list(intel._load_feed_domains()) == existing_domains
+
+
+def test_feed_import_and_health_status_capture_tls_settings(tmp_path: Path) -> None:
+    source = tmp_path / "tracker-list.txt"
+    source.write_text("||metrics.example.org^\n0.0.0.0 beacon.example.io\n", encoding="utf-8")
+    cache_path = tmp_path / "tracker-feeds.json"
+    intel = TrackerIntel(
+        feed_cache_path=cache_path,
+        min_total_domains=1,
+        verify_tls=False,
+    )
+
+    imported = intel.import_feed_cache(source)
+    health = intel.health_status()
+
+    assert imported["last_refresh_result"] == "imported"
+    assert health["healthy"] is False
+    assert "tracker feed TLS verification is disabled" in health["warnings"]
+    assert health["feed_status"]["domain_count"] == 2

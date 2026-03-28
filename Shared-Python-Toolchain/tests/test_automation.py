@@ -48,6 +48,30 @@ class DummyTrackerIntel:
         }
 
 
+class DummyMalwareScanner:
+    def __init__(self):
+        self.refresh_calls = 0
+        self.rule_refresh_calls = 0
+
+    def refresh_feed_cache(self):
+        self.refresh_calls += 1
+        return {
+            "hash_count": 42,
+            "last_refresh_result": "success",
+            "last_error": None,
+            "sources": [{"url": "https://feed.local/malware", "hash_count": 42}],
+        }
+
+    def refresh_rule_feed_cache(self):
+        self.rule_refresh_calls += 1
+        return {
+            "rule_count": 5,
+            "last_refresh_result": "success",
+            "last_error": None,
+            "sources": [{"url": "https://feed.local/malware-rules", "rule_count": 5}],
+        }
+
+
 def test_perform_tasks_records_metrics():
     vault = DummyVault()
     proxy = DummyProxy()
@@ -113,3 +137,57 @@ def test_tracker_feed_refresh_runs_on_configured_tick():
     assert status["enabled"] is True
     assert status["last_result"] == "success"
     assert any(event == "automation.tracker_feed_refresh" for event, _ in audit.events)
+
+
+def test_malware_feed_refresh_runs_on_configured_tick():
+    vault = DummyVault()
+    proxy = DummyProxy()
+    audit = DummyAudit()
+    alerts = DummyAlerts()
+    scanner = DummyMalwareScanner()
+    supervisor = AutomationSupervisor(
+        vault=vault,
+        proxy=proxy,
+        audit_logger=audit,
+        alert_manager=alerts,
+        malware_scanner=scanner,
+        interval_seconds=0.1,
+        malware_feed_refresh_enabled=True,
+        malware_feed_refresh_every_ticks=2,
+    )
+
+    supervisor.perform_tasks()
+    supervisor.perform_tasks()
+
+    assert scanner.refresh_calls == 1
+    status = supervisor.status()["malware_feed_refresh"]
+    assert status["enabled"] is True
+    assert status["last_result"] == "success"
+    assert any(event == "automation.malware_feed_refresh" for event, _ in audit.events)
+
+
+def test_malware_rule_feed_refresh_runs_on_configured_tick():
+    vault = DummyVault()
+    proxy = DummyProxy()
+    audit = DummyAudit()
+    alerts = DummyAlerts()
+    scanner = DummyMalwareScanner()
+    supervisor = AutomationSupervisor(
+        vault=vault,
+        proxy=proxy,
+        audit_logger=audit,
+        alert_manager=alerts,
+        malware_scanner=scanner,
+        interval_seconds=0.1,
+        malware_rule_feed_refresh_enabled=True,
+        malware_rule_feed_refresh_every_ticks=2,
+    )
+
+    supervisor.perform_tasks()
+    supervisor.perform_tasks()
+
+    assert scanner.rule_refresh_calls == 1
+    status = supervisor.status()["malware_rule_feed_refresh"]
+    assert status["enabled"] is True
+    assert status["last_result"] == "success"
+    assert any(event == "automation.malware_rule_feed_refresh" for event, _ in audit.events)

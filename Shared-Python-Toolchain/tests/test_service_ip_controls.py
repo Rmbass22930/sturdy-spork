@@ -296,3 +296,135 @@ def test_tracker_feed_refresh_api_returns_502_on_failure(monkeypatch, tmp_path):
 
     assert refreshed.status_code == 502
     assert "upstream timeout" in refreshed.json()["detail"]
+
+
+def test_malware_feed_status_and_refresh_api(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+
+    class DummyScanner:
+        def feed_status(self):
+            return {
+                "cache_path": str(tmp_path / "malware-feeds.json"),
+                "hash_count": 0,
+                "sources": [],
+                "is_stale": True,
+                "last_refresh_result": "failed",
+                "failures": [{"url": "https://feed.local/malware", "error": "timeout"}],
+            }
+
+        def refresh_feed_cache(self, urls=None):
+            return {
+                "cache_path": str(tmp_path / "malware-feeds.json"),
+                "hash_count": 12,
+                "sources": [{"url": "https://feed.local/malware", "hash_count": 12}],
+                "last_refresh_result": "success",
+                "failures": [],
+            }
+
+    monkeypatch.setattr(service, "scanner", DummyScanner())
+
+    with TestClient(service.app) as client:
+        status = client.get("/endpoint/malware-feeds/status")
+        assert status.status_code == 200
+        assert status.json()["hash_count"] == 0
+        assert status.json()["is_stale"] is True
+
+        refreshed = client.post("/endpoint/malware-feeds/refresh", json={"urls": ["https://feed.local/malware"]})
+        assert refreshed.status_code == 200
+        assert refreshed.json()["hash_count"] == 12
+
+
+def test_malware_feed_refresh_api_returns_400_on_bad_config(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+
+    class BadScanner:
+        def feed_status(self):
+            return {"cache_path": str(tmp_path / "malware-feeds.json"), "hash_count": 0, "sources": []}
+
+        def refresh_feed_cache(self, urls=None):
+            raise ValueError("No malware feed URLs configured.")
+
+    monkeypatch.setattr(service, "scanner", BadScanner())
+
+    with TestClient(service.app) as client:
+        refreshed = client.post("/endpoint/malware-feeds/refresh", json={"urls": ["https://feed.local/malware"]})
+
+    assert refreshed.status_code == 400
+    assert "No malware feed URLs configured" in refreshed.json()["detail"]
+
+
+def test_security_health_and_rule_feed_routes(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+
+    class DummyTrackerIntel:
+        def feed_status(self):
+            return {"cache_path": str(tmp_path / "tracker-feeds.json"), "domain_count": 2, "sources": []}
+
+        def health_status(self):
+            return {"healthy": True, "warnings": [], "feed_status": self.feed_status()}
+
+        def import_feed_cache(self, source_path):
+            return {
+                "cache_path": str(tmp_path / "tracker-feeds.json"),
+                "domain_count": 2,
+                "sources": [{"url": source_path, "domain_count": 2, "imported": True}],
+                "last_refresh_result": "imported",
+                "failures": [],
+            }
+
+    class DummyScanner:
+        def feed_status(self):
+            return {"cache_path": str(tmp_path / "malware-feeds.json"), "hash_count": 1, "sources": []}
+
+        def rule_feed_status(self):
+            return {"cache_path": str(tmp_path / "malware-rule-feeds.json"), "rule_count": 1, "sources": []}
+
+        def health_status(self):
+            return {
+                "healthy": True,
+                "warnings": [],
+                "hash_feed_status": self.feed_status(),
+                "rule_feed_status": self.rule_feed_status(),
+            }
+
+        def refresh_rule_feed_cache(self, urls=None):
+            return {
+                "cache_path": str(tmp_path / "malware-rule-feeds.json"),
+                "rule_count": 3,
+                "sources": [{"url": "https://feed.local/rules", "rule_count": 3}],
+                "last_refresh_result": "success",
+                "failures": [],
+            }
+
+        def import_rule_feed_cache(self, source_path):
+            return {
+                "cache_path": str(tmp_path / "malware-rule-feeds.json"),
+                "rule_count": 2,
+                "sources": [{"url": source_path, "rule_count": 2, "imported": True}],
+                "last_refresh_result": "imported",
+                "failures": [],
+            }
+
+    monkeypatch.setattr(service, "tracker_intel", DummyTrackerIntel())
+    monkeypatch.setattr(service, "scanner", DummyScanner())
+
+    with TestClient(service.app) as client:
+        health = client.get("/health/security")
+        assert health.status_code == 200
+        assert health.json()["healthy"] is True
+
+        rule_status = client.get("/endpoint/malware-rule-feeds/status")
+        assert rule_status.status_code == 200
+        assert rule_status.json()["rule_count"] == 1
+
+        rule_refresh = client.post("/endpoint/malware-rule-feeds/refresh", json={"urls": ["https://feed.local/rules"]})
+        assert rule_refresh.status_code == 200
+        assert rule_refresh.json()["rule_count"] == 3
+
+        tracker_import = client.post("/privacy/tracker-feeds/import", json={"source_path": "offline-tracker-list.txt"})
+        assert tracker_import.status_code == 200
+        assert tracker_import.json()["last_refresh_result"] == "imported"
+
+        rule_import = client.post("/endpoint/malware-rule-feeds/import", json={"source_path": "offline-rules.txt"})
+        assert rule_import.status_code == 200
+        assert rule_import.json()["last_refresh_result"] == "imported"

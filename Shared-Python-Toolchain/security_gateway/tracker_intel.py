@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+import ssl
 from datetime import UTC, datetime
 from dataclasses import dataclass
 from pathlib import Path
@@ -141,6 +142,8 @@ class TrackerIntel:
         min_domains_per_source: int = 10,
         min_total_domains: int = 500,
         replace_ratio_floor: float = 0.5,
+        verify_tls: bool = True,
+        ca_bundle_path: str | Path | None = None,
     ):
         self.extra_domains_path = Path(extra_domains_path) if extra_domains_path else None
         self.feed_cache_path = Path(feed_cache_path) if feed_cache_path else None
@@ -150,6 +153,8 @@ class TrackerIntel:
         self.min_domains_per_source = min_domains_per_source
         self.min_total_domains = min_total_domains
         self.replace_ratio_floor = replace_ratio_floor
+        self.verify_tls = verify_tls
+        self.ca_bundle_path = Path(ca_bundle_path) if ca_bundle_path else None
 
     def is_tracker_hostname(self, hostname: str | None) -> Optional[TrackerMatch]:
         if not hostname:
@@ -242,6 +247,8 @@ class TrackerIntel:
                 "feed_urls": self.feed_urls,
                 "active_feed_urls": self._active_feed_urls(),
                 "disabled_feed_urls": sorted(self.disabled_feed_urls),
+                "verify_tls": self.verify_tls,
+                "ca_bundle_path": str(self.ca_bundle_path) if self.ca_bundle_path else None,
                 "domain_count": 0,
                 "updated_at": None,
                 "last_refresh_attempted_at": None,
@@ -268,6 +275,8 @@ class TrackerIntel:
             "feed_urls": self.feed_urls,
             "active_feed_urls": self._active_feed_urls(),
             "disabled_feed_urls": sorted(self.disabled_feed_urls),
+            "verify_tls": self.verify_tls,
+            "ca_bundle_path": str(self.ca_bundle_path) if self.ca_bundle_path else None,
             "domain_count": len(list(self._load_feed_domains())),
             "updated_at": updated_at,
             "last_refresh_attempted_at": payload.get("last_refresh_attempted_at") if isinstance(payload, dict) else None,
@@ -283,6 +292,21 @@ class TrackerIntel:
             "sources": payload.get("sources", []) if isinstance(payload, dict) else [],
         }
 
+    def health_status(self) -> dict[str, Any]:
+        status = self.feed_status()
+        warnings: list[str] = []
+        if status["active_feed_urls"] and status["is_stale"]:
+            warnings.append("tracker feed cache is stale")
+        if status["last_refresh_result"] == "failed":
+            warnings.append("last tracker feed refresh failed")
+        if not self.verify_tls:
+            warnings.append("tracker feed TLS verification is disabled")
+        return {
+            "healthy": not warnings,
+            "warnings": warnings,
+            "feed_status": status,
+        }
+
     def refresh_feed_cache(self, urls: Iterable[str] | None = None, *, timeout: float = 20.0) -> dict[str, Any]:
         active_urls = self._active_feed_urls(urls)
         if not active_urls:
@@ -294,8 +318,7 @@ class TrackerIntel:
         refresh_time = datetime.now(UTC).isoformat()
         for url in active_urls:
             try:
-                with urlopen(url, timeout=timeout) as response:  # noqa: S310
-                    payload = response.read().decode("utf-8", errors="replace")
+                payload = self._fetch_payload(url, timeout=timeout)
                 parsed = self._parse_feed_payload(payload, source_url=url)
                 if len(parsed) < self.min_domains_per_source:
                     raise RuntimeError(
@@ -361,12 +384,57 @@ class TrackerIntel:
         }
         return result
 
+    def import_feed_cache(self, source_path: str | Path) -> dict[str, Any]:
+        source = Path(source_path)
+        if not source.exists():
+            raise ValueError(f"Tracker feed import source not found: {source}")
+        payload = source.read_text(encoding="utf-8")
+        parsed = self._parse_feed_payload(payload, source_url=source.name)
+        if len(parsed) < self.min_total_domains:
+            raise ValueError(
+                f"Tracker feed import produced {len(parsed)} domains, below minimum total {self.min_total_domains}"
+            )
+        if not self.feed_cache_path:
+            raise ValueError("Tracker feed cache path is not configured.")
+        self.feed_cache_path.parent.mkdir(parents=True, exist_ok=True)
+        refresh_time = datetime.now(UTC).isoformat()
+        cache_payload = {
+            "updated_at": refresh_time,
+            "last_refresh_attempted_at": refresh_time,
+            "last_refresh_result": "imported",
+            "last_error": None,
+            "failures": [],
+            "sources": [{"url": str(source), "domain_count": len(parsed), "imported": True}],
+            "domains": sorted(parsed),
+        }
+        self._write_feed_cache_payload(cache_payload)
+        return {
+            "cache_path": str(self.feed_cache_path),
+            "domain_count": len(parsed),
+            "sources": cache_payload["sources"],
+            "last_refresh_result": "imported",
+            "failures": [],
+        }
+
     def _active_feed_urls(self, urls: Iterable[str] | None = None) -> list[str]:
         return [
             str(url)
             for url in (urls or self.feed_urls)
             if str(url).strip() and str(url) not in self.disabled_feed_urls
         ]
+
+    def _fetch_payload(self, url: str, *, timeout: float) -> str:
+        context = self._build_ssl_context()
+        with urlopen(url, timeout=timeout, context=context) as response:  # noqa: S310
+            return response.read().decode("utf-8", errors="replace")
+
+    def _build_ssl_context(self) -> ssl.SSLContext:
+        if not self.verify_tls:
+            context = ssl._create_unverified_context()  # noqa: SLF001
+        else:
+            cafile = str(self.ca_bundle_path) if self.ca_bundle_path else None
+            context = ssl.create_default_context(cafile=cafile)
+        return context
 
     def _read_feed_cache_payload(self) -> dict[str, Any] | list[Any] | None:
         if not self.feed_cache_path or not self.feed_cache_path.exists():

@@ -38,7 +38,26 @@ ip_blocklist = IPBlocklistManager(audit_logger=audit_logger)
 policy_engine = PolicyEngine(threat_responder=threat_responder, ip_blocklist=ip_blocklist)
 resolver = SecureDNSResolver()
 proxy = OutboundProxy()
-scanner = MalwareScanner()
+scanner = MalwareScanner(
+    feed_cache_path=settings.malware_feed_cache_path,
+    feed_urls=settings.malware_feed_urls,
+    stale_after_hours=settings.malware_feed_stale_hours,
+    disabled_feed_urls=settings.malware_feed_disabled_urls,
+    min_hashes_per_source=settings.malware_feed_min_hashes_per_source,
+    min_total_hashes=settings.malware_feed_min_total_hashes,
+    replace_ratio_floor=settings.malware_feed_replace_ratio_floor,
+    verify_tls=settings.malware_feed_verify_tls,
+    ca_bundle_path=settings.malware_feed_ca_bundle_path,
+    rule_feed_cache_path=settings.malware_rule_feed_cache_path,
+    rule_feed_urls=settings.malware_rule_feed_urls,
+    rule_feed_stale_after_hours=settings.malware_rule_feed_stale_hours,
+    disabled_rule_feed_urls=settings.malware_rule_feed_disabled_urls,
+    min_rules_per_source=settings.malware_rule_feed_min_rules_per_source,
+    min_total_rules=settings.malware_rule_feed_min_total_rules,
+    rule_replace_ratio_floor=settings.malware_rule_feed_replace_ratio_floor,
+    rule_feed_verify_tls=settings.malware_rule_feed_verify_tls,
+    rule_feed_ca_bundle_path=settings.malware_rule_feed_ca_bundle_path,
+)
 report_builder = SecurityReportBuilder()
 tracker_intel = TrackerIntel(
     extra_domains_path=settings.tracker_domain_list_path,
@@ -49,7 +68,21 @@ tracker_intel = TrackerIntel(
     min_domains_per_source=settings.tracker_feed_min_domains_per_source,
     min_total_domains=settings.tracker_feed_min_total_domains,
     replace_ratio_floor=settings.tracker_feed_replace_ratio_floor,
+    verify_tls=settings.tracker_feed_verify_tls,
+    ca_bundle_path=settings.tracker_feed_ca_bundle_path,
 )
+
+
+def _seed_offline_feeds() -> None:
+    if settings.tracker_offline_seed_path and not Path(settings.tracker_feed_cache_path).exists():
+        tracker_intel.import_feed_cache(settings.tracker_offline_seed_path)
+    if settings.malware_offline_hash_seed_path and not Path(settings.malware_feed_cache_path).exists():
+        scanner.import_feed_cache(settings.malware_offline_hash_seed_path)
+    if settings.malware_offline_rule_seed_path and not Path(settings.malware_rule_feed_cache_path).exists():
+        scanner.import_rule_feed_cache(settings.malware_offline_rule_seed_path)
+
+
+_seed_offline_feeds()
 
 
 @app.command()
@@ -143,6 +176,60 @@ def scan(path: Path) -> None:
     print({"malicious": malicious, "verdict": verdict})
 
 
+@app.command("malware-feed-status")
+def malware_feed_status() -> None:
+    print(scanner.feed_status())
+
+
+@app.command("malware-feed-refresh")
+def malware_feed_refresh(
+    url: list[str] | None = typer.Option(None, "--url", help="Override malware feed URLs for this refresh run"),
+) -> None:
+    try:
+        result = scanner.refresh_feed_cache(url)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    print({"status": "refreshed", **result})
+
+
+@app.command("malware-feed-import")
+def malware_feed_import(path: Path) -> None:
+    try:
+        result = scanner.import_feed_cache(path)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    print({"status": "imported", **result})
+
+
+@app.command("malware-rule-feed-status")
+def malware_rule_feed_status() -> None:
+    print(scanner.rule_feed_status())
+
+
+@app.command("malware-rule-feed-refresh")
+def malware_rule_feed_refresh(
+    url: list[str] | None = typer.Option(None, "--url", help="Override malware rule feed URLs for this refresh run"),
+) -> None:
+    try:
+        result = scanner.refresh_rule_feed_cache(url)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    print({"status": "refreshed", **result})
+
+
+@app.command("malware-rule-feed-import")
+def malware_rule_feed_import(path: Path) -> None:
+    try:
+        result = scanner.import_rule_feed_cache(path)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    print({"status": "imported", **result})
+
+
 @app.command()
 def automation_run() -> None:
     """Run automation supervisor in the foreground."""
@@ -152,9 +239,14 @@ def automation_run() -> None:
         audit_logger=audit_logger,
         alert_manager=alert_manager,
         tracker_intel=tracker_intel,
+        malware_scanner=scanner,
         interval_seconds=settings.automation_interval_seconds,
         tracker_feed_refresh_enabled=settings.automation_tracker_feed_refresh_enabled,
         tracker_feed_refresh_every_ticks=settings.automation_tracker_feed_refresh_every_ticks,
+        malware_feed_refresh_enabled=settings.automation_malware_feed_refresh_enabled,
+        malware_feed_refresh_every_ticks=settings.automation_malware_feed_refresh_every_ticks,
+        malware_rule_feed_refresh_enabled=settings.automation_malware_rule_feed_refresh_enabled,
+        malware_rule_feed_refresh_every_ticks=settings.automation_malware_rule_feed_refresh_every_ticks,
     )
     print("Starting automation supervisor. Press Ctrl+C to stop.")
     run_forever(supervisor)
@@ -249,6 +341,31 @@ def tracker_feed_refresh(
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
     print({"status": "refreshed", **result})
+
+
+@app.command("tracker-feed-import")
+def tracker_feed_import(path: Path) -> None:
+    try:
+        result = tracker_intel.import_feed_cache(path)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    print({"status": "imported", **result})
+
+
+@app.command("health-status")
+def health_status() -> None:
+    tracker_health = tracker_intel.health_status()
+    malware_health = scanner.health_status()
+    warnings = [*tracker_health["warnings"], *malware_health["warnings"]]
+    print(
+        {
+            "healthy": not warnings,
+            "warnings": warnings,
+            "tracker_intel": tracker_health,
+            "malware_scanner": malware_health,
+        }
+    )
 
 
 def launch() -> None:

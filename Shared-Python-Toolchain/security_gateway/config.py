@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     automation_interval_seconds: float = 300.0
     automation_tracker_feed_refresh_enabled: bool = False
     automation_tracker_feed_refresh_every_ticks: int = 12
+    automation_malware_feed_refresh_enabled: bool = False
+    automation_malware_feed_refresh_every_ticks: int = 12
+    automation_malware_rule_feed_refresh_enabled: bool = False
+    automation_malware_rule_feed_refresh_every_ticks: int = 12
     alert_webhook_url: Optional[str] = None
     alert_enable_toast: bool = False
     threat_rotation_enabled: bool = True
@@ -66,6 +70,29 @@ class Settings(BaseSettings):
     tracker_feed_min_domains_per_source: int = 10
     tracker_feed_min_total_domains: int = 500
     tracker_feed_replace_ratio_floor: float = 0.5
+    tracker_feed_verify_tls: bool = True
+    tracker_feed_ca_bundle_path: Optional[str] = None
+    tracker_offline_seed_path: Optional[str] = None
+    malware_feed_urls: List[str] = Field(default_factory=list)
+    malware_feed_cache_path: str = Field("logs/malware_feed_hashes.json")
+    malware_feed_stale_hours: float = 168.0
+    malware_feed_disabled_urls: List[str] = Field(default_factory=list)
+    malware_feed_min_hashes_per_source: int = 1
+    malware_feed_min_total_hashes: int = 1
+    malware_feed_replace_ratio_floor: float = 0.5
+    malware_feed_verify_tls: bool = True
+    malware_feed_ca_bundle_path: Optional[str] = None
+    malware_offline_hash_seed_path: Optional[str] = None
+    malware_rule_feed_urls: List[str] = Field(default_factory=list)
+    malware_rule_feed_cache_path: str = Field("logs/malware_rule_feed_rules.json")
+    malware_rule_feed_stale_hours: float = 168.0
+    malware_rule_feed_disabled_urls: List[str] = Field(default_factory=list)
+    malware_rule_feed_min_rules_per_source: int = 1
+    malware_rule_feed_min_total_rules: int = 1
+    malware_rule_feed_replace_ratio_floor: float = 0.5
+    malware_rule_feed_verify_tls: bool = True
+    malware_rule_feed_ca_bundle_path: Optional[str] = None
+    malware_offline_rule_seed_path: Optional[str] = None
     traceroute_require_confirmation: bool = False
     traceroute_show_popup_results: bool = False
     traceroute_preview_lines: int = 6
