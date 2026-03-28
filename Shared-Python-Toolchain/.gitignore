@@ -2,3 +2,4 @@ __pycache__/
 .pytest_cache/
 _pyi_stage/
 *.pyc
+logs/audit.jsonl
