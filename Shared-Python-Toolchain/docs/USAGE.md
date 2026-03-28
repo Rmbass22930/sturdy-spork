@@ -23,7 +23,11 @@ uvicorn security_gateway.service:app --reload
 - `POST /privacy/tracker-feeds/import`, `POST /endpoint/malware-feeds/import`, `POST /endpoint/malware-rule-feeds/import` – seed local caches from offline files.
 - `GET /health/security` – consolidated detection/feed health summary for tracker intel, malware feeds, and automation state.
 - `WS /ws` – real-time channel (sends `{"type":"ready"}` on connect, `ping` -> `pong`, other messages echoed as `echo:<message>`).
-- Detection-content write routes (`*/refresh`, `*/import`) now require operator authorization.
+- Operator-managed routes now require operator authorization:
+  - `PUT /pam/secret`, `POST /pam/checkout`, `GET /pam/metrics`
+  - `GET|POST|DELETE /network/blocked-ips*`
+  - `GET /automation/status`
+  - detection-content write routes (`*/refresh`, `*/import`)
 
 ## CLI examples
 ```
@@ -97,7 +101,7 @@ SECURITY_GATEWAY_AUTOMATION_MALWARE_RULE_FEED_REFRESH_EVERY_TICKS=12
 - The automation status output includes tracker-feed, malware-feed, and malware-rule-feed refresh state, last result, and last error.
 
 ## Operator auth for feed management
-- Feed refresh/import routes use `Authorization: Bearer <token>` when a token is configured.
+- Operator-managed routes use `Authorization: Bearer <token>` when a token is configured.
 - Configure it with:
 ```
 SECURITY_GATEWAY_OPERATOR_BEARER_TOKEN=replace-with-a-long-random-token
@@ -117,6 +121,10 @@ curl -X POST http://127.0.0.1:8000/privacy/tracker-feeds/refresh \
   -H "Content-Type: application/json" \
   -d '{"urls":["https://example.com/custom-tracker-list.txt"]}'
 ```
+- The same header should be used for:
+  - PAM secret storage and checkout
+  - blocked-IP administration
+  - automation status checks
 
 ## Malware feed refresh
 - Malware scanning can consume refreshable SHA-256 IOC/hash feeds in addition to the built-in heuristics.

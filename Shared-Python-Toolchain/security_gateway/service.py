@@ -179,7 +179,10 @@ class SecretPayload(BaseModel):
 
 
 @app.put("/pam/secret")
-async def store_secret(payload: SecretPayload) -> dict:
+async def store_secret(
+    payload: SecretPayload,
+    _: None = Depends(require_operator_access),
+) -> dict:
     vault.store_secret(payload.name, payload.secret)
     return {"status": "stored", "name": payload.name, "metrics": vault.get_metrics()}
 
@@ -190,7 +193,10 @@ class CheckoutPayload(BaseModel):
 
 
 @app.post("/pam/checkout", response_model=CredentialLease)
-async def checkout_secret(payload: CheckoutPayload) -> CredentialLease:
+async def checkout_secret(
+    payload: CheckoutPayload,
+    _: None = Depends(require_operator_access),
+) -> CredentialLease:
     try:
         return vault.checkout(payload.name, payload.ttl_minutes)
     except KeyError as exc:
@@ -198,7 +204,7 @@ async def checkout_secret(payload: CheckoutPayload) -> CredentialLease:
 
 
 @app.get("/pam/metrics")
-async def pam_metrics() -> dict:
+async def pam_metrics(_: None = Depends(require_operator_access)) -> dict:
     return vault.get_metrics()
 
 
@@ -430,12 +436,15 @@ async def tracker_feed_import(
 
 
 @app.get("/network/blocked-ips")
-async def list_blocked_ips() -> dict:
+async def list_blocked_ips(_: None = Depends(require_operator_access)) -> dict:
     return {"blocked_ips": [entry.__dict__ for entry in ip_blocklist.list_entries()]}
 
 
 @app.post("/network/blocked-ips")
-async def block_ip(payload: BlockIPPayload) -> dict:
+async def block_ip(
+    payload: BlockIPPayload,
+    _: None = Depends(require_operator_access),
+) -> dict:
     entry = ip_blocklist.block(
         payload.ip,
         reason=payload.reason,
@@ -446,7 +455,11 @@ async def block_ip(payload: BlockIPPayload) -> dict:
 
 
 @app.delete("/network/blocked-ips/{ip}")
-async def unblock_ip(ip: str, payload: UnblockIPPayload | None = None) -> dict:
+async def unblock_ip(
+    ip: str,
+    payload: UnblockIPPayload | None = None,
+    _: None = Depends(require_operator_access),
+) -> dict:
     removed = ip_blocklist.unblock(ip, reason=payload.reason if payload else None, unblocked_by="api")
     if not removed:
         raise HTTPException(status_code=404, detail="IP address not blocked")
@@ -454,7 +467,11 @@ async def unblock_ip(ip: str, payload: UnblockIPPayload | None = None) -> dict:
 
 
 @app.post("/network/blocked-ips/{ip}/promote")
-async def promote_ip_block(ip: str, payload: PromoteIPPayload | None = None) -> dict:
+async def promote_ip_block(
+    ip: str,
+    payload: PromoteIPPayload | None = None,
+    _: None = Depends(require_operator_access),
+) -> dict:
     entry = ip_blocklist.promote_to_permanent(
         ip,
         reason=payload.reason if payload else None,
@@ -466,7 +483,7 @@ async def promote_ip_block(ip: str, payload: PromoteIPPayload | None = None) -> 
 
 
 @app.get("/automation/status")
-async def automation_status() -> dict:
+async def automation_status(_: None = Depends(require_operator_access)) -> dict:
     return automation.status()
 
 

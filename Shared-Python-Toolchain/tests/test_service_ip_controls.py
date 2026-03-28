@@ -63,22 +63,25 @@ def _install_test_managers(monkeypatch, tmp_path):
 
 def test_block_list_promote_unblock_api(monkeypatch, tmp_path):
     _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
 
     with TestClient(service.app) as client:
         created = client.post(
             "/network/blocked-ips",
             json={"ip": "203.0.113.30", "reason": "manual review", "duration_minutes": 15},
+            headers=headers,
         )
         assert created.status_code == 200
         assert created.json()["entry"]["expires_at"] is not None
 
-        listed = client.get("/network/blocked-ips")
+        listed = client.get("/network/blocked-ips", headers=headers)
         assert listed.status_code == 200
         assert listed.json()["blocked_ips"][0]["ip"] == "203.0.113.30"
 
         promoted = client.post(
             "/network/blocked-ips/203.0.113.30/promote",
             json={"reason": "confirmed attacker"},
+            headers=headers,
         )
         assert promoted.status_code == 200
         assert promoted.json()["entry"]["expires_at"] is None
@@ -88,6 +91,7 @@ def test_block_list_promote_unblock_api(monkeypatch, tmp_path):
             "DELETE",
             "/network/blocked-ips/203.0.113.30",
             json={"reason": "operator cleared"},
+            headers=headers,
         )
         assert removed.status_code == 200
 
@@ -135,11 +139,13 @@ def test_access_evaluate_auto_block_message(monkeypatch, tmp_path):
 
 def test_promote_missing_ip_returns_404(monkeypatch, tmp_path):
     _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
 
     with TestClient(service.app) as client:
         response = client.post(
             "/network/blocked-ips/203.0.113.40/promote",
             json={"reason": "confirmed attacker"},
+            headers=headers,
         )
 
     assert response.status_code == 404
@@ -147,12 +153,14 @@ def test_promote_missing_ip_returns_404(monkeypatch, tmp_path):
 
 def test_unblock_missing_ip_returns_404(monkeypatch, tmp_path):
     _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
 
     with TestClient(service.app) as client:
         response = client.request(
             "DELETE",
             "/network/blocked-ips/203.0.113.41",
             json={"reason": "false positive"},
+            headers=headers,
         )
 
     assert response.status_code == 404
@@ -392,6 +400,42 @@ def test_feed_management_routes_require_operator_auth(monkeypatch, tmp_path):
     assert refreshed.json()["detail"] == "Operator authentication required."
     assert imported.status_code == 401
     assert imported.json()["detail"] == "Operator authentication required."
+
+
+def test_operator_routes_require_auth_for_pam_and_network(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "operator_bearer_token", "expected-token")
+    monkeypatch.setattr(settings, "operator_allow_loopback_without_token", False)
+
+    with TestClient(service.app) as client:
+        pam_metrics = client.get("/pam/metrics")
+        block_list = client.get("/network/blocked-ips")
+        automation_status = client.get("/automation/status")
+
+    assert pam_metrics.status_code == 401
+    assert block_list.status_code == 401
+    assert automation_status.status_code == 401
+
+
+def test_pam_and_automation_routes_allow_operator_auth(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
+
+    with TestClient(service.app) as client:
+        stored = client.put("/pam/secret", json={"name": "db", "secret": "super-secret"}, headers=headers)
+        assert stored.status_code == 200
+
+        checked_out = client.post("/pam/checkout", json={"name": "db", "ttl_minutes": 5}, headers=headers)
+        assert checked_out.status_code == 200
+        assert checked_out.json()["secret"] == "super-secret"
+
+        metrics = client.get("/pam/metrics", headers=headers)
+        assert metrics.status_code == 200
+        assert "rotation_count" in metrics.json()
+
+        automation_status = client.get("/automation/status", headers=headers)
+        assert automation_status.status_code == 200
+        assert "running" in automation_status.json()
 
 
 def test_security_health_and_rule_feed_routes(monkeypatch, tmp_path):
