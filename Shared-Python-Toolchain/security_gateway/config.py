@@ -34,6 +34,16 @@ class Settings(BaseSettings):
             "https://dns.quad9.net/dns-query",
         ]
     )
+    proxy_allowed_url_schemes: List[str] = Field(default_factory=lambda: ["http", "https"])
+    proxy_allowed_hosts: List[str] = Field(default_factory=list)
+    proxy_block_private_destinations: bool = True
+    proxy_blocked_hosts: List[str] = Field(
+        default_factory=lambda: [
+            "169.254.169.254",
+            "metadata.google.internal",
+            "100.100.100.200",
+        ]
+    )
     tor_socks_proxy: str = "socks5h://127.0.0.1:9050"
     warp_endpoint: Optional[str] = None
     pam_master_key: str = Field(default_factory=lambda: secrets.token_urlsafe(32))

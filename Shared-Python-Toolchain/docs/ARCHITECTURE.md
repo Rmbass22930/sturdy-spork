@@ -25,7 +25,7 @@
    - `SecureDNSResolver` performs DNS over HTTPS (Cloudflare + Quad9). Validates responses via DNSSEC flags when available.
 
 5. **security_gateway/tor.py**
-   - Provides pluggable outbound proxying via Tor or Cloudflare WARP. Exposes a context manager to wrap sensitive outbound requests.
+   - Provides pluggable outbound proxying via Tor or Cloudflare WARP. Enforces outbound URL validation for the shared proxy path so non-HTTP(S), localhost, private-network, link-local, and metadata-style targets are rejected before requests are sent.
 
 6. **security_gateway/endpoint.py**
    - `EndpointTelemetry` ingests device posture (disk encryption, EDR status) and signs it for tamper resistance.

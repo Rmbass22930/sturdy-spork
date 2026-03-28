@@ -127,7 +127,11 @@ def pam_metrics() -> None:
 
 @app.command()
 def proxy_request(url: str, via: str = typer.Option("tor", help="tor|warp|direct")) -> None:
-    response = proxy.request("GET", url, via=via)
+    try:
+        response = proxy.request("GET", url, via=via)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
     print({"status_code": response.status_code, "preview": response.body[:120]})
 
 

@@ -417,6 +417,8 @@ async def proxy_request(payload: ProxyPayload) -> dict:
         raise HTTPException(status_code=403, detail=f"Tracker destination blocked: {tracker_match.hostname}")
     try:
         result = proxy.request(payload.method.upper(), payload.url, via=payload.via)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {

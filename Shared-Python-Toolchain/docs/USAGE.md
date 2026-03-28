@@ -128,6 +128,19 @@ curl -X POST http://127.0.0.1:8000/privacy/tracker-feeds/refresh \
   - automation status checks
   - websocket connections to `/ws`
 
+## Outbound proxy guardrails
+- `POST /tor/request` and `security-gateway proxy-request` now reject unsafe proxy targets before issuing a request.
+- Allowed URL schemes are HTTP and HTTPS by default.
+- Localhost, private-network, link-local, reserved, multicast, unspecified, and metadata-style destinations are blocked by default.
+- Configure these controls with:
+```
+SECURITY_GATEWAY_PROXY_ALLOWED_URL_SCHEMES=["http","https"]
+SECURITY_GATEWAY_PROXY_ALLOWED_HOSTS=[]
+SECURITY_GATEWAY_PROXY_BLOCK_PRIVATE_DESTINATIONS=true
+SECURITY_GATEWAY_PROXY_BLOCKED_HOSTS=["169.254.169.254","metadata.google.internal","100.100.100.200"]
+```
+- If you want to restrict proxying to a fixed host allowlist, populate `SECURITY_GATEWAY_PROXY_ALLOWED_HOSTS`.
+
 ## Malware feed refresh
 - Malware scanning can consume refreshable SHA-256 IOC/hash feeds in addition to the built-in heuristics.
 - Refresh feeds with:

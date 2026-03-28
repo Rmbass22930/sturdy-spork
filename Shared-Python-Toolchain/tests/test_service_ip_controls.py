@@ -1,3 +1,4 @@
+import socket
 from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
@@ -8,6 +9,7 @@ from security_gateway.ip_controls import IPBlocklistManager
 from security_gateway.models import DeviceCompliance
 from security_gateway.policy import PolicyEngine
 from security_gateway.reports import SecurityReportBuilder
+from security_gateway.tor import ProxyResponse
 
 
 class DummyAuditLogger:
@@ -255,6 +257,49 @@ def test_proxy_request_blocks_tracker_like_urls(monkeypatch, tmp_path):
     tracker_events = [data for event, data in audit.events if event == "privacy.tracker_block"]
     assert tracker_events
     assert tracker_events[0]["source"] == "heuristic"
+
+
+def test_proxy_request_rejects_private_destinations(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+
+    with TestClient(service.app) as client:
+        response = client.post(
+            "/tor/request",
+            json={"url": "http://127.0.0.1/admin", "method": "GET", "via": "direct"},
+        )
+
+    assert response.status_code == 400
+    assert "not allowed" in response.json()["detail"].lower()
+
+
+def test_proxy_request_allows_public_http_targets(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+
+    monkeypatch.setattr(
+        service.proxy,
+        "_send_request",
+        lambda method, url, **kwargs: ProxyResponse(
+            status_code=200,
+            headers={"content-type": "text/plain"},
+            body="ok",
+        ),
+    )
+    monkeypatch.setattr(
+        "security_gateway.tor.socket.getaddrinfo",
+        lambda host, port, type=0: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))
+        ],
+    )
+
+    with TestClient(service.app) as client:
+        response = client.post(
+            "/tor/request",
+            json={"url": "https://example.com/health", "method": "GET", "via": "direct"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["status_code"] == 200
+    assert response.json()["body"] == "ok"
 
 
 def test_tracker_feed_status_and_refresh_api(monkeypatch, tmp_path):
