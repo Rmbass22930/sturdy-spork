@@ -35,6 +35,7 @@
 7. **security_gateway/service.py**
    - FastAPI service that exposes: `/access/evaluate`, `/pam/checkout`, `/dns/resolve`, `/endpoint/scan`, `/endpoint/malware-feeds/*`, `/endpoint/malware-rule-feeds/*`, `/privacy/tracker-feeds/*`, `/health/security`, `/tor/request`.
    - PAM operations, IP block management, automation status, and detection-content refresh/import routes require operator authorization via a bearer token, with an explicit loopback-only fallback for local-only development.
+   - The WebSocket channel is also operator-gated and limited to health-style control messages instead of arbitrary echo traffic.
    - Emits audit events to stdout + JSONL for SIEM ingestion.
 
 8. **security_gateway/automation.py**

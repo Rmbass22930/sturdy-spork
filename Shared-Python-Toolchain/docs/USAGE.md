@@ -22,11 +22,12 @@ uvicorn security_gateway.service:app --reload
 - `GET /endpoint/malware-rule-feeds/status`, `POST /endpoint/malware-rule-feeds/refresh` – inspect and refresh malware rule/string feeds for the scanner.
 - `POST /privacy/tracker-feeds/import`, `POST /endpoint/malware-feeds/import`, `POST /endpoint/malware-rule-feeds/import` – seed local caches from offline files.
 - `GET /health/security` – consolidated detection/feed health summary for tracker intel, malware feeds, and automation state.
-- `WS /ws` – real-time channel (sends `{"type":"ready"}` on connect, `ping` -> `pong`, other messages echoed as `echo:<message>`).
+- `WS /ws` – operator-authenticated health-only channel (sends `{"type":"ready","mode":"health_only"}` on connect, `ping`/`health` -> `pong`, unsupported messages return a structured unsupported response).
 - Operator-managed routes now require operator authorization:
   - `PUT /pam/secret`, `POST /pam/checkout`, `GET /pam/metrics`
   - `GET|POST|DELETE /network/blocked-ips*`
   - `GET /automation/status`
+  - `WS /ws`
   - detection-content write routes (`*/refresh`, `*/import`)
 
 ## CLI examples
@@ -125,6 +126,7 @@ curl -X POST http://127.0.0.1:8000/privacy/tracker-feeds/refresh \
   - PAM secret storage and checkout
   - blocked-IP administration
   - automation status checks
+  - websocket connections to `/ws`
 
 ## Malware feed refresh
 - Malware scanning can consume refreshable SHA-256 IOC/hash feeds in addition to the built-in heuristics.

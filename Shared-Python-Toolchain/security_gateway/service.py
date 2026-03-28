@@ -9,7 +9,18 @@ from ipaddress import ip_address
 from pathlib import Path
 from fastapi.responses import FileResponse, Response
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile, Request, WebSocket, WebSocketDisconnect
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Header,
+    HTTPException,
+    UploadFile,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from pydantic import BaseModel
 
 from .audit import AuditLogger
@@ -149,6 +160,36 @@ def require_operator_access(
         status_code=503,
         detail="Operator bearer token is not configured for remote management.",
     )
+
+
+async def require_operator_websocket_access(websocket: WebSocket) -> bool:
+    client_host = websocket.client.host if websocket.client else None
+    authorization = websocket.headers.get("authorization")
+    expected_token = settings.operator_bearer_token
+    if expected_token:
+        scheme, _, supplied_token = (authorization or "").partition(" ")
+        if scheme.lower() == "bearer" and supplied_token and secrets.compare_digest(supplied_token, expected_token):
+            return True
+        audit_logger.log(
+            "operator.auth.failure",
+            {"path": websocket.url.path, "source_ip": client_host, "reason": "missing_or_invalid_bearer_token"},
+        )
+        await websocket.accept()
+        await websocket.send_json({"type": "error", "message": "Operator authentication required."})
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return False
+    if settings.operator_allow_loopback_without_token and _is_loopback_client(client_host):
+        return True
+    audit_logger.log(
+        "operator.auth.failure",
+        {"path": websocket.url.path, "source_ip": client_host, "reason": "operator_token_not_configured"},
+    )
+    await websocket.accept()
+    await websocket.send_json(
+        {"type": "error", "message": "Operator bearer token is not configured for remote management."}
+    )
+    await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+    return False
 
 
 @app.post("/access/evaluate", response_model=AccessDecision)
@@ -538,8 +579,10 @@ async def fetch_report(report_name: str) -> FileResponse:
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
+    if not await require_operator_websocket_access(websocket):
+        return
     await websocket.accept()
-    await websocket.send_json({"type": "ready", "message": "connected"})
+    await websocket.send_json({"type": "ready", "message": "connected", "mode": "health_only"})
     try:
         while True:
             payload = await websocket.receive_text()
@@ -550,6 +593,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 await websocket.close(code=1000)
                 break
             else:
-                await websocket.send_text(f"echo:{payload}")
+                await websocket.send_json(
+                    {
+                        "type": "unsupported",
+                        "message": "health-only websocket; supported commands: ping, health, close",
+                    }
+                )
     except WebSocketDisconnect:
         return
