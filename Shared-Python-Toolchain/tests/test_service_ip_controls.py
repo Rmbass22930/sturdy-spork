@@ -27,6 +27,12 @@ class DummyTraceRunner:
         return None
 
 
+def _operator_headers(monkeypatch, token="test-operator-token"):
+    monkeypatch.setattr(settings, "operator_bearer_token", token)
+    monkeypatch.setattr(settings, "operator_allow_loopback_without_token", False)
+    return {"Authorization": f"Bearer {token}"}
+
+
 def _install_test_managers(monkeypatch, tmp_path):
     audit = DummyAuditLogger()
     blocklist = IPBlocklistManager(path=tmp_path / "blocked_ips.json", audit_logger=audit)
@@ -245,6 +251,7 @@ def test_proxy_request_blocks_tracker_like_urls(monkeypatch, tmp_path):
 
 def test_tracker_feed_status_and_refresh_api(monkeypatch, tmp_path):
     _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
 
     class DummyTrackerIntel:
         def feed_status(self):
@@ -274,13 +281,18 @@ def test_tracker_feed_status_and_refresh_api(monkeypatch, tmp_path):
         assert status.json()["domain_count"] == 0
         assert status.json()["is_stale"] is True
 
-        refreshed = client.post("/privacy/tracker-feeds/refresh", json={"urls": ["https://feed.local/example"]})
+        refreshed = client.post(
+            "/privacy/tracker-feeds/refresh",
+            json={"urls": ["https://feed.local/example"]},
+            headers=headers,
+        )
         assert refreshed.status_code == 200
         assert refreshed.json()["domain_count"] == 25
 
 
 def test_tracker_feed_refresh_api_returns_502_on_failure(monkeypatch, tmp_path):
     _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
 
     class FailingTrackerIntel:
         def feed_status(self):
@@ -292,7 +304,11 @@ def test_tracker_feed_refresh_api_returns_502_on_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(service, "tracker_intel", FailingTrackerIntel())
 
     with TestClient(service.app) as client:
-        refreshed = client.post("/privacy/tracker-feeds/refresh", json={"urls": ["https://feed.local/example"]})
+        refreshed = client.post(
+            "/privacy/tracker-feeds/refresh",
+            json={"urls": ["https://feed.local/example"]},
+            headers=headers,
+        )
 
     assert refreshed.status_code == 502
     assert "upstream timeout" in refreshed.json()["detail"]
@@ -300,6 +316,7 @@ def test_tracker_feed_refresh_api_returns_502_on_failure(monkeypatch, tmp_path):
 
 def test_malware_feed_status_and_refresh_api(monkeypatch, tmp_path):
     _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
 
     class DummyScanner:
         def feed_status(self):
@@ -329,13 +346,18 @@ def test_malware_feed_status_and_refresh_api(monkeypatch, tmp_path):
         assert status.json()["hash_count"] == 0
         assert status.json()["is_stale"] is True
 
-        refreshed = client.post("/endpoint/malware-feeds/refresh", json={"urls": ["https://feed.local/malware"]})
+        refreshed = client.post(
+            "/endpoint/malware-feeds/refresh",
+            json={"urls": ["https://feed.local/malware"]},
+            headers=headers,
+        )
         assert refreshed.status_code == 200
         assert refreshed.json()["hash_count"] == 12
 
 
 def test_malware_feed_refresh_api_returns_400_on_bad_config(monkeypatch, tmp_path):
     _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
 
     class BadScanner:
         def feed_status(self):
@@ -347,14 +369,34 @@ def test_malware_feed_refresh_api_returns_400_on_bad_config(monkeypatch, tmp_pat
     monkeypatch.setattr(service, "scanner", BadScanner())
 
     with TestClient(service.app) as client:
-        refreshed = client.post("/endpoint/malware-feeds/refresh", json={"urls": ["https://feed.local/malware"]})
+        refreshed = client.post(
+            "/endpoint/malware-feeds/refresh",
+            json={"urls": ["https://feed.local/malware"]},
+            headers=headers,
+        )
 
     assert refreshed.status_code == 400
     assert "No malware feed URLs configured" in refreshed.json()["detail"]
 
 
+def test_feed_management_routes_require_operator_auth(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "operator_bearer_token", "expected-token")
+    monkeypatch.setattr(settings, "operator_allow_loopback_without_token", False)
+
+    with TestClient(service.app) as client:
+        refreshed = client.post("/privacy/tracker-feeds/refresh", json={"urls": ["https://feed.local/example"]})
+        imported = client.post("/endpoint/malware-feeds/import", json={"source_path": "offline-hashes.txt"})
+
+    assert refreshed.status_code == 401
+    assert refreshed.json()["detail"] == "Operator authentication required."
+    assert imported.status_code == 401
+    assert imported.json()["detail"] == "Operator authentication required."
+
+
 def test_security_health_and_rule_feed_routes(monkeypatch, tmp_path):
     _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
 
     class DummyTrackerIntel:
         def feed_status(self):
@@ -417,14 +459,26 @@ def test_security_health_and_rule_feed_routes(monkeypatch, tmp_path):
         assert rule_status.status_code == 200
         assert rule_status.json()["rule_count"] == 1
 
-        rule_refresh = client.post("/endpoint/malware-rule-feeds/refresh", json={"urls": ["https://feed.local/rules"]})
+        rule_refresh = client.post(
+            "/endpoint/malware-rule-feeds/refresh",
+            json={"urls": ["https://feed.local/rules"]},
+            headers=headers,
+        )
         assert rule_refresh.status_code == 200
         assert rule_refresh.json()["rule_count"] == 3
 
-        tracker_import = client.post("/privacy/tracker-feeds/import", json={"source_path": "offline-tracker-list.txt"})
+        tracker_import = client.post(
+            "/privacy/tracker-feeds/import",
+            json={"source_path": "offline-tracker-list.txt"},
+            headers=headers,
+        )
         assert tracker_import.status_code == 200
         assert tracker_import.json()["last_refresh_result"] == "imported"
 
-        rule_import = client.post("/endpoint/malware-rule-feeds/import", json={"source_path": "offline-rules.txt"})
+        rule_import = client.post(
+            "/endpoint/malware-rule-feeds/import",
+            json={"source_path": "offline-rules.txt"},
+            headers=headers,
+        )
         assert rule_import.status_code == 200
         assert rule_import.json()["last_refresh_result"] == "imported"

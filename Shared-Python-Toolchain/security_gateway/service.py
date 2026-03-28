@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import secrets
 from contextlib import asynccontextmanager
+from ipaddress import ip_address
 from pathlib import Path
 from fastapi.responses import FileResponse, Response
 
-from fastapi import FastAPI, File, HTTPException, UploadFile, Request, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from .audit import AuditLogger
@@ -107,6 +109,46 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="Security Gateway", version="0.1.0", lifespan=lifespan)
+
+
+def _is_loopback_client(host: str | None) -> bool:
+    if not host:
+        return False
+    try:
+        return ip_address(host).is_loopback
+    except ValueError:
+        return host.lower() in {"localhost", "testclient"}
+
+
+def require_operator_access(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> None:
+    expected_token = settings.operator_bearer_token
+    client_host = request.client.host if request.client else None
+    if expected_token:
+        scheme, _, supplied_token = (authorization or "").partition(" ")
+        if scheme.lower() == "bearer" and supplied_token and secrets.compare_digest(supplied_token, expected_token):
+            return
+        audit_logger.log(
+            "operator.auth.failure",
+            {"path": request.url.path, "source_ip": client_host, "reason": "missing_or_invalid_bearer_token"},
+        )
+        raise HTTPException(
+            status_code=401,
+            detail="Operator authentication required.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if settings.operator_allow_loopback_without_token and _is_loopback_client(client_host):
+        return
+    audit_logger.log(
+        "operator.auth.failure",
+        {"path": request.url.path, "source_ip": client_host, "reason": "operator_token_not_configured"},
+    )
+    raise HTTPException(
+        status_code=503,
+        detail="Operator bearer token is not configured for remote management.",
+    )
 
 
 @app.post("/access/evaluate", response_model=AccessDecision)
@@ -256,7 +298,10 @@ async def malware_feed_status() -> dict:
 
 
 @app.post("/endpoint/malware-feeds/refresh")
-async def malware_feed_refresh(payload: RefreshMalwareFeedsPayload | None = None) -> dict:
+async def malware_feed_refresh(
+    payload: RefreshMalwareFeedsPayload | None = None,
+    _: None = Depends(require_operator_access),
+) -> dict:
     try:
         return scanner.refresh_feed_cache(payload.urls if payload else None)
     except ValueError as exc:
@@ -266,7 +311,10 @@ async def malware_feed_refresh(payload: RefreshMalwareFeedsPayload | None = None
 
 
 @app.post("/endpoint/malware-feeds/import")
-async def malware_feed_import(payload: ImportFeedPayload) -> dict:
+async def malware_feed_import(
+    payload: ImportFeedPayload,
+    _: None = Depends(require_operator_access),
+) -> dict:
     try:
         return scanner.import_feed_cache(payload.source_path)
     except ValueError as exc:
@@ -279,7 +327,10 @@ async def malware_rule_feed_status() -> dict:
 
 
 @app.post("/endpoint/malware-rule-feeds/refresh")
-async def malware_rule_feed_refresh(payload: RefreshMalwareRuleFeedsPayload | None = None) -> dict:
+async def malware_rule_feed_refresh(
+    payload: RefreshMalwareRuleFeedsPayload | None = None,
+    _: None = Depends(require_operator_access),
+) -> dict:
     try:
         return scanner.refresh_rule_feed_cache(payload.urls if payload else None)
     except ValueError as exc:
@@ -289,7 +340,10 @@ async def malware_rule_feed_refresh(payload: RefreshMalwareRuleFeedsPayload | No
 
 
 @app.post("/endpoint/malware-rule-feeds/import")
-async def malware_rule_feed_import(payload: ImportFeedPayload) -> dict:
+async def malware_rule_feed_import(
+    payload: ImportFeedPayload,
+    _: None = Depends(require_operator_access),
+) -> dict:
     try:
         return scanner.import_rule_feed_cache(payload.source_path)
     except ValueError as exc:
@@ -352,7 +406,10 @@ async def tracker_feed_status() -> dict:
 
 
 @app.post("/privacy/tracker-feeds/refresh")
-async def tracker_feed_refresh(payload: RefreshTrackerFeedsPayload | None = None) -> dict:
+async def tracker_feed_refresh(
+    payload: RefreshTrackerFeedsPayload | None = None,
+    _: None = Depends(require_operator_access),
+) -> dict:
     try:
         return tracker_intel.refresh_feed_cache(payload.urls if payload else None)
     except ValueError as exc:
@@ -362,7 +419,10 @@ async def tracker_feed_refresh(payload: RefreshTrackerFeedsPayload | None = None
 
 
 @app.post("/privacy/tracker-feeds/import")
-async def tracker_feed_import(payload: ImportFeedPayload) -> dict:
+async def tracker_feed_import(
+    payload: ImportFeedPayload,
+    _: None = Depends(require_operator_access),
+) -> dict:
     try:
         return tracker_intel.import_feed_cache(payload.source_path)
     except ValueError as exc:

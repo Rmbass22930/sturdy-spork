@@ -23,6 +23,7 @@ uvicorn security_gateway.service:app --reload
 - `POST /privacy/tracker-feeds/import`, `POST /endpoint/malware-feeds/import`, `POST /endpoint/malware-rule-feeds/import` – seed local caches from offline files.
 - `GET /health/security` – consolidated detection/feed health summary for tracker intel, malware feeds, and automation state.
 - `WS /ws` – real-time channel (sends `{"type":"ready"}` on connect, `ping` -> `pong`, other messages echoed as `echo:<message>`).
+- Detection-content write routes (`*/refresh`, `*/import`) now require operator authorization.
 
 ## CLI examples
 ```
@@ -94,6 +95,28 @@ SECURITY_GATEWAY_AUTOMATION_MALWARE_RULE_FEED_REFRESH_ENABLED=true
 SECURITY_GATEWAY_AUTOMATION_MALWARE_RULE_FEED_REFRESH_EVERY_TICKS=12
 ```
 - The automation status output includes tracker-feed, malware-feed, and malware-rule-feed refresh state, last result, and last error.
+
+## Operator auth for feed management
+- Feed refresh/import routes use `Authorization: Bearer <token>` when a token is configured.
+- Configure it with:
+```
+SECURITY_GATEWAY_OPERATOR_BEARER_TOKEN=replace-with-a-long-random-token
+```
+- For local-only development, the service can allow loopback callers to use these routes without a token:
+```
+SECURITY_GATEWAY_OPERATOR_ALLOW_LOOPBACK_WITHOUT_TOKEN=true
+```
+- To require the bearer token even on loopback:
+```
+SECURITY_GATEWAY_OPERATOR_ALLOW_LOOPBACK_WITHOUT_TOKEN=false
+```
+- Example:
+```bash
+curl -X POST http://127.0.0.1:8000/privacy/tracker-feeds/refresh \
+  -H "Authorization: Bearer $SECURITY_GATEWAY_OPERATOR_BEARER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"urls":["https://example.com/custom-tracker-list.txt"]}'
+```
 
 ## Malware feed refresh
 - Malware scanning can consume refreshable SHA-256 IOC/hash feeds in addition to the built-in heuristics.
