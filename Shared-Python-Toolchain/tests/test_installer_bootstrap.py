@@ -158,7 +158,6 @@ def test_show_install_guide_does_not_wait_for_input(monkeypatch, tmp_path: Path,
 
 def test_main_skips_dependencies_when_requested(monkeypatch, tmp_path: Path) -> None:
     installed_path = tmp_path / "SecurityGateway.exe"
-    backup_file = tmp_path / "user_path_backup.txt"
     uninstall_script = tmp_path / "Uninstall-SecurityGateway.ps1"
     installed_path.write_text("binary", encoding="utf-8")
     uninstall_script.write_text("script", encoding="utf-8")

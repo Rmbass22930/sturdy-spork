@@ -7,9 +7,9 @@ try:
     import tkinter as tk
     from tkinter import messagebox, ttk
 except Exception:  # pragma: no cover
-    tk = None
-    ttk = None
-    messagebox = None
+    tk = None  # type: ignore[assignment]
+    ttk = None  # type: ignore[assignment]
+    messagebox = None  # type: ignore[assignment]
 
 from .reports import ReportFilters, SecurityReportBuilder
 from .tracker_intel import TrackerIntel

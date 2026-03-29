@@ -1,5 +1,5 @@
 from security_gateway.automation import AutomationSupervisor
-from security_gateway.alerts import AlertEvent, AlertLevel
+from security_gateway.alerts import AlertEvent
 
 
 class DummyVault:
