@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .soc_dashboard import run_soc_dashboard
+
 
 def _center_window(root: Any, width: int, height: int) -> None:
     screen_width = int(root.winfo_screenwidth())
@@ -72,6 +74,9 @@ def main() -> int:
         try:
             if action == "reports":
                 _open_reports_folder()
+            elif action == "soc-dashboard":
+                run_soc_dashboard()
+                return
             elif action == "install-folder":
                 _open_install_folder()
             elif action == "uninstall":
@@ -86,6 +91,8 @@ def main() -> int:
 
     menu_bar = tk.Menu(root)
     tools_menu = tk.Menu(menu_bar, tearoff=False)
+    tools_menu.add_command(label="SOC Dashboard", command=lambda: run_action("soc-dashboard"))
+    tools_menu.add_separator()
     tools_menu.add_command(label="Open Reports Folder", command=lambda: run_action("reports"))
     tools_menu.add_command(label="Open Install Folder", command=lambda: run_action("install-folder"))
     tools_menu.add_command(label="Run Uninstaller", command=lambda: run_action("uninstall"))
@@ -115,6 +122,7 @@ def main() -> int:
     ).pack(fill="x", pady=(0, 16))
 
     button_specs = [
+        ("SOC Dashboard", "#7c3aed", "white", "soc-dashboard"),
         ("Open Reports Folder", "#1f6feb", "white", "reports"),
         ("Open Install Folder", "#2d6a4f", "white", "install-folder"),
         ("Run Uninstaller", "#b44c2f", "white", "uninstall"),
