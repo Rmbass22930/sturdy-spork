@@ -800,7 +800,7 @@ async def proxy_request(payload: ProxyPayload, request: Request) -> dict:
 
 
 @app.get("/proxy/health")
-async def proxy_health() -> dict:
+async def proxy_health(_: None = Depends(require_operator_access)) -> dict:
     return proxy.health()
 
 

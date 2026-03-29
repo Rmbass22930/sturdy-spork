@@ -447,10 +447,12 @@ def test_report_and_tracker_visibility_routes_require_operator_auth(monkeypatch,
         report = client.get("/reports/security-summary.pdf")
         listing = client.get("/reports")
         tracker_events = client.get("/privacy/tracker-events")
+        proxy_health = client.get("/proxy/health")
 
     assert report.status_code == 401
     assert listing.status_code == 401
     assert tracker_events.status_code == 401
+    assert proxy_health.status_code == 401
 
 
 def test_report_and_tracker_routes_reject_pathological_query_values(monkeypatch, tmp_path):
@@ -886,6 +888,10 @@ def test_pam_and_automation_routes_allow_operator_auth(monkeypatch, tmp_path):
         automation_status = client.get("/automation/status", headers=headers)
         assert automation_status.status_code == 200
         assert "running" in automation_status.json()
+
+        proxy_health = client.get("/proxy/health", headers=headers)
+        assert proxy_health.status_code == 200
+        assert "tor" in proxy_health.json()
 
 
 def test_pam_routes_reject_invalid_names_and_ttls(monkeypatch, tmp_path):

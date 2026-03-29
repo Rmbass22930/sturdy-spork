@@ -15,7 +15,8 @@ uvicorn security_gateway.service:app --reload
 - `POST /access/evaluate` – run zero-trust policy evaluation (include `dns_secure` if you just resolved via `/dns/resolve`).
 - `PUT /pam/secret`, `POST /pam/checkout`, `GET /pam/metrics` – manage privileged credentials + rotation insights.
 - `GET /dns/resolve` – DoH lookup that records DNSSEC status for downstream risk scoring.
-- `POST /tor/request`, `GET /proxy/health` – send proxied HTTP requests and verify Tor/WARP health.
+- `POST /tor/request` – send proxied HTTP requests.
+- `GET /proxy/health` – operator-authenticated Tor/WARP health view.
 - `GET /network/blocked-ips`, `POST /network/blocked-ips`, `DELETE /network/blocked-ips/{ip}`, `POST /network/blocked-ips/{ip}/promote` – review, block, unblock, and promote source IP blocks to permanent.
 - `POST /endpoint/telemetry`, `POST /endpoint/scan` – authenticated endpoint-agent ingestion for posture and malware scan uploads.
 - `GET /endpoint/telemetry/{device_id}` – operator-authenticated telemetry lookup.
@@ -37,6 +38,7 @@ uvicorn security_gateway.service:app --reload
   - `PUT /pam/secret`, `POST /pam/checkout`, `GET /pam/metrics`
   - `GET /endpoint/telemetry/{device_id}`
   - `GET /privacy/tracker-events`
+  - `GET /proxy/health`
   - `GET /reports*`
   - `GET|POST|DELETE /network/blocked-ips*`
   - `GET /automation/status`
