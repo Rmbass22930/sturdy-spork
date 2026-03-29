@@ -10,8 +10,18 @@ Use [scripts/build-security-gateway.ps1](/J:/_shared_toolchains/Shared-Python-To
 - It passes that exact staged payload into `SecurityGatewayInstaller.spec`.
 - The installer spec now fails fast if `SECURITY_GATEWAY_PAYLOAD_PATH` is not provided.
 - The staged build is pinned to `Python 3.13`.
+- The build now emits:
+  - `SecurityGateway-build.zip`
+  - `SecurityGateway-build-unpack.cmd`
+  - `SecurityGateway-build-manifest.json`
 
 This avoids silently embedding a stale `dist\SecurityGateway.exe`.
+
+Use [scripts/sync-security-gateway-release.ps1](/J:/_shared_toolchains/Shared-Python-Toolchain/scripts/sync-security-gateway-release.ps1) to fan the finished build out to:
+- `C:\Program Files\SecurityGateway`
+- `G:\`
+
+The sync script validates copied file hashes against the generated build manifest so drift is visible immediately.
 
 ## Payload / Guide Overrides
 
