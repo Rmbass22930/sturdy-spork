@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 if __package__ in {None, ""}:  # pragma: no cover - PyInstaller direct execution
     sys.path.append(str(Path(__file__).resolve().parent.parent))
@@ -394,13 +395,22 @@ def _launch_uninstaller(target: Path) -> None:
     os.startfile(str(target))  # type: ignore[attr-defined]
 
 
+def _center_window(root: Any, width: int, height: int) -> None:
+    screen_width = int(root.winfo_screenwidth())
+    screen_height = int(root.winfo_screenheight())
+    x = max((screen_width - width) // 2, 0)
+    y = max((screen_height - height) // 2, 0)
+    root.geometry(f"{width}x{height}+{x}+{y}")
+
+
 def _select_frozen_action() -> str:
     import tkinter as tk
 
     root = tk.Tk()
     root.title("Security Gateway")
     root.resizable(False, False)
-    root.geometry("360x185")
+    root.configure(bg="#eef4ff")
+    _center_window(root, 440, 250)
 
     selection = {"value": "report-browser"}
 
@@ -417,23 +427,66 @@ def _select_frozen_action() -> str:
     menu_bar.add_cascade(label="Tools", menu=tools_menu)
     root.config(menu=menu_bar)
 
-    frame = tk.Frame(root, padx=18, pady=18)
+    frame = tk.Frame(root, padx=20, pady=20, bg="#eef4ff")
     frame.pack(fill="both", expand=True)
 
     tk.Label(
         frame,
         text="Security Gateway Tools",
-        font=("Segoe UI", 10, "bold"),
+        font=("Segoe UI", 14, "bold"),
+        bg="#eef4ff",
+        fg="#13315c",
     ).pack(fill="x", pady=(0, 8))
     tk.Label(
         frame,
         text="Use the Tools menu or the buttons below.",
+        font=("Segoe UI", 10, "bold"),
         justify="left",
         anchor="w",
-    ).pack(fill="x", pady=(0, 12))
-    tk.Button(frame, text="Open Reports", width=28, command=lambda: choose("report-browser")).pack(pady=4)
-    tk.Button(frame, text="Run Uninstaller", width=28, command=lambda: choose("uninstall")).pack(pady=4)
-    tk.Button(frame, text="Exit", width=28, command=lambda: choose("exit")).pack(pady=4)
+        bg="#eef4ff",
+        fg="#2f3e52",
+    ).pack(fill="x", pady=(0, 16))
+    tk.Button(
+        frame,
+        text="Open Reports",
+        width=30,
+        font=("Segoe UI", 10, "bold"),
+        bg="#1f6feb",
+        fg="white",
+        activebackground="#1558b0",
+        activeforeground="white",
+        relief="flat",
+        padx=8,
+        pady=8,
+        command=lambda: choose("report-browser"),
+    ).pack(pady=5)
+    tk.Button(
+        frame,
+        text="Run Uninstaller",
+        width=30,
+        font=("Segoe UI", 10, "bold"),
+        bg="#b44c2f",
+        fg="white",
+        activebackground="#8f391f",
+        activeforeground="white",
+        relief="flat",
+        padx=8,
+        pady=8,
+        command=lambda: choose("uninstall"),
+    ).pack(pady=5)
+    tk.Button(
+        frame,
+        text="Exit",
+        width=30,
+        font=("Segoe UI", 10, "bold"),
+        bg="#d8e0ef",
+        fg="#1f2a37",
+        activebackground="#bcc9df",
+        relief="flat",
+        padx=8,
+        pady=8,
+        command=lambda: choose("exit"),
+    ).pack(pady=5)
 
     root.protocol("WM_DELETE_WINDOW", lambda: choose("exit"))
     root.mainloop()

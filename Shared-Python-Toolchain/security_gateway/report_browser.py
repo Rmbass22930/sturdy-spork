@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 try:
     import tkinter as tk
@@ -14,6 +15,15 @@ except Exception:  # pragma: no cover
 from .reports import ReportFilters, SecurityReportBuilder
 from .tracker_intel import TrackerIntel
 from .config import settings
+
+
+def _center_window(root: Any, width: int, height: int) -> None:
+    screen_width = int(root.winfo_screenwidth())
+    screen_height = int(root.winfo_screenheight())
+    x = max((screen_width - width) // 2, 0)
+    y = max((screen_height - height) // 2, 0)
+    root.geometry(f"{width}x{height}+{x}+{y}")
+
 
 class ReportBrowser:
     def __init__(self, builder: SecurityReportBuilder | None = None):
@@ -28,53 +38,67 @@ class ReportBrowser:
         )
         self.root = tk.Tk()
         self.root.title("Security Gateway Reports")
-        self.root.geometry("1180x720")
-        self.root.minsize(980, 560)
+        self.root.configure(bg="#f2f6fb")
+        _center_window(self.root, 1320, 860)
+        self.root.minsize(1100, 680)
         self._build_ui()
         self.refresh_reports()
 
     def _build_ui(self) -> None:
+        style = ttk.Style()
+        try:
+            style.theme_use("vista")
+        except Exception:  # pragma: no cover
+            pass
+        style.configure("SG.TFrame", background="#f2f6fb")
+        style.configure("SG.TLabel", background="#f2f6fb", foreground="#233449", font=("Segoe UI", 10))
+        style.configure("SG.Header.TLabel", background="#f2f6fb", foreground="#12335b", font=("Segoe UI", 18, "bold"))
+        style.configure("SG.Subheader.TLabel", background="#f2f6fb", foreground="#3b4d63", font=("Segoe UI", 10, "bold"))
+        style.configure("SG.TLabelframe", background="#f2f6fb")
+        style.configure("SG.TLabelframe.Label", background="#f2f6fb", foreground="#12335b", font=("Segoe UI", 10, "bold"))
+        style.configure("SG.TButton", font=("Segoe UI", 10, "bold"))
+
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(1, weight=1)
 
-        header = ttk.Frame(self.root, padding=(16, 16, 16, 8))
+        header = ttk.Frame(self.root, padding=(18, 18, 18, 10), style="SG.TFrame")
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(0, weight=1)
-        ttk.Label(header, text="Security Gateway Reports", font=("Segoe UI", 18, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Label(header, text="Security Gateway Reports", style="SG.Header.TLabel").grid(row=0, column=0, sticky="w")
         self.path_var = tk.StringVar(value=f"Reports directory: {self.builder.get_output_dir()}")
-        ttk.Label(header, textvariable=self.path_var).grid(row=1, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(header, textvariable=self.path_var, style="SG.Subheader.TLabel").grid(row=1, column=0, sticky="w", pady=(6, 0))
         self.feed_status_var = tk.StringVar(value="Tracker feeds: status unavailable")
-        ttk.Label(header, textvariable=self.feed_status_var).grid(row=2, column=0, sticky="w", pady=(4, 0))
-        feed_panel = ttk.LabelFrame(header, text="Tracker Feed Management", padding=(12, 10))
+        ttk.Label(header, textvariable=self.feed_status_var, style="SG.TLabel").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        feed_panel = ttk.LabelFrame(header, text="Tracker Feed Management", padding=(14, 12), style="SG.TLabelframe")
         feed_panel.grid(row=3, column=0, sticky="ew", pady=(10, 0))
         feed_panel.columnconfigure(0, weight=1)
         feed_panel.columnconfigure(1, weight=1)
         feed_panel.columnconfigure(2, weight=1)
 
-        ttk.Button(feed_panel, text="Refresh Feeds", command=self.refresh_tracker_feeds).grid(
+        ttk.Button(feed_panel, text="Refresh Feeds", command=self.refresh_tracker_feeds, style="SG.TButton").grid(
             row=0, column=0, sticky="w", pady=(0, 8)
         )
         self.feed_detail_var = tk.StringVar(value="No feed refresh has been run in this session.")
-        ttk.Label(feed_panel, textvariable=self.feed_detail_var).grid(
+        ttk.Label(feed_panel, textvariable=self.feed_detail_var, style="SG.TLabel").grid(
             row=0, column=1, columnspan=2, sticky="w", padx=(12, 0), pady=(0, 8)
         )
 
-        ttk.Label(feed_panel, text="Active Sources").grid(row=1, column=0, sticky="w")
-        ttk.Label(feed_panel, text="Disabled Sources").grid(row=1, column=1, sticky="w")
-        ttk.Label(feed_panel, text="Recent Failures").grid(row=1, column=2, sticky="w")
+        ttk.Label(feed_panel, text="Active Sources", style="SG.Subheader.TLabel").grid(row=1, column=0, sticky="w")
+        ttk.Label(feed_panel, text="Disabled Sources", style="SG.Subheader.TLabel").grid(row=1, column=1, sticky="w")
+        ttk.Label(feed_panel, text="Recent Failures", style="SG.Subheader.TLabel").grid(row=1, column=2, sticky="w")
 
-        self.active_sources_text = tk.Text(feed_panel, width=42, height=6, wrap="word")
+        self.active_sources_text = tk.Text(feed_panel, width=44, height=7, wrap="word", bg="#fbfdff", fg="#24364a")
         self.active_sources_text.grid(row=2, column=0, sticky="nsew", padx=(0, 8))
-        self.disabled_sources_text = tk.Text(feed_panel, width=32, height=6, wrap="word")
+        self.disabled_sources_text = tk.Text(feed_panel, width=34, height=7, wrap="word", bg="#fbfdff", fg="#24364a")
         self.disabled_sources_text.grid(row=2, column=1, sticky="nsew", padx=(0, 8))
-        self.feed_failures_text = tk.Text(feed_panel, width=42, height=6, wrap="word")
+        self.feed_failures_text = tk.Text(feed_panel, width=44, height=7, wrap="word", bg="#fbfdff", fg="#24364a")
         self.feed_failures_text.grid(row=2, column=2, sticky="nsew")
         for widget in (self.active_sources_text, self.disabled_sources_text, self.feed_failures_text):
             widget.configure(state="disabled")
 
-        filters = ttk.Frame(header)
+        filters = ttk.Frame(header, style="SG.TFrame")
         filters.grid(row=4, column=0, sticky="w", pady=(10, 0))
-        ttk.Label(filters, text="Window (hours)").grid(row=0, column=0, sticky="w")
+        ttk.Label(filters, text="Window (hours)", style="SG.Subheader.TLabel").grid(row=0, column=0, sticky="w")
         self.window_var = tk.StringVar(value="24")
         ttk.Combobox(
             filters,
@@ -83,7 +107,7 @@ class ReportBrowser:
             width=8,
             state="normal",
         ).grid(row=0, column=1, padx=(6, 18), sticky="w")
-        ttk.Label(filters, text="Min risk").grid(row=0, column=2, sticky="w")
+        ttk.Label(filters, text="Min risk", style="SG.Subheader.TLabel").grid(row=0, column=2, sticky="w")
         self.min_risk_var = tk.StringVar(value="0")
         ttk.Entry(filters, textvariable=self.min_risk_var, width=8).grid(row=0, column=3, padx=(6, 18), sticky="w")
         self.include_blocked_var = tk.BooleanVar(value=True)
@@ -93,7 +117,7 @@ class ReportBrowser:
         ttk.Checkbutton(filters, text="Potential Blocked", variable=self.include_potential_var).grid(row=0, column=5, padx=(0, 10))
         ttk.Checkbutton(filters, text="Recent Events", variable=self.include_events_var).grid(row=0, column=6, padx=(0, 10))
 
-        body = ttk.Frame(self.root, padding=(16, 0, 16, 8))
+        body = ttk.Frame(self.root, padding=(18, 0, 18, 10), style="SG.TFrame")
         body.grid(row=1, column=0, sticky="nsew")
         body.columnconfigure(0, weight=1)
         body.rowconfigure(0, weight=1)
@@ -128,15 +152,15 @@ class ReportBrowser:
         scrollbar.grid(row=0, column=1, sticky="ns")
         self.tree.configure(yscrollcommand=scrollbar.set)
 
-        footer = ttk.Frame(self.root, padding=(16, 8, 16, 16))
+        footer = ttk.Frame(self.root, padding=(18, 10, 18, 18), style="SG.TFrame")
         footer.grid(row=2, column=0, sticky="ew")
         footer.columnconfigure(0, weight=1)
         self.status_var = tk.StringVar(value="No reports loaded.")
-        ttk.Label(footer, textvariable=self.status_var).grid(row=0, column=0, sticky="w")
-        ttk.Button(footer, text="Generate New", command=self.generate_report).grid(row=0, column=1, padx=(0, 8))
-        ttk.Button(footer, text="Refresh", command=self.refresh_reports).grid(row=0, column=2, padx=(0, 8))
-        ttk.Button(footer, text="Open", command=self.open_selected_report).grid(row=0, column=3, padx=(0, 8))
-        ttk.Button(footer, text="Print", command=self.print_selected_report).grid(row=0, column=4)
+        ttk.Label(footer, textvariable=self.status_var, style="SG.Subheader.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Button(footer, text="Generate New", command=self.generate_report, style="SG.TButton").grid(row=0, column=1, padx=(0, 8))
+        ttk.Button(footer, text="Refresh", command=self.refresh_reports, style="SG.TButton").grid(row=0, column=2, padx=(0, 8))
+        ttk.Button(footer, text="Open", command=self.open_selected_report, style="SG.TButton").grid(row=0, column=3, padx=(0, 8))
+        ttk.Button(footer, text="Print", command=self.print_selected_report, style="SG.TButton").grid(row=0, column=4)
 
     def run(self) -> None:
         self.root.mainloop()

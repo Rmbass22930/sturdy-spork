@@ -17,7 +17,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import List, Optional
+from typing import Any, List, Optional
 
 tk: ModuleType | None
 ttk: ModuleType | None
@@ -45,6 +45,14 @@ GUIDE_URL_ENV = "SECURITY_GATEWAY_GUIDE_URL"
 MANIFEST_PATH_ENV = "SECURITY_GATEWAY_DEPENDENCY_MANIFEST"
 MANIFEST_URL_ENV = "SECURITY_GATEWAY_DEPENDENCY_MANIFEST_URL"
 DEFAULT_DEPENDENCY_TIMEOUT_SECONDS = 300
+
+
+def center_window(root: Any, width: int, height: int) -> None:
+    screen_width = int(root.winfo_screenwidth())
+    screen_height = int(root.winfo_screenheight())
+    x = max((screen_width - width) // 2, 0)
+    y = max((screen_height - height) // 2, 0)
+    root.geometry(f"{width}x{height}+{x}+{y}")
 
 
 @dataclass
@@ -128,8 +136,9 @@ class InstallerUI(InstallReporter):
         self.args = args
         self.root = tk.Tk()
         self.root.title("SecurityGateway Installer")
-        self.root.geometry("820x620")
-        self.root.minsize(760, 560)
+        self.root.configure(bg="#f2f6fb")
+        center_window(self.root, 940, 700)
+        self.root.minsize(840, 620)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._queue: "queue.Queue[tuple]" = queue.Queue()
         self._decision_events: list[threading.Event] = []
@@ -139,26 +148,38 @@ class InstallerUI(InstallReporter):
 
     def _build_ui(self) -> None:
         assert tk is not None and ttk is not None
+        style = ttk.Style()
+        try:
+            style.theme_use("vista")
+        except Exception:  # pragma: no cover
+            pass
+        style.configure("Installer.TFrame", background="#f2f6fb")
+        style.configure("Installer.TLabel", background="#f2f6fb", foreground="#233449", font=("Segoe UI", 10))
+        style.configure("Installer.Header.TLabel", background="#f2f6fb", foreground="#12335b", font=("Segoe UI", 20, "bold"))
+        style.configure("Installer.Subheader.TLabel", background="#f2f6fb", foreground="#3b4d63", font=("Segoe UI", 10, "bold"))
+        style.configure("Installer.TButton", font=("Segoe UI", 10, "bold"))
+
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(3, weight=1)
 
-        header = ttk.Frame(self.root, padding=(18, 16, 18, 8))
+        header = ttk.Frame(self.root, padding=(22, 20, 22, 10), style="Installer.TFrame")
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(0, weight=1)
-        ttk.Label(header, text="SecurityGateway Installer", font=("Segoe UI", 18, "bold")).grid(
+        ttk.Label(header, text="SecurityGateway Installer", style="Installer.Header.TLabel").grid(
             row=0, column=0, sticky="w"
         )
         ttk.Label(
             header,
             text="Installs SecurityGateway, creates desktop shortcuts, and registers automation startup.",
-            wraplength=760,
+            wraplength=860,
+            style="Installer.Subheader.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(6, 0))
 
-        progress_frame = ttk.Frame(self.root, padding=(18, 4, 18, 8))
+        progress_frame = ttk.Frame(self.root, padding=(22, 6, 22, 10), style="Installer.TFrame")
         progress_frame.grid(row=1, column=0, sticky="ew")
         progress_frame.columnconfigure(0, weight=1)
         self.status_var = tk.StringVar(value="Ready to install.")
-        ttk.Label(progress_frame, textvariable=self.status_var, font=("Segoe UI", 10, "bold")).grid(
+        ttk.Label(progress_frame, textvariable=self.status_var, style="Installer.Subheader.TLabel").grid(
             row=0, column=0, sticky="w"
         )
         self.progress = ttk.Progressbar(
@@ -169,23 +190,23 @@ class InstallerUI(InstallReporter):
         )
         self.progress.grid(row=1, column=0, sticky="ew", pady=(8, 0))
 
-        body = ttk.Frame(self.root, padding=(18, 0, 18, 0))
+        body = ttk.Frame(self.root, padding=(22, 0, 22, 0), style="Installer.TFrame")
         body.grid(row=2, column=0, sticky="nsew")
         body.columnconfigure(0, weight=1)
         body.rowconfigure(0, weight=1)
-        self.log = tk.Text(body, height=20, wrap="word", font=("Consolas", 10))
+        self.log = tk.Text(body, height=22, wrap="word", font=("Consolas", 10), bg="#fbfdff", fg="#24364a")
         self.log.grid(row=0, column=0, sticky="nsew")
         self.log.configure(state="disabled")
         scrollbar = ttk.Scrollbar(body, orient="vertical", command=self.log.yview)
         scrollbar.grid(row=0, column=1, sticky="ns")
         self.log.configure(yscrollcommand=scrollbar.set)
 
-        footer = ttk.Frame(self.root, padding=(18, 12, 18, 18))
+        footer = ttk.Frame(self.root, padding=(22, 12, 22, 20), style="Installer.TFrame")
         footer.grid(row=4, column=0, sticky="ew")
         footer.columnconfigure(0, weight=1)
-        self.primary_button = ttk.Button(footer, text="Install", command=self._start_install)
+        self.primary_button = ttk.Button(footer, text="Install", command=self._start_install, style="Installer.TButton")
         self.primary_button.grid(row=0, column=1, sticky="e")
-        self.close_button = ttk.Button(footer, text="Close", command=self._on_close)
+        self.close_button = ttk.Button(footer, text="Close", command=self._on_close, style="Installer.TButton")
         self.close_button.grid(row=0, column=2, sticky="e", padx=(8, 0))
 
     def run(self) -> int:
@@ -285,27 +306,29 @@ class InstallerUI(InstallReporter):
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.resizable(False, False)
+        dialog.configure(bg="#fdf4f0")
+        center_window(dialog, 580, 270)
         dialog.columnconfigure(0, weight=1)
         ttk.Label(
             dialog,
             text=f"Dependency install failed: {dep.name}",
             font=("Segoe UI", 11, "bold"),
-            padding=(16, 16, 16, 6),
+            padding=(20, 18, 20, 8),
         ).grid(row=0, column=0, sticky="w")
         ttk.Label(
             dialog,
             text=message,
-            wraplength=460,
-            padding=(16, 0, 16, 0),
+            wraplength=520,
+            padding=(20, 0, 20, 0),
         ).grid(row=1, column=0, sticky="w")
         ttk.Label(
             dialog,
             text="Choose how setup should continue.",
-            padding=(16, 12, 16, 8),
+            padding=(20, 14, 20, 10),
         ).grid(row=2, column=0, sticky="w")
         result = {"action": "abort"}
 
-        buttons = ttk.Frame(dialog, padding=(16, 0, 16, 16))
+        buttons = ttk.Frame(dialog, padding=(20, 0, 20, 18))
         buttons.grid(row=3, column=0, sticky="e")
 
         def choose(action: str) -> None:
