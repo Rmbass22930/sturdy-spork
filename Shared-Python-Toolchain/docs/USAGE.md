@@ -31,6 +31,7 @@ uvicorn security_gateway.service:app --reload
 - Repeated bad bearer tokens are rate-limited on operator, endpoint-ingest, and operator WebSocket auth paths. Tune with `SECURITY_GATEWAY_AUTH_FAILURE_RATE_LIMIT_WINDOW_SECONDS`, `SECURITY_GATEWAY_OPERATOR_AUTH_MAX_FAILURES_PER_WINDOW`, and `SECURITY_GATEWAY_ENDPOINT_AUTH_MAX_FAILURES_PER_WINDOW`.
 - Backend refresh and proxy failures return stable high-level API messages, while the detailed exception text is kept in audit events instead of being reflected directly to clients.
 - HTTP responses also default to `Cache-Control: no-store` and `Pragma: no-cache` so browsers and intermediaries do not retain security-sensitive API or report content by default.
+- Feed status, refresh/import, health, and report-list API responses no longer expose internal filesystem paths such as cache files or report directories.
 - `WS /ws` – operator-authenticated health-only channel (sends `{"type":"ready","mode":"health_only"}` on connect, `ping`/`health` -> `pong`, unsupported messages return a structured unsupported response).
 - Operator-managed routes now require operator authorization:
   - `PUT /pam/secret`, `POST /pam/checkout`, `GET /pam/metrics`

@@ -305,6 +305,18 @@ def _audit_backend_failure(event_type: str, request_path: str, source_ip: str | 
     )
 
 
+def _strip_internal_fields(value):
+    if isinstance(value, dict):
+        return {
+            key: _strip_internal_fields(item)
+            for key, item in value.items()
+            if key not in {"cache_path", "path", "report_output_dir"}
+        }
+    if isinstance(value, list):
+        return [_strip_internal_fields(item) for item in value]
+    return value
+
+
 def _resolve_bearer_token(secret_name: str | None, static_token: str | None) -> tuple[str | None, str | None]:
     if secret_name:
         try:
@@ -686,7 +698,7 @@ class ImportFeedPayload(BaseModel):
 
 @app.get("/endpoint/malware-feeds/status")
 async def malware_feed_status() -> dict:
-    return scanner.feed_status()
+    return _strip_internal_fields(scanner.feed_status())
 
 
 @app.post("/endpoint/malware-feeds/refresh")
@@ -695,7 +707,7 @@ async def malware_feed_refresh(
     _: None = Depends(require_operator_access),
 ) -> dict:
     try:
-        return scanner.refresh_feed_cache(payload.urls if payload else None)
+        return _strip_internal_fields(scanner.refresh_feed_cache(payload.urls if payload else None))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
@@ -709,14 +721,14 @@ async def malware_feed_import(
     _: None = Depends(require_operator_access),
 ) -> dict:
     try:
-        return scanner.import_feed_cache(payload.source_path)
+        return _strip_internal_fields(scanner.import_feed_cache(payload.source_path))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/endpoint/malware-rule-feeds/status")
 async def malware_rule_feed_status() -> dict:
-    return scanner.rule_feed_status()
+    return _strip_internal_fields(scanner.rule_feed_status())
 
 
 @app.post("/endpoint/malware-rule-feeds/refresh")
@@ -725,7 +737,7 @@ async def malware_rule_feed_refresh(
     _: None = Depends(require_operator_access),
 ) -> dict:
     try:
-        return scanner.refresh_rule_feed_cache(payload.urls if payload else None)
+        return _strip_internal_fields(scanner.refresh_rule_feed_cache(payload.urls if payload else None))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
@@ -739,7 +751,7 @@ async def malware_rule_feed_import(
     _: None = Depends(require_operator_access),
 ) -> dict:
     try:
-        return scanner.import_rule_feed_cache(payload.source_path)
+        return _strip_internal_fields(scanner.import_rule_feed_cache(payload.source_path))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -813,7 +825,7 @@ async def tracker_events(
 
 @app.get("/privacy/tracker-feeds/status")
 async def tracker_feed_status() -> dict:
-    return tracker_intel.feed_status()
+    return _strip_internal_fields(tracker_intel.feed_status())
 
 
 @app.post("/privacy/tracker-feeds/refresh")
@@ -822,7 +834,7 @@ async def tracker_feed_refresh(
     _: None = Depends(require_operator_access),
 ) -> dict:
     try:
-        return tracker_intel.refresh_feed_cache(payload.urls if payload else None)
+        return _strip_internal_fields(tracker_intel.refresh_feed_cache(payload.urls if payload else None))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
@@ -836,7 +848,7 @@ async def tracker_feed_import(
     _: None = Depends(require_operator_access),
 ) -> dict:
     try:
-        return tracker_intel.import_feed_cache(payload.source_path)
+        return _strip_internal_fields(tracker_intel.import_feed_cache(payload.source_path))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -898,13 +910,13 @@ async def security_health() -> dict:
     tracker_health = tracker_intel.health_status()
     malware_health = scanner.health_status()
     warnings = [*tracker_health["warnings"], *malware_health["warnings"]]
-    return {
+    return _strip_internal_fields({
         "healthy": not warnings,
         "warnings": warnings,
         "tracker_intel": tracker_health,
         "malware_scanner": malware_health,
         "automation": automation.status(),
-    }
+    })
 
 
 @app.get("/reports/security-summary.pdf")
@@ -935,7 +947,7 @@ async def security_summary_report(
 
 @app.get("/reports")
 async def list_reports(_: None = Depends(require_operator_access)) -> dict:
-    return {"reports": report_builder.list_saved_reports(), "report_output_dir": str(report_builder.get_output_dir())}
+    return _strip_internal_fields({"reports": report_builder.list_saved_reports()})
 
 
 @app.get("/reports/{report_name}")

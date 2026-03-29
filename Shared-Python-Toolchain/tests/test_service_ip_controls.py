@@ -428,6 +428,8 @@ def test_reports_endpoints_list_and_fetch_saved_pdf(monkeypatch, tmp_path):
         payload = listing.json()
         assert payload["reports"]
         assert payload["reports"][0]["name"] == saved_path.name
+        assert "path" not in payload["reports"][0]
+        assert "report_output_dir" not in payload
 
         fetched = client.get(f"/reports/{saved_path.name}", headers=headers)
         assert fetched.status_code == 200
@@ -700,6 +702,7 @@ def test_tracker_feed_status_and_refresh_api(monkeypatch, tmp_path):
         assert status.status_code == 200
         assert status.json()["domain_count"] == 0
         assert status.json()["is_stale"] is True
+        assert "cache_path" not in status.json()
 
         refreshed = client.post(
             "/privacy/tracker-feeds/refresh",
@@ -708,6 +711,7 @@ def test_tracker_feed_status_and_refresh_api(monkeypatch, tmp_path):
         )
         assert refreshed.status_code == 200
         assert refreshed.json()["domain_count"] == 25
+        assert "cache_path" not in refreshed.json()
 
 
 def test_tracker_feed_refresh_api_returns_502_on_failure(monkeypatch, tmp_path):
@@ -766,6 +770,7 @@ def test_malware_feed_status_and_refresh_api(monkeypatch, tmp_path):
         assert status.status_code == 200
         assert status.json()["hash_count"] == 0
         assert status.json()["is_stale"] is True
+        assert "cache_path" not in status.json()
 
         refreshed = client.post(
             "/endpoint/malware-feeds/refresh",
@@ -774,6 +779,7 @@ def test_malware_feed_status_and_refresh_api(monkeypatch, tmp_path):
         )
         assert refreshed.status_code == 200
         assert refreshed.json()["hash_count"] == 12
+        assert "cache_path" not in refreshed.json()
 
 
 def test_malware_feed_refresh_api_returns_400_on_bad_config(monkeypatch, tmp_path):
@@ -1032,10 +1038,12 @@ def test_security_health_and_rule_feed_routes(monkeypatch, tmp_path):
         health = client.get("/health/security")
         assert health.status_code == 200
         assert health.json()["healthy"] is True
+        assert "cache_path" not in health.text
 
         rule_status = client.get("/endpoint/malware-rule-feeds/status")
         assert rule_status.status_code == 200
         assert rule_status.json()["rule_count"] == 1
+        assert "cache_path" not in rule_status.json()
 
         rule_refresh = client.post(
             "/endpoint/malware-rule-feeds/refresh",
@@ -1044,6 +1052,7 @@ def test_security_health_and_rule_feed_routes(monkeypatch, tmp_path):
         )
         assert rule_refresh.status_code == 200
         assert rule_refresh.json()["rule_count"] == 3
+        assert "cache_path" not in rule_refresh.json()
 
         tracker_import = client.post(
             "/privacy/tracker-feeds/import",
@@ -1052,6 +1061,7 @@ def test_security_health_and_rule_feed_routes(monkeypatch, tmp_path):
         )
         assert tracker_import.status_code == 200
         assert tracker_import.json()["last_refresh_result"] == "imported"
+        assert "cache_path" not in tracker_import.json()
 
         rule_import = client.post(
             "/endpoint/malware-rule-feeds/import",
@@ -1059,4 +1069,5 @@ def test_security_health_and_rule_feed_routes(monkeypatch, tmp_path):
             headers=headers,
         )
         assert rule_import.status_code == 200
+        assert "cache_path" not in rule_import.json()
         assert rule_import.json()["last_refresh_result"] == "imported"
