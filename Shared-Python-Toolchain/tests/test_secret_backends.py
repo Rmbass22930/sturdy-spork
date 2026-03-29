@@ -52,5 +52,7 @@ def test_hashicorp_vault_backend_uses_timeout_and_tls_settings():
 
     assert session.verify is False
     assert session.calls[0][2]["timeout"] == 7.5
+    assert session.calls[0][2]["allow_redirects"] is False
     assert session.calls[1][2]["timeout"] == 7.5
+    assert session.calls[1][2]["allow_redirects"] is False
     assert session.calls[0][1].startswith("https://vault.example.com/v1/")

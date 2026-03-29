@@ -66,6 +66,7 @@ class HashicorpVaultBackend(SecretBackend):
             headers=self._headers(),
             json={"data": {"ciphertext": ciphertext}},
             timeout=self._timeout_seconds,
+            allow_redirects=False,
         )
         response.raise_for_status()
 
@@ -74,6 +75,7 @@ class HashicorpVaultBackend(SecretBackend):
             self._path(name, version),
             headers=self._headers(),
             timeout=self._timeout_seconds,
+            allow_redirects=False,
         )
         if response.status_code == 404:
             return None

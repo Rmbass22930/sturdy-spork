@@ -296,7 +296,7 @@ export SECURITY_GATEWAY_HASHICORP_VAULT_TIMEOUT_SECONDS=5
 export SECURITY_GATEWAY_HASHICORP_VAULT_VERIFY_TLS=true
 ```
 With these in place, `VaultClient` stores each rotated version at `secret/data/security-gateway/<name>/<version>` while still enforcing local encryption + metrics.
-- The Vault URL must use HTTPS, must not include embedded credentials, and must include a hostname.
+- The Vault URL must use HTTPS, must not include embedded credentials, must include a hostname, and Vault reads and writes do not follow redirects.
 
 ## Encryption defaults
 - Privileged secrets use a shared `common_crypto.AES256GCMCipher`, which derives 256-bit AES keys via PBKDF2-HMAC-SHA256 (310k iterations) and seals data with AES-256-GCM.
