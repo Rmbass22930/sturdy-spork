@@ -10,12 +10,23 @@ if not payload_env:
 payload_path = Path(payload_env)
 if not payload_path.exists():
     raise SystemExit(f"Security Gateway payload missing: {payload_path}")
+uninstaller_env = os.environ.get("SECURITY_GATEWAY_UNINSTALLER_PATH")
+if not uninstaller_env:
+    raise SystemExit("SECURITY_GATEWAY_UNINSTALLER_PATH is required. Use scripts/build-security-gateway.ps1.")
+uninstaller_path = Path(uninstaller_env)
+if not uninstaller_path.exists():
+    raise SystemExit(f"Security Gateway uninstaller missing: {uninstaller_path}")
 
 a = Analysis(
     ['installer\\installer.py'],
     pathex=[],
     binaries=[],
-    datas=[(str(payload_path), 'payload'), ('docs/INSTALL_GUIDE.pdf', 'docs'), ('installer/dependencies.json', 'installer')],
+    datas=[
+        (str(payload_path), 'payload'),
+        (str(uninstaller_path), 'payload'),
+        ('docs/INSTALL_GUIDE.pdf', 'docs'),
+        ('installer/dependencies.json', 'installer'),
+    ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

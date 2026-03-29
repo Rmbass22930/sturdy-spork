@@ -1,6 +1,7 @@
 import sys
 import importlib.util
 from pathlib import Path
+from typing import Any, cast
 from unittest import mock
 import pytest
 
@@ -9,8 +10,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 INSTALLER_PATH = PROJECT_ROOT / "installer" / "installer.py"
 
 spec = importlib.util.spec_from_file_location("security_gateway_installer", INSTALLER_PATH)
-installer = importlib.util.module_from_spec(spec)
 assert spec is not None and spec.loader is not None
+installer = cast(Any, importlib.util.module_from_spec(spec))
 sys.modules[spec.name] = installer
 spec.loader.exec_module(installer)
 
@@ -19,16 +20,18 @@ def test_rollback_install_cleans_created_artifacts(tmp_path: Path) -> None:
     install_dir = tmp_path / "SecurityGateway"
     install_dir.mkdir()
     installed_path = install_dir / "SecurityGateway.exe"
+    uninstall_executable = install_dir / "SecurityGateway-Uninstall.exe"
     backup_file = install_dir / "user_path_backup.txt"
     shortcut_path = tmp_path / "Desktop" / "SecurityGateway.lnk"
     shortcut_path.parent.mkdir()
     uninstall_script = install_dir / "Uninstall-SecurityGateway.ps1"
 
-    for path in (installed_path, backup_file, shortcut_path, uninstall_script):
+    for path in (installed_path, uninstall_executable, backup_file, shortcut_path, uninstall_script):
         path.write_text("x", encoding="utf-8")
 
     transaction = installer.InstallTransaction(
         installed_path=installed_path,
+        uninstall_executable=uninstall_executable,
         previous_user_path="C:\\Existing\\Path",
         backup_file=backup_file,
         shortcut_paths=[shortcut_path],
@@ -45,6 +48,7 @@ def test_rollback_install_cleans_created_artifacts(tmp_path: Path) -> None:
     restore_user_path.assert_called_once_with("C:\\Existing\\Path")
     unregister_task.assert_called_once()
     assert not installed_path.exists()
+    assert not uninstall_executable.exists()
     assert not backup_file.exists()
     assert not shortcut_path.exists()
     assert not uninstall_script.exists()
@@ -94,6 +98,7 @@ def test_print_install_summary_lists_shortcuts_and_dependencies(capsys, tmp_path
             tmp_path / "Desktop" / "SecurityGateway.lnk",
             tmp_path / "OneDrive" / "Desktop" / "SecurityGateway.lnk",
         ],
+        uninstall_executable=tmp_path / "SecurityGateway-Uninstall.exe",
         uninstall_script=tmp_path / "Uninstall-SecurityGateway.ps1",
         dependency_results=[
             installer.DependencyInstallResult(
@@ -111,6 +116,7 @@ def test_print_install_summary_lists_shortcuts_and_dependencies(capsys, tmp_path
     assert "Install complete:" in output
     assert "Reports directory:" in output
     assert "Desktop shortcuts:" in output
+    assert "Uninstall executable:" in output
     assert "Cloudflare WARP: installed via winget (Cloudflare.WARP)" in output
 
 
@@ -127,14 +133,20 @@ def test_create_reports_directory(tmp_path: Path, monkeypatch) -> None:
 
 def test_main_wraps_rollback_failures(monkeypatch, tmp_path: Path) -> None:
     installed_path = tmp_path / "SecurityGateway.exe"
+    uninstall_executable = tmp_path / "SecurityGateway-Uninstall.exe"
     installed_path.write_text("binary", encoding="utf-8")
+    uninstall_executable.write_text("binary", encoding="utf-8")
     monkeypatch.setattr(installer, "ensure_admin", lambda: None)
     monkeypatch.setattr(installer, "show_install_guide", lambda url=None, reporter=None: None)
-    monkeypatch.setattr(installer, "resolve_resource", lambda rel: installed_path)
+    monkeypatch.setattr(
+        installer,
+        "resolve_resource",
+        lambda rel: uninstall_executable if rel == installer.UNINSTALLER_RELATIVE else installed_path,
+    )
     monkeypatch.setattr(installer, "resolve_manifest_reference", lambda ref: None)
     monkeypatch.setattr(installer, "load_dependency_manifest", lambda path: [])
     monkeypatch.setattr(installer, "install_external_dependencies", lambda deps, reporter=None: [])
-    monkeypatch.setattr(installer, "copy_binary", lambda src, dest: installed_path)
+    monkeypatch.setattr(installer, "copy_binary", lambda src, dest: uninstall_executable if src == uninstall_executable else installed_path)
     monkeypatch.setattr(installer, "update_user_path", lambda path: "C:\\Existing\\Path")
     monkeypatch.setattr(installer, "create_shortcut", lambda path: [tmp_path / "Desktop" / "SecurityGateway.lnk"])
     monkeypatch.setattr(installer, "register_automation_task", lambda path: (_ for _ in ()).throw(RuntimeError("task failed")))
@@ -158,18 +170,24 @@ def test_show_install_guide_does_not_wait_for_input(monkeypatch, tmp_path: Path,
 
 def test_main_skips_dependencies_when_requested(monkeypatch, tmp_path: Path) -> None:
     installed_path = tmp_path / "SecurityGateway.exe"
+    uninstall_executable = tmp_path / "SecurityGateway-Uninstall.exe"
     uninstall_script = tmp_path / "Uninstall-SecurityGateway.ps1"
     installed_path.write_text("binary", encoding="utf-8")
+    uninstall_executable.write_text("binary", encoding="utf-8")
     uninstall_script.write_text("script", encoding="utf-8")
     dependency_calls = []
 
     monkeypatch.setattr(installer, "ensure_admin", lambda: None)
     monkeypatch.setattr(installer, "show_install_guide", lambda url=None, reporter=None: None)
-    monkeypatch.setattr(installer, "resolve_resource", lambda rel: installed_path)
+    monkeypatch.setattr(
+        installer,
+        "resolve_resource",
+        lambda rel: uninstall_executable if rel == installer.UNINSTALLER_RELATIVE else installed_path,
+    )
     monkeypatch.setattr(installer, "resolve_manifest_reference", lambda ref: (_ for _ in ()).throw(AssertionError("manifest should not be resolved")))
     monkeypatch.setattr(installer, "load_dependency_manifest", lambda path: (_ for _ in ()).throw(AssertionError("dependencies should not load")))
     monkeypatch.setattr(installer, "install_external_dependencies", lambda deps, reporter=None: dependency_calls.append(deps))
-    monkeypatch.setattr(installer, "copy_binary", lambda src, dest: installed_path)
+    monkeypatch.setattr(installer, "copy_binary", lambda src, dest: uninstall_executable if src == uninstall_executable else installed_path)
     monkeypatch.setattr(installer, "update_user_path", lambda path: "C:\\Existing\\Path")
     monkeypatch.setattr(installer, "create_shortcut", lambda path: [tmp_path / "Desktop" / "SecurityGateway.lnk"])
     monkeypatch.setattr(installer, "register_automation_task", lambda path: None)
@@ -259,13 +277,82 @@ def test_resolve_resource_uses_project_root_and_dist_fallback(monkeypatch, tmp_p
     assert installer.resolve_resource(installer.RESOURCE_RELATIVE) == dist_dir / "SecurityGateway.exe"
 
 
+def test_resolve_resource_uses_dist_fallback_for_uninstaller(monkeypatch, tmp_path: Path) -> None:
+    project_root = tmp_path / "Shared-Python-Toolchain"
+    installer_dir = project_root / "installer"
+    dist_dir = project_root / "dist"
+    installer_dir.mkdir(parents=True)
+    dist_dir.mkdir()
+    (dist_dir / "SecurityGateway-Uninstall.exe").write_text("binary", encoding="utf-8")
+
+    fake_installer = installer_dir / "installer.py"
+    fake_installer.write_text("# placeholder", encoding="utf-8")
+
+    monkeypatch.delattr(installer.sys, "_MEIPASS", raising=False)
+    monkeypatch.setattr(installer, "__file__", str(fake_installer))
+
+    assert installer.resolve_resource(installer.UNINSTALLER_RELATIVE) == dist_dir / "SecurityGateway-Uninstall.exe"
+
+
+def test_main_summary_includes_uninstaller(monkeypatch, tmp_path: Path) -> None:
+    installed_path = tmp_path / "SecurityGateway.exe"
+    uninstall_executable = tmp_path / "SecurityGateway-Uninstall.exe"
+    uninstall_script = tmp_path / "Uninstall-SecurityGateway.ps1"
+    installed_path.write_text("binary", encoding="utf-8")
+    uninstall_executable.write_text("binary", encoding="utf-8")
+    uninstall_script.write_text("script", encoding="utf-8")
+    summaries = []
+
+    monkeypatch.setattr(installer, "ensure_admin", lambda: None)
+    monkeypatch.setattr(installer, "show_install_guide", lambda url=None, reporter=None: None)
+    monkeypatch.setattr(
+        installer,
+        "resolve_resource",
+        lambda rel: uninstall_executable if rel == installer.UNINSTALLER_RELATIVE else installed_path,
+    )
+    monkeypatch.setattr(installer, "resolve_manifest_reference", lambda ref: None)
+    monkeypatch.setattr(installer, "load_dependency_manifest", lambda path: [])
+    monkeypatch.setattr(installer, "install_external_dependencies", lambda deps, reporter=None: [])
+    monkeypatch.setattr(installer, "copy_binary", lambda src, dest: uninstall_executable if src == uninstall_executable else installed_path)
+    monkeypatch.setattr(installer, "update_user_path", lambda path: "C:\\Existing\\Path")
+    monkeypatch.setattr(installer, "create_shortcut", lambda path: [tmp_path / "Desktop" / "SecurityGateway.lnk"])
+    monkeypatch.setattr(installer, "register_automation_task", lambda path: None)
+    monkeypatch.setattr(installer, "write_uninstall_script", lambda path, backup: uninstall_script)
+
+    class RecordingReporter:
+        def stage(self, title: str) -> None:
+            return None
+
+        def info(self, message: str) -> None:
+            return None
+
+        def dependency_failure(self, dep, message: str) -> str:
+            return "abort"
+
+        def summary(self, summary):
+            summaries.append(summary)
+
+        def error(self, message: str) -> None:
+            return None
+
+    result = installer.perform_install(installer.parse_args(["--skip-dependencies"]), reporter=RecordingReporter())
+
+    assert result == 0
+    assert len(summaries) == 1
+    assert summaries[0].uninstall_executable == uninstall_executable
+
+
 def test_main_uses_console_flow_when_not_frozen(monkeypatch) -> None:
     args = installer.parse_args([])
     perform_calls = []
 
+    def fake_perform_install(parsed_args, reporter=None):
+        perform_calls.append((parsed_args, reporter))
+        return 0
+
     monkeypatch.delattr(installer.sys, "frozen", raising=False)
     monkeypatch.setattr(installer, "parse_args", lambda argv=None: args)
-    monkeypatch.setattr(installer, "perform_install", lambda parsed_args, reporter=None: perform_calls.append((parsed_args, reporter)) or 0)
+    monkeypatch.setattr(installer, "perform_install", fake_perform_install)
 
     result = installer.main([])
 
@@ -291,9 +378,13 @@ def test_main_console_flag_overrides_frozen_ui(monkeypatch) -> None:
     args = installer.parse_args(["--console"])
     perform_calls = []
 
+    def fake_perform_install(parsed_args, reporter=None):
+        perform_calls.append((parsed_args, reporter))
+        return 0
+
     monkeypatch.setattr(installer.sys, "frozen", True, raising=False)
     monkeypatch.setattr(installer, "parse_args", lambda argv=None: args)
-    monkeypatch.setattr(installer, "perform_install", lambda parsed_args, reporter=None: perform_calls.append((parsed_args, reporter)) or 0)
+    monkeypatch.setattr(installer, "perform_install", fake_perform_install)
 
     result = installer.main(["--console"])
 

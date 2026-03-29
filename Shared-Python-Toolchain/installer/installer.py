@@ -16,8 +16,11 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 from typing import List, Optional
 
+tk: ModuleType | None
+ttk: ModuleType | None
 try:
     import tkinter as tk
     from tkinter import ttk
@@ -27,6 +30,7 @@ except Exception:  # pragma: no cover
 
 INSTALL_DIR = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "SecurityGateway"
 RESOURCE_RELATIVE = Path("payload") / "SecurityGateway.exe"
+UNINSTALLER_RELATIVE = Path("payload") / "SecurityGateway-Uninstall.exe"
 GUIDE_RELATIVE = Path("docs") / "INSTALL_GUIDE.pdf"
 DEPENDENCY_MANIFEST_RELATIVE = Path("installer") / "dependencies.json"
 UNINSTALL_SCRIPT_NAME = "Uninstall-SecurityGateway.ps1"
@@ -59,6 +63,7 @@ class ExternalDependency:
 @dataclass
 class InstallTransaction:
     installed_path: Optional[Path] = None
+    uninstall_executable: Optional[Path] = None
     previous_user_path: Optional[str] = None
     backup_file: Optional[Path] = None
     shortcut_paths: Optional[List[Path]] = None
@@ -81,6 +86,7 @@ class InstallSummary:
     installed_path: Path
     reports_dir: Path
     shortcut_paths: List[Path]
+    uninstall_executable: Path
     uninstall_script: Path
     dependency_results: List[DependencyInstallResult]
 
@@ -111,6 +117,7 @@ class InstallerUI(InstallReporter):
         "Updating PATH",
         "Creating shortcuts",
         "Registering automation task",
+        "Installing uninstaller",
         "Writing uninstall script",
         "Finishing",
     ]
@@ -131,6 +138,7 @@ class InstallerUI(InstallReporter):
         self._build_ui()
 
     def _build_ui(self) -> None:
+        assert tk is not None and ttk is not None
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(3, weight=1)
 
@@ -249,6 +257,7 @@ class InstallerUI(InstallReporter):
                         self._append_log(f"  - {result.name}: {result.status} via {result.method}{target_suffix}{detail_suffix}")
                 else:
                     self._append_log("- Dependencies: none")
+                self._append_log(f"- Uninstall executable: {summary.uninstall_executable}")
                 self._append_log(f"- Uninstall script: {summary.uninstall_script}")
                 self._append_log("- PATH updated for current user. Sign out/in or restart terminal to use immediately.")
             elif kind == "error":
@@ -270,6 +279,7 @@ class InstallerUI(InstallReporter):
             self.root.after(100, self._pump_queue)
 
     def _show_dependency_dialog(self, dep: ExternalDependency, message: str) -> str:
+        assert tk is not None and ttk is not None
         dialog = tk.Toplevel(self.root)
         dialog.title("Dependency issue")
         dialog.transient(self.root)
@@ -351,6 +361,8 @@ def resolve_resource(rel_path: Path) -> Path:
         candidates = [project_root / rel_path]
         if rel_path == RESOURCE_RELATIVE:
             candidates.append(project_root / "dist" / "SecurityGateway.exe")
+        if rel_path == UNINSTALLER_RELATIVE:
+            candidates.append(project_root / "dist" / "SecurityGateway-Uninstall.exe")
     for resource in candidates:
         if resource.exists():
             return resource
@@ -592,7 +604,13 @@ def rollback_install(transaction: InstallTransaction) -> None:
             cleanup_errors.append(f"scheduled task rollback failed: {exc}")
 
     shortcut_paths = transaction.shortcut_paths or []
-    for path in (transaction.uninstall_script, *shortcut_paths, transaction.backup_file, transaction.installed_path):
+    for path in (
+        transaction.uninstall_executable,
+        transaction.uninstall_script,
+        *shortcut_paths,
+        transaction.backup_file,
+        transaction.installed_path,
+    ):
         if not path:
             continue
         try:
@@ -769,6 +787,7 @@ def print_install_summary(summary: InstallSummary) -> None:
             print(f"  - {result.name}: {result.status} via {result.method}{target_suffix}{detail_suffix}")
     else:
         print("- Dependencies: none")
+    print(f"- Uninstall executable: {summary.uninstall_executable}")
     print(f"- Uninstall script: {summary.uninstall_script}")
     print("- PATH updated for current user. Sign out/in or restart terminal to use immediately.")
 
@@ -811,6 +830,7 @@ def perform_install(args: argparse.Namespace, reporter: Optional[InstallReporter
         if payload_url
         else resolve_resource(RESOURCE_RELATIVE)
     )
+    uninstall_resource = resolve_resource(UNINSTALLER_RELATIVE)
 
     dependency_results: List[DependencyInstallResult] = []
     if args.skip_dependencies:
@@ -832,6 +852,8 @@ def perform_install(args: argparse.Namespace, reporter: Optional[InstallReporter
         reporter.stage("Copying application files")
         installed_path = copy_binary(resource, INSTALL_DIR)
         transaction.installed_path = installed_path
+        uninstall_executable = copy_binary(uninstall_resource, INSTALL_DIR)
+        transaction.uninstall_executable = uninstall_executable
         transaction.reports_dir = create_reports_directory()
         reporter.info(f"Reports will be stored at {transaction.reports_dir}")
         reporter.stage("Updating PATH")
@@ -845,6 +867,7 @@ def perform_install(args: argparse.Namespace, reporter: Optional[InstallReporter
         reporter.stage("Registering automation task")
         register_automation_task(installed_path)
         transaction.automation_task_registered = True
+        reporter.stage("Installing uninstaller")
         reporter.stage("Writing uninstall script")
         uninstall_script = write_uninstall_script(installed_path, backup_file)
         transaction.uninstall_script = uninstall_script
@@ -864,6 +887,7 @@ def perform_install(args: argparse.Namespace, reporter: Optional[InstallReporter
             installed_path=installed_path,
             reports_dir=transaction.reports_dir or REPORTS_DIR,
             shortcut_paths=transaction.shortcut_paths or [],
+            uninstall_executable=uninstall_executable,
             uninstall_script=uninstall_script,
             dependency_results=dependency_results,
         )
