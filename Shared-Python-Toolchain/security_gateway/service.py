@@ -129,8 +129,23 @@ def _seed_offline_feeds() -> None:
         scanner.import_rule_feed_cache(settings.malware_offline_rule_seed_path)
 
 
+def _validate_startup_security_dependencies() -> None:
+    configured_secret_checks = (
+        ("Operator", settings.operator_bearer_secret_name),
+        ("Endpoint", settings.endpoint_bearer_secret_name),
+    )
+    for label, secret_name in configured_secret_checks:
+        if not secret_name:
+            continue
+        try:
+            vault.retrieve_secret(secret_name)
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"{label} bearer token backend is unavailable during startup.") from exc
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    _validate_startup_security_dependencies()
     _seed_offline_feeds()
     automation.start()
     try:

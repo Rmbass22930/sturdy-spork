@@ -2,6 +2,7 @@ import json
 import socket
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from fastapi.testclient import TestClient
 
 from security_gateway import service
@@ -165,6 +166,29 @@ def test_operator_and_endpoint_routes_fail_closed_when_tokens_are_unconfigured(m
     assert operator_response.json()["detail"] == "Operator bearer token is not configured for remote management."
     assert endpoint_response.status_code == 503
     assert endpoint_response.json()["detail"] == "Endpoint bearer token is not configured for remote ingestion."
+
+
+def test_startup_fails_when_operator_token_backend_is_unavailable(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "operator_bearer_token", "stale-static-token")
+    monkeypatch.setattr(settings, "operator_bearer_secret_name", "operator-bearer-token")
+    monkeypatch.setattr(service.vault, "retrieve_secret", lambda name: (_ for _ in ()).throw(RuntimeError("vault offline")))
+
+    with pytest.raises(RuntimeError, match="Operator bearer token backend is unavailable during startup."):
+        with TestClient(service.app):
+            pass
+
+
+def test_startup_fails_when_endpoint_token_backend_is_unavailable(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "operator_bearer_secret_name", None)
+    monkeypatch.setattr(settings, "endpoint_bearer_token", "stale-static-token")
+    monkeypatch.setattr(settings, "endpoint_bearer_secret_name", "endpoint-ingest-token")
+    monkeypatch.setattr(service.vault, "retrieve_secret", lambda name: (_ for _ in ()).throw(RuntimeError("vault offline")))
+
+    with pytest.raises(RuntimeError, match="Endpoint bearer token backend is unavailable during startup."):
+        with TestClient(service.app):
+            pass
 
 
 def test_rejects_untrusted_host_headers(monkeypatch, tmp_path):
@@ -987,6 +1011,7 @@ def test_operator_route_does_not_fall_back_to_static_token_when_pam_lookup_fails
     monkeypatch.setattr(settings, "operator_bearer_token", "stale-static-token")
     monkeypatch.setattr(settings, "operator_bearer_secret_name", "operator-bearer-token")
     monkeypatch.setattr(settings, "operator_allow_loopback_without_token", False)
+    monkeypatch.setattr(service, "_validate_startup_security_dependencies", lambda: None)
     monkeypatch.setattr(service.vault, "retrieve_secret", lambda name: (_ for _ in ()).throw(RuntimeError("vault offline")))
 
     with TestClient(service.app) as client:
