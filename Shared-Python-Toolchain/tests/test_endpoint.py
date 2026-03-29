@@ -1,6 +1,8 @@
 import json
+from datetime import UTC, datetime, timedelta
 
-from security_gateway.endpoint import MalwareScanner
+from security_gateway.endpoint import EndpointTelemetryService, MalwareScanner
+from security_gateway.models import DeviceCompliance, DeviceContext
 
 
 class _FakeResponse:
@@ -15,6 +17,57 @@ class _FakeResponse:
 
     def __exit__(self, exc_type, exc, tb):
         return False
+
+
+def _device(device_id: str) -> DeviceContext:
+    return DeviceContext(
+        device_id=device_id,
+        os="Windows",
+        os_version="11",
+        compliance=DeviceCompliance.compliant,
+        is_encrypted=True,
+        edr_active=True,
+    )
+
+
+def test_endpoint_telemetry_uses_stable_signing_key_across_instances():
+    telemetry_a = EndpointTelemetryService(signing_key="stable-key")
+    telemetry_b = EndpointTelemetryService(signing_key="stable-key")
+
+    signature = telemetry_a.publish(_device("device-1"))
+    telemetry_b._records["device-1"] = telemetry_a._records["device-1"]
+
+    assert telemetry_b.verify("device-1") is True
+    assert telemetry_b.get_payload("device-1")["device_id"] == "device-1"
+    assert signature == telemetry_a._records["device-1"]["signature"]
+
+
+def test_endpoint_telemetry_eviction_respects_max_records():
+    telemetry = EndpointTelemetryService(signing_key="stable-key", max_records=2)
+
+    telemetry.publish(_device("device-1"))
+    telemetry.publish(_device("device-2"))
+    telemetry.publish(_device("device-3"))
+
+    assert telemetry.get_payload("device-1") is None
+    assert telemetry.get_payload("device-2")["device_id"] == "device-2"
+    assert telemetry.get_payload("device-3")["device_id"] == "device-3"
+
+
+def test_endpoint_telemetry_prunes_expired_records():
+    telemetry = EndpointTelemetryService(signing_key="stable-key", retention_hours=1)
+    telemetry.publish(_device("fresh-device"))
+    telemetry._records["expired-device"] = {
+        "payload": {
+            **_device("expired-device").model_dump(),
+            "timestamp": (datetime.now(UTC) - timedelta(hours=2)).isoformat(),
+        },
+        "signature": "invalid",
+    }
+
+    assert telemetry.get_payload("expired-device") is None
+    assert "expired-device" not in telemetry._records
+    assert telemetry.get_payload("fresh-device")["device_id"] == "fresh-device"
 
 
 def test_malware_scanner_refreshes_feed_hashes_and_detects_match(monkeypatch, tmp_path):

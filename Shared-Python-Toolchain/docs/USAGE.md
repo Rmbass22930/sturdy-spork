@@ -137,6 +137,13 @@ SECURITY_GATEWAY_ENDPOINT_BEARER_SECRET_NAME=endpoint-ingest-token
 SECURITY_GATEWAY_ENDPOINT_BEARER_TOKEN=replace-me
 SECURITY_GATEWAY_ENDPOINT_ALLOW_LOOPBACK_WITHOUT_TOKEN=false
 ```
+- Telemetry signing and retention can be configured independently:
+```
+SECURITY_GATEWAY_ENDPOINT_TELEMETRY_SIGNING_KEY=replace-me
+SECURITY_GATEWAY_ENDPOINT_TELEMETRY_MAX_RECORDS=10000
+SECURITY_GATEWAY_ENDPOINT_TELEMETRY_RETENTION_HOURS=168
+```
+- If `SECURITY_GATEWAY_ENDPOINT_TELEMETRY_SIGNING_KEY` is unset, telemetry signing falls back to `SECURITY_GATEWAY_PAM_MASTER_KEY` so signatures stay stable across restarts when the PAM master key is stable.
 - Example:
 ```bash
 curl -X POST http://127.0.0.1:8000/privacy/tracker-feeds/refresh \

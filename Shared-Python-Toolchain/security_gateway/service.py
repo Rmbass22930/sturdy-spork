@@ -64,7 +64,11 @@ ip_blocklist = IPBlocklistManager(audit_logger=audit_logger)
 policy_engine = PolicyEngine(threat_responder=threat_responder, ip_blocklist=ip_blocklist)
 resolver = SecureDNSResolver()
 proxy = OutboundProxy()
-telemetry = EndpointTelemetryService()
+telemetry = EndpointTelemetryService(
+    signing_key=settings.endpoint_telemetry_signing_key or settings.pam_master_key,
+    max_records=settings.endpoint_telemetry_max_records,
+    retention_hours=settings.endpoint_telemetry_retention_hours,
+)
 scanner = MalwareScanner(
     feed_cache_path=settings.malware_feed_cache_path,
     feed_urls=settings.malware_feed_urls,

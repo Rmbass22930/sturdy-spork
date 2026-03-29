@@ -7,7 +7,7 @@ import json
 import re
 import secrets
 import ssl
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, Tuple
 from urllib.request import urlopen
@@ -28,19 +28,34 @@ RULE_CONTAINER_KEYS = ("rules", "signatures", "yara", "sigma", "detections")
 
 
 class EndpointTelemetryService:
-    def __init__(self, signing_key: bytes | None = None):
+    def __init__(
+        self,
+        signing_key: bytes | str | None = None,
+        *,
+        max_records: int = 10_000,
+        retention_hours: float = 168.0,
+    ):
+        if isinstance(signing_key, str):
+            signing_key = hashlib.sha256(signing_key.encode("utf-8")).digest()
         self._key = signing_key or secrets.token_bytes(32)
+        self._max_records = max_records
+        self._retention = timedelta(hours=retention_hours)
         self._records: Dict[str, dict] = {}
 
     def publish(self, device: DeviceContext) -> str:
+        self._prune()
         body = device.model_dump()
         body["timestamp"] = datetime.now(UTC).isoformat()
         serialized = json.dumps(body, sort_keys=True).encode()
         signature = hmac.new(self._key, serialized, hashlib.sha256).hexdigest()
         self._records[device.device_id] = {"payload": body, "signature": signature}
+        while len(self._records) > self._max_records:
+            oldest_device_id = next(iter(self._records))
+            del self._records[oldest_device_id]
         return signature
 
     def verify(self, device_id: str) -> bool:
+        self._prune()
         record = self._records.get(device_id)
         if not record:
             return False
@@ -52,6 +67,27 @@ class EndpointTelemetryService:
         if self.verify(device_id):
             return self._records[device_id]["payload"]
         return None
+
+    def _prune(self) -> None:
+        if self._retention.total_seconds() <= 0:
+            return
+        cutoff = datetime.now(UTC) - self._retention
+        expired_ids = [
+            device_id
+            for device_id, record in self._records.items()
+            if self._parse_timestamp(record["payload"].get("timestamp")) < cutoff
+        ]
+        for device_id in expired_ids:
+            del self._records[device_id]
+
+    @staticmethod
+    def _parse_timestamp(value: Any) -> datetime:
+        if isinstance(value, str):
+            try:
+                return datetime.fromisoformat(value)
+            except ValueError:
+                return datetime.min.replace(tzinfo=UTC)
+        return datetime.min.replace(tzinfo=UTC)
 
 
 class MalwareScanner:
