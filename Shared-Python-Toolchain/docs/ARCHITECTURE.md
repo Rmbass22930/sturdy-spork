@@ -48,6 +48,7 @@
     - Response middleware adds baseline anti-sniffing, anti-framing, and privacy-oriented security headers across the HTTP surface by default.
     - Non-multipart request bodies are bounded before model parsing so oversized JSON/control-plane payloads are rejected early instead of consuming arbitrary memory.
     - Repeated operator and endpoint bearer-token failures are rate-limited across HTTP and the operator WebSocket path to slow brute-force attempts.
+    - Proxy and feed-refresh routes keep detailed backend exceptions in audit events while returning stable high-level API errors to clients.
     - Public-facing HTTP routes apply lightweight per-client rate limits so policy evaluation, DNS lookups, and proxying cannot be spammed indefinitely from one source.
     - Public request models and DNS lookups validate bounded identifiers, finite signal maps, literal source IPs, hostnames, and record types before invoking policy or DoH providers.
     - Operator-facing report and tracker-event endpoints validate filter/query bounds before touching the audit log so pathological PDF requests cannot trigger whole-log scans.

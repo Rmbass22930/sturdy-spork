@@ -613,7 +613,7 @@ def test_proxy_request_allows_public_http_targets(monkeypatch, tmp_path):
 
 
 def test_proxy_request_maps_response_too_large(monkeypatch, tmp_path):
-    _install_test_managers(monkeypatch, tmp_path)
+    audit, _blocklist, _traceroute = _install_test_managers(monkeypatch, tmp_path)
     monkeypatch.setattr(
         service.proxy,
         "request",
@@ -629,11 +629,12 @@ def test_proxy_request_maps_response_too_large(monkeypatch, tmp_path):
         )
 
     assert response.status_code == 413
-    assert "configured limit" in response.json()["detail"]
+    assert response.json()["detail"] == "Proxy response exceeded the configured size limit."
+    assert any(event_type == "proxy.request.failure" for event_type, _payload in audit.events)
 
 
 def test_proxy_request_maps_upstream_timeout(monkeypatch, tmp_path):
-    _install_test_managers(monkeypatch, tmp_path)
+    audit, _blocklist, _traceroute = _install_test_managers(monkeypatch, tmp_path)
     monkeypatch.setattr(
         service.proxy,
         "request",
@@ -649,7 +650,8 @@ def test_proxy_request_maps_upstream_timeout(monkeypatch, tmp_path):
         )
 
     assert response.status_code == 504
-    assert "timed out" in response.json()["detail"]
+    assert response.json()["detail"] == "Proxy request timed out."
+    assert any(event_type == "proxy.request.failure" for event_type, _payload in audit.events)
 
 
 def test_tracker_feed_status_and_refresh_api(monkeypatch, tmp_path):
@@ -694,7 +696,7 @@ def test_tracker_feed_status_and_refresh_api(monkeypatch, tmp_path):
 
 
 def test_tracker_feed_refresh_api_returns_502_on_failure(monkeypatch, tmp_path):
-    _install_test_managers(monkeypatch, tmp_path)
+    audit, _blocklist, _traceroute = _install_test_managers(monkeypatch, tmp_path)
     headers = _operator_headers(monkeypatch)
 
     class FailingTrackerIntel:
@@ -714,7 +716,8 @@ def test_tracker_feed_refresh_api_returns_502_on_failure(monkeypatch, tmp_path):
         )
 
     assert refreshed.status_code == 502
-    assert "upstream timeout" in refreshed.json()["detail"]
+    assert refreshed.json()["detail"] == "Tracker feed refresh failed."
+    assert any(event_type == "tracker.feed_refresh.failure" for event_type, _payload in audit.events)
 
 
 def test_malware_feed_status_and_refresh_api(monkeypatch, tmp_path):

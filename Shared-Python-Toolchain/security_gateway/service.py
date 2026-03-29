@@ -291,6 +291,18 @@ def _auth_failure_retry_after(scope: str, client_id: str | None, max_failures: i
     )
 
 
+def _audit_backend_failure(event_type: str, request_path: str, source_ip: str | None, error: Exception) -> None:
+    audit_logger.log(
+        event_type,
+        {
+            "path": request_path,
+            "source_ip": source_ip,
+            "error_type": error.__class__.__name__,
+            "error": str(error),
+        },
+    )
+
+
 def _resolve_bearer_token(secret_name: str | None, static_token: str | None) -> tuple[str | None, str | None]:
     if secret_name:
         try:
@@ -677,7 +689,8 @@ async def malware_feed_refresh(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Malware feed refresh failed: {exc}") from exc
+        _audit_backend_failure("malware.feed_refresh.failure", "/endpoint/malware-feeds/refresh", None, exc)
+        raise HTTPException(status_code=502, detail="Malware feed refresh failed.") from exc
 
 
 @app.post("/endpoint/malware-feeds/import")
@@ -706,7 +719,8 @@ async def malware_rule_feed_refresh(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Malware rule feed refresh failed: {exc}") from exc
+        _audit_backend_failure("malware.rule_feed_refresh.failure", "/endpoint/malware-rule-feeds/refresh", None, exc)
+        raise HTTPException(status_code=502, detail="Malware rule feed refresh failed.") from exc
 
 
 @app.post("/endpoint/malware-rule-feeds/import")
@@ -748,11 +762,14 @@ async def proxy_request(payload: ProxyPayload, request: Request) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ProxyResponseTooLargeError as exc:
-        raise HTTPException(status_code=413, detail=str(exc)) from exc
+        _audit_backend_failure("proxy.request.failure", request.url.path, request.client.host if request.client else None, exc)
+        raise HTTPException(status_code=413, detail="Proxy response exceeded the configured size limit.") from exc
     except ProxyRequestTimeoutError as exc:
-        raise HTTPException(status_code=504, detail=str(exc)) from exc
+        _audit_backend_failure("proxy.request.failure", request.url.path, request.client.host if request.client else None, exc)
+        raise HTTPException(status_code=504, detail="Proxy request timed out.") from exc
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        _audit_backend_failure("proxy.request.failure", request.url.path, request.client.host if request.client else None, exc)
+        raise HTTPException(status_code=502, detail="Proxy request failed.") from exc
     return {
         "status_code": result.status_code,
         "headers": result.headers,
@@ -799,7 +816,8 @@ async def tracker_feed_refresh(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Tracker feed refresh failed: {exc}") from exc
+        _audit_backend_failure("tracker.feed_refresh.failure", "/privacy/tracker-feeds/refresh", None, exc)
+        raise HTTPException(status_code=502, detail="Tracker feed refresh failed.") from exc
 
 
 @app.post("/privacy/tracker-feeds/import")
