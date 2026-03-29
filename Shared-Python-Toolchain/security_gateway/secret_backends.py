@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, Optional
 from urllib.parse import urlparse
 
-import requests
+import requests  # type: ignore[import-untyped]
 
 
 class SecretBackend(ABC):

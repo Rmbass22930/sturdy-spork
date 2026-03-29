@@ -7,6 +7,7 @@ import socket
 from typing import Iterable
 from urllib.parse import urlparse
 
+IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 
 DEFAULT_BLOCKED_HOSTS = frozenset(
     {
@@ -95,14 +96,14 @@ def validate_public_host_or_ip(
     return normalized_host
 
 
-def _parse_ip_literal(hostname: str) -> ipaddress._BaseAddress | None:
+def _parse_ip_literal(hostname: str) -> IPAddress | None:
     try:
         return ipaddress.ip_address(hostname)
     except ValueError:
         return None
 
 
-def _raise_if_disallowed_ip(address: ipaddress._BaseAddress, label: str) -> None:
+def _raise_if_disallowed_ip(address: IPAddress, label: str) -> None:
     if (
         address.is_loopback
         or address.is_private

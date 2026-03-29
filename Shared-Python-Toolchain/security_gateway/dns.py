@@ -35,7 +35,8 @@ class SecureDNSResolver:
         timeout: float = 3.0,
         client: httpx.Client | None = None,
     ):
-        self.providers = self._normalize_providers(providers or list(settings.doh_providers))
+        configured_providers = providers or [str(provider) for provider in settings.doh_providers]
+        self.providers = self._normalize_providers(configured_providers)
         self._external_client = client is not None
         self._client = client or httpx.Client(timeout=timeout, headers={"accept": "application/dns-json"})
 

@@ -296,13 +296,13 @@ class MalwareScanner:
         refresh_time = datetime.now(UTC).isoformat()
         for url in active_urls:
             try:
-                payload = self._fetch_payload(
+                fetched_payload = self._fetch_payload(
                     url,
                     timeout=timeout,
                     verify_tls=self.verify_tls,
                     ca_bundle_path=self.ca_bundle_path,
                 )
-                parsed = self._parse_hash_feed_payload(payload, source_url=url)
+                parsed = self._parse_hash_feed_payload(fetched_payload, source_url=url)
                 if len(parsed) < self.min_hashes_per_source:
                     raise RuntimeError(
                         f"Source returned {len(parsed)} hashes, below minimum {self.min_hashes_per_source}"
@@ -316,7 +316,12 @@ class MalwareScanner:
             raise ValueError("Malware feed cache path is not configured.")
         self.feed_cache_path.parent.mkdir(parents=True, exist_ok=True)
         existing_payload = self._read_feed_cache_payload()
-        existing_count = len(existing_payload.get("hashes", [])) if isinstance(existing_payload, dict) else 0
+        existing_hashes: list[Any] = []
+        if isinstance(existing_payload, dict):
+            raw_existing_hashes = existing_payload.get("hashes")
+            if isinstance(raw_existing_hashes, list):
+                existing_hashes = raw_existing_hashes
+        existing_count = len(existing_hashes)
         suspiciously_small = False
         suspicious_reason = None
         if len(hashes) < self.min_total_hashes:
@@ -332,7 +337,11 @@ class MalwareScanner:
             )
 
         if not source_summaries or suspiciously_small:
-            failed_payload = dict(existing_payload) if isinstance(existing_payload, dict) else {"hashes": [], "sources": []}
+            failed_payload: dict[str, Any]
+            if isinstance(existing_payload, dict):
+                failed_payload = dict(existing_payload)
+            else:
+                failed_payload = {"hashes": [], "sources": []}
             failure_messages = [f"{item['url']}: {item['error']}" for item in failures]
             if suspicious_reason:
                 failure_messages.append(suspicious_reason)
@@ -347,9 +356,9 @@ class MalwareScanner:
             self._write_feed_cache_payload(failed_payload)
             if suspicious_reason and source_summaries:
                 raise ValueError(f"Refusing to replace malware feed cache: {suspicious_reason}")
-            raise RuntimeError(failed_payload["last_error"])
+            raise RuntimeError(str(failed_payload["last_error"]))
 
-        payload = {
+        payload: dict[str, Any] = {
             "updated_at": refresh_time,
             "last_refresh_attempted_at": refresh_time,
             "last_refresh_result": "success" if not failures else "partial",
@@ -384,13 +393,13 @@ class MalwareScanner:
         refresh_time = datetime.now(UTC).isoformat()
         for url in active_urls:
             try:
-                payload = self._fetch_payload(
+                fetched_payload = self._fetch_payload(
                     url,
                     timeout=timeout,
                     verify_tls=self.rule_feed_verify_tls,
                     ca_bundle_path=self.rule_feed_ca_bundle_path,
                 )
-                parsed = self._parse_rule_feed_payload(payload, source_url=url)
+                parsed = self._parse_rule_feed_payload(fetched_payload, source_url=url)
                 if len(parsed) < self.min_rules_per_source:
                     raise RuntimeError(
                         f"Source returned {len(parsed)} rules, below minimum {self.min_rules_per_source}"
@@ -405,7 +414,12 @@ class MalwareScanner:
             raise ValueError("Malware rule feed cache path is not configured.")
         self.rule_feed_cache_path.parent.mkdir(parents=True, exist_ok=True)
         existing_payload = self._read_rule_feed_cache_payload()
-        existing_count = len(existing_payload.get("rules", [])) if isinstance(existing_payload, dict) else 0
+        existing_rules: list[Any] = []
+        if isinstance(existing_payload, dict):
+            raw_existing_rules = existing_payload.get("rules")
+            if isinstance(raw_existing_rules, list):
+                existing_rules = raw_existing_rules
+        existing_count = len(existing_rules)
         suspiciously_small = False
         suspicious_reason = None
         if len(deduped_rules) < self.min_total_rules:
@@ -421,7 +435,11 @@ class MalwareScanner:
             )
 
         if not source_summaries or suspiciously_small:
-            failed_payload = dict(existing_payload) if isinstance(existing_payload, dict) else {"rules": [], "sources": []}
+            failed_payload: dict[str, Any]
+            if isinstance(existing_payload, dict):
+                failed_payload = dict(existing_payload)
+            else:
+                failed_payload = {"rules": [], "sources": []}
             failure_messages = [f"{item['url']}: {item['error']}" for item in failures]
             if suspicious_reason:
                 failure_messages.append(suspicious_reason)
@@ -436,9 +454,9 @@ class MalwareScanner:
             self._write_rule_feed_cache_payload(failed_payload)
             if suspicious_reason and source_summaries:
                 raise ValueError(f"Refusing to replace malware rule feed cache: {suspicious_reason}")
-            raise RuntimeError(failed_payload["last_error"])
+            raise RuntimeError(str(failed_payload["last_error"]))
 
-        payload = {
+        payload: dict[str, Any] = {
             "updated_at": refresh_time,
             "last_refresh_attempted_at": refresh_time,
             "last_refresh_result": "success" if not failures else "partial",
@@ -470,7 +488,7 @@ class MalwareScanner:
             raise ValueError("Malware feed cache path is not configured.")
         self.feed_cache_path.parent.mkdir(parents=True, exist_ok=True)
         refresh_time = datetime.now(UTC).isoformat()
-        payload = {
+        payload: dict[str, Any] = {
             "updated_at": refresh_time,
             "last_refresh_attempted_at": refresh_time,
             "last_refresh_result": "imported",
@@ -501,19 +519,20 @@ class MalwareScanner:
             raise ValueError("Malware rule feed cache path is not configured.")
         self.rule_feed_cache_path.parent.mkdir(parents=True, exist_ok=True)
         refresh_time = datetime.now(UTC).isoformat()
-        payload = {
+        deduped_rules = self._dedupe_rules(parsed)
+        payload: dict[str, Any] = {
             "updated_at": refresh_time,
             "last_refresh_attempted_at": refresh_time,
             "last_refresh_result": "imported",
             "last_error": None,
             "failures": [],
             "sources": [{"url": str(source), "rule_count": len(parsed), "imported": True}],
-            "rules": self._dedupe_rules(parsed),
+            "rules": deduped_rules,
         }
         self._write_rule_feed_cache_payload(payload)
         return {
             "cache_path": str(self.rule_feed_cache_path),
-            "rule_count": len(payload["rules"]),
+            "rule_count": len(deduped_rules),
             "sources": payload["sources"],
             "last_refresh_result": "imported",
             "failures": [],
@@ -541,7 +560,10 @@ class MalwareScanner:
         sample = data.decode("utf-8", errors="ignore").lower()
         for rule in self._load_feed_rules():
             name = str(rule.get("name") or "unnamed-rule")
-            for pattern in rule.get("patterns", []):
+            raw_patterns = rule.get("patterns")
+            if not isinstance(raw_patterns, list):
+                continue
+            for pattern in raw_patterns:
                 candidate = str(pattern).strip().lower()
                 if candidate and candidate in sample:
                     return name
@@ -705,9 +727,12 @@ class MalwareScanner:
             if not isinstance(rule, dict):
                 continue
             name = str(rule.get("name") or "").strip()
+            raw_patterns = rule.get("patterns")
+            if not isinstance(raw_patterns, list):
+                continue
             patterns = [
                 str(item).strip()
-                for item in rule.get("patterns", [])
+                for item in raw_patterns
                 if isinstance(item, str) and str(item).strip()
             ]
             if not name or not patterns:

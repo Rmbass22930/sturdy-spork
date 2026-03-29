@@ -36,7 +36,7 @@ class IPBlocklistManager:
             if expired:
                 self._save_data(data)
                 self._log_expired(expired)
-            return [BlockedIPEntry(**item) for item in data.values()]
+            return [self._entry_from_item(item) for item in data.values()]
 
     def is_blocked(self, ip: str | None) -> bool:
         if not ip:
@@ -133,12 +133,12 @@ class IPBlocklistManager:
             "network.ip_block_promote_permanent",
             {"source_ip": normalized, "reason": reason or "", "promoted_by": promoted_by},
         )
-        return BlockedIPEntry(**item)
+        return self._entry_from_item(item)
 
     def _normalize_ip(self, ip: str) -> str:
         return str(ipaddress.ip_address(ip.strip()))
 
-    def _load_data(self) -> Dict[str, Dict[str, str]]:
+    def _load_data(self) -> Dict[str, Dict[str, str | None]]:
         if not self._path.exists():
             return {}
         payload = json.loads(self._path.read_text(encoding="utf-8"))
@@ -146,20 +146,33 @@ class IPBlocklistManager:
             return {}
         return payload
 
-    def _save_data(self, data: Dict[str, Dict[str, str]]) -> None:
+    def _save_data(self, data: Dict[str, Dict[str, str | None]]) -> None:
         self._path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
 
     def _log_expired(self, expired: list[str]) -> None:
         for expired_ip in expired:
             self._audit.log("network.ip_unblock_expired", {"source_ip": expired_ip})
 
-    def _prune_expired_locked(self, data: Dict[str, Dict[str, str]]) -> tuple[Dict[str, Dict[str, str]], list[str]]:
+    def _entry_from_item(self, item: Dict[str, str | None]) -> BlockedIPEntry:
+        return BlockedIPEntry(
+            ip=str(item.get("ip") or ""),
+            blocked_at=str(item.get("blocked_at") or ""),
+            reason=str(item.get("reason") or ""),
+            blocked_by=str(item.get("blocked_by") or "operator"),
+            expires_at=item.get("expires_at"),
+        )
+
+    def _prune_expired_locked(
+        self,
+        data: Dict[str, Dict[str, str | None]],
+    ) -> tuple[Dict[str, Dict[str, str | None]], list[str]]:
         now = datetime.now(UTC)
         expired: list[str] = []
-        active: Dict[str, Dict[str, str]] = {}
+        active: Dict[str, Dict[str, str | None]] = {}
         for ip, item in data.items():
             expires_at = item.get("expires_at")
             if expires_at:
+                expiry: datetime | None
                 try:
                     expiry = datetime.fromisoformat(expires_at)
                 except ValueError:

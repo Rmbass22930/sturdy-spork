@@ -13,6 +13,7 @@ import httpx
 from .config import settings
 
 ALLOWED_PROXY_METHODS = frozenset({"GET", "HEAD"})
+IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 
 
 @dataclass
@@ -54,21 +55,26 @@ class OutboundProxy:
         if via not in {"tor", "warp", "direct"}:
             raise ValueError("via must be 'tor', 'warp', or 'direct'")
         self._validate_target(url)
-        proxies = None
+        proxy = None
         headers = kwargs.pop("headers", {}) or {}
         if via == "tor":
-            proxies = {
-                "http": self.tor_proxy,
-                "https": self.tor_proxy,
-            }
+            proxy = self.tor_proxy
         elif via == "warp" and self.warp_endpoint:
             headers.setdefault("CF-Access-Client-Id", "demo")
             headers.setdefault("CF-Access-Client-Secret", "demo")
-        return self._send_request(normalized_method, url, proxies=proxies, headers=headers, **kwargs)
+        return self._send_request(normalized_method, url, proxy=proxy, headers=headers, **kwargs)
 
-    def _send_request(self, method: str, url: str, *, proxies=None, headers=None, **kwargs) -> ProxyResponse:
+    def _send_request(
+        self,
+        method: str,
+        url: str,
+        *,
+        proxy: str | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs,
+    ) -> ProxyResponse:
         try:
-            with httpx.Client(timeout=self.timeout, proxies=proxies) as client:
+            with httpx.Client(timeout=self.timeout, proxy=proxy) as client:
                 with client.stream(method, url, headers=headers or {}, **kwargs) as response:
                     response.raise_for_status()
                     content_length = response.headers.get("content-length")
@@ -125,13 +131,13 @@ class OutboundProxy:
             if self._is_disallowed_ip(resolved_ip):
                 raise ValueError(f"Proxy target resolves to a blocked address: {resolved_ip}")
 
-    def _parse_ip_literal(self, hostname: str) -> ipaddress._BaseAddress | None:
+    def _parse_ip_literal(self, hostname: str) -> IPAddress | None:
         try:
             return ipaddress.ip_address(hostname)
         except ValueError:
             return None
 
-    def _is_disallowed_ip(self, address: ipaddress._BaseAddress) -> bool:
+    def _is_disallowed_ip(self, address: IPAddress) -> bool:
         return (
             address.is_loopback
             or address.is_private

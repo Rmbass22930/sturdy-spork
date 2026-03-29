@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field, field_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .audit import AuditLogger
-from .alerts import alert_manager, AlertEvent, AlertLevel
+from .alerts import alert_manager
 from .automation import AutomationSupervisor
 from .config import settings
 from .dns import SecureDNSResolver
@@ -237,8 +237,11 @@ def _normalize_origin(origin: str | None) -> str | None:
 
 
 def _allowed_websocket_origins(websocket: WebSocket) -> set[str]:
-    allowed = {_normalize_origin(origin) for origin in settings.websocket_allowed_origins}
-    allowed.discard(None)
+    allowed: set[str] = set()
+    for origin in settings.websocket_allowed_origins:
+        normalized = _normalize_origin(origin)
+        if normalized is not None:
+            allowed.add(normalized)
     host = websocket.headers.get("host")
     if host:
         allowed.add(f"http://{host}".lower())

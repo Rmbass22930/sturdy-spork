@@ -320,8 +320,8 @@ class TrackerIntel:
         refresh_time = datetime.now(UTC).isoformat()
         for url in active_urls:
             try:
-                payload = self._fetch_payload(url, timeout=timeout)
-                parsed = self._parse_feed_payload(payload, source_url=url)
+                fetched_payload = self._fetch_payload(url, timeout=timeout)
+                parsed = self._parse_feed_payload(fetched_payload, source_url=url)
                 if len(parsed) < self.min_domains_per_source:
                     raise RuntimeError(
                         f"Source returned {len(parsed)} domains, below minimum {self.min_domains_per_source}"
@@ -335,7 +335,12 @@ class TrackerIntel:
             raise ValueError("Tracker feed cache path is not configured.")
         self.feed_cache_path.parent.mkdir(parents=True, exist_ok=True)
         existing_payload = self._read_feed_cache_payload()
-        existing_count = len(existing_payload.get("domains", [])) if isinstance(existing_payload, dict) else 0
+        existing_domains: list[Any] = []
+        if isinstance(existing_payload, dict):
+            raw_existing_domains = existing_payload.get("domains")
+            if isinstance(raw_existing_domains, list):
+                existing_domains = raw_existing_domains
+        existing_count = len(existing_domains)
         suspiciously_small = False
         suspicious_reason = None
         if len(domains) < self.min_total_domains:
@@ -351,7 +356,11 @@ class TrackerIntel:
             )
 
         if not source_summaries or suspiciously_small:
-            failed_payload = dict(existing_payload) if isinstance(existing_payload, dict) else {"domains": [], "sources": []}
+            failed_payload: dict[str, Any]
+            if isinstance(existing_payload, dict):
+                failed_payload = dict(existing_payload)
+            else:
+                failed_payload = {"domains": [], "sources": []}
             failure_messages = [f"{item['url']}: {item['error']}" for item in failures]
             if suspicious_reason:
                 failure_messages.append(suspicious_reason)
@@ -364,9 +373,9 @@ class TrackerIntel:
                 }
             )
             self._write_feed_cache_payload(failed_payload)
-            raise RuntimeError(failed_payload["last_error"])
+            raise RuntimeError(str(failed_payload["last_error"]))
 
-        payload = {
+        payload: dict[str, Any] = {
             "updated_at": refresh_time,
             "last_refresh_attempted_at": refresh_time,
             "last_refresh_result": "success" if not failures else "partial",
@@ -376,7 +385,7 @@ class TrackerIntel:
             "domains": sorted(domains),
         }
         self._write_feed_cache_payload(payload)
-        result = {
+        result: dict[str, Any] = {
             "cache_path": str(self.feed_cache_path),
             "domain_count": len(domains),
             "sources": source_summaries,
@@ -400,7 +409,7 @@ class TrackerIntel:
             raise ValueError("Tracker feed cache path is not configured.")
         self.feed_cache_path.parent.mkdir(parents=True, exist_ok=True)
         refresh_time = datetime.now(UTC).isoformat()
-        cache_payload = {
+        cache_payload: dict[str, Any] = {
             "updated_at": refresh_time,
             "last_refresh_attempted_at": refresh_time,
             "last_refresh_result": "imported",

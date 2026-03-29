@@ -6,7 +6,7 @@ import secrets
 import sys
 from functools import lru_cache
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, cast
 
 from pydantic import Field, HttpUrl
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -16,6 +16,16 @@ def _default_report_output_dir() -> str:
     if getattr(sys, "frozen", False):
         return str(Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "SecurityGateway" / "reports")
     return "output/pdf"
+
+
+def _default_doh_providers() -> list[HttpUrl]:
+    return cast(
+        list[HttpUrl],
+        [
+            "https://cloudflare-dns.com/dns-query",
+            "https://dns.quad9.net/dns-query",
+        ],
+    )
 
 
 class Settings(BaseSettings):
@@ -30,12 +40,7 @@ class Settings(BaseSettings):
     hashicorp_vault_namespace: Optional[str] = None
     hashicorp_vault_timeout_seconds: float = 5.0
     hashicorp_vault_verify_tls: bool = True
-    doh_providers: List[HttpUrl] = Field(
-        default_factory=lambda: [
-            "https://cloudflare-dns.com/dns-query",
-            "https://dns.quad9.net/dns-query",
-        ]
-    )
+    doh_providers: List[HttpUrl] = Field(default_factory=_default_doh_providers)
     proxy_allowed_url_schemes: List[str] = Field(default_factory=lambda: ["http", "https"])
     proxy_allowed_hosts: List[str] = Field(default_factory=list)
     proxy_block_private_destinations: bool = True
@@ -140,7 +145,7 @@ class Settings(BaseSettings):
 
 @lru_cache()
 def get_settings() -> Settings:
-    return Settings()
+    return Settings()  # type: ignore[call-arg]
 
 
 settings = get_settings()

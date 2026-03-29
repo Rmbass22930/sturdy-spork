@@ -16,7 +16,7 @@ from .traceroute import TraceRouteRunner, TraceRouteResult
 
 
 class RiskCalculator:
-    def __init__(self, max_score: float = None):
+    def __init__(self, max_score: float | None = None):
         self.max_score = max_score or settings.max_risk_score
 
     def geo_distance_km(self, a_lat: float, a_lon: float, b_lat: float, b_lon: float) -> float:
@@ -222,11 +222,10 @@ class PolicyEngine:
         if not request.threat_signals and score < settings.threat_rotation_risk_threshold:
             return
         peak_signal = max(request.threat_signals.values(), default=0.0)
-        metadata = {"resource": request.resource, "signals": request.threat_signals, "risk_score": score}
         if peak_signal >= settings.threat_rotation_signal_threshold:
-            self.threat_responder.trigger_rotation("threat_signal", peak_signal, metadata)
+            self.threat_responder.trigger_rotation("threat_signal", peak_signal)
         elif score >= settings.threat_rotation_risk_threshold:
-            self.threat_responder.trigger_rotation("risk_score", score, metadata)
+            self.threat_responder.trigger_rotation("risk_score", score)
 
     def _should_trace_real_threat(self, request: AccessRequest, dns_secure: Optional[bool]) -> bool:
         return self._corroborating_signal_count(request, dns_secure=dns_secure) >= 2

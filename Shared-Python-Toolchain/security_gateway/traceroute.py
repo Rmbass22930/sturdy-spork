@@ -101,11 +101,16 @@ class TraceRouteRunner:
                 error="Traceroute executable not found.",
             )
         except subprocess.TimeoutExpired as exc:
+            timeout_output: str | None
+            if isinstance(exc.stdout, bytes):
+                timeout_output = exc.stdout.decode("utf-8", errors="replace")
+            else:
+                timeout_output = exc.stdout
             return TraceRouteResult(
                 target=normalized_target,
                 command=command,
                 exit_code=None,
-                output=exc.stdout.strip() if exc.stdout else "",
+                output=timeout_output.strip() if timeout_output else "",
                 error=f"Traceroute timed out after {self.timeout_seconds}s",
             )
 

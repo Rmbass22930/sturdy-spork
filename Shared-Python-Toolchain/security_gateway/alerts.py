@@ -16,6 +16,8 @@ import httpx
 
 from .config import settings
 
+IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
+
 
 class AlertLevel(str, Enum):
     info = "info"
@@ -69,6 +71,8 @@ class AlertManager:
         print(f"[ALERT] {payload}")
         if self._http_client:
             try:
+                if self.webhook_url is None:
+                    raise RuntimeError("Webhook client configured without a URL.")
                 self._http_client.post(self.webhook_url, json=payload).raise_for_status()
             except Exception as exc:  # noqa: BLE001
                 print(f"Failed to send webhook alert: {exc}", file=sys.stderr)
@@ -143,7 +147,7 @@ class AlertManager:
             AlertManager._raise_if_disallowed_ip(resolved_ip)
 
     @staticmethod
-    def _raise_if_disallowed_ip(address: ipaddress._BaseAddress) -> None:
+    def _raise_if_disallowed_ip(address: IPAddress) -> None:
         if (
             address.is_loopback
             or address.is_private
@@ -156,4 +160,3 @@ class AlertManager:
 
 
 alert_manager = AlertManager()
-
