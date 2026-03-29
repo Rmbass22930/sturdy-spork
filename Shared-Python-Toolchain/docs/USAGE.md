@@ -333,6 +333,7 @@ SECURITY_GATEWAY_TRACKER_BLOCK_ENABLED=false
 ```
 SECURITY_GATEWAY_TRACKER_DOMAIN_LIST_PATH=C:\path\to\tracker-domains.json
 ```
+- DoH providers must use public HTTPS endpoints. Localhost, embedded credentials, metadata-style hosts, and private-network destinations are rejected during resolver setup.
 - Tracker feed refresh is explicit and local-cache based. Runtime blocking reads only the cached domains file.
 - Default feed sources are:
   - Disconnect tracking protection

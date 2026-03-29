@@ -8,6 +8,7 @@ from typing import List, Optional
 import httpx
 
 from .config import settings
+from .url_safety import validate_public_https_url
 
 ALLOWED_RECORD_TYPES = {"A", "AAAA", "CAA", "CNAME", "MX", "NS", "PTR", "SRV", "TXT"}
 HOSTNAME_LABEL_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
@@ -34,7 +35,7 @@ class SecureDNSResolver:
         timeout: float = 3.0,
         client: httpx.Client | None = None,
     ):
-        self.providers = [str(provider) for provider in (providers or list(settings.doh_providers))]
+        self.providers = self._normalize_providers(providers or list(settings.doh_providers))
         self._external_client = client is not None
         self._client = client or httpx.Client(timeout=timeout, headers={"accept": "application/dns-json"})
 
@@ -81,6 +82,18 @@ class SecureDNSResolver:
         if candidate not in ALLOWED_RECORD_TYPES:
             raise ValueError(f"record_type must be one of: {', '.join(sorted(ALLOWED_RECORD_TYPES))}")
         return candidate
+
+    def _normalize_providers(self, providers: List[str]) -> List[str]:
+        normalized: list[str] = []
+        for provider in providers:
+            candidate = str(provider).strip()
+            if not candidate:
+                continue
+            validate_public_https_url(candidate, label="DoH provider URL")
+            normalized.append(candidate)
+        if not normalized:
+            raise ValueError("At least one DoH provider URL must be configured.")
+        return normalized
 
     def close(self) -> None:
         if not self._external_client:

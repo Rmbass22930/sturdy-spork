@@ -31,3 +31,14 @@ def test_dns_resolver_rejects_invalid_hostname_and_record_type():
 
     with pytest.raises(ValueError, match="record_type"):
         resolver.resolve("example.com", "AXFR")
+
+
+def test_dns_resolver_rejects_unsafe_provider_urls():
+    with pytest.raises(ValueError, match="HTTPS"):
+        SecureDNSResolver(providers=["http://dns.example.com/dns-query"])
+
+    with pytest.raises(ValueError, match="embedded credentials"):
+        SecureDNSResolver(providers=["https://user:pass@dns.example.com/dns-query"])
+
+    with pytest.raises(ValueError, match="blocked"):
+        SecureDNSResolver(providers=["https://127.0.0.1/dns-query"])
