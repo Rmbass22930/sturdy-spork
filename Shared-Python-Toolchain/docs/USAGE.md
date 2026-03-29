@@ -28,6 +28,7 @@ uvicorn security_gateway.service:app --reload
 - The service also enforces trusted `Host` headers. Set `SECURITY_GATEWAY_SERVICE_ALLOWED_HOSTS` to the exact hostnames clients should use in your environment.
 - HTTP responses include baseline security headers (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, and `Permissions-Policy`) by default.
 - Non-multipart request bodies are capped by `SECURITY_GATEWAY_SERVICE_MAX_REQUEST_BODY_BYTES` before route parsing begins. File uploads for `/endpoint/scan` still use their dedicated upload-size guard.
+- Repeated bad bearer tokens are rate-limited on operator, endpoint-ingest, and operator WebSocket auth paths. Tune with `SECURITY_GATEWAY_AUTH_FAILURE_RATE_LIMIT_WINDOW_SECONDS`, `SECURITY_GATEWAY_OPERATOR_AUTH_MAX_FAILURES_PER_WINDOW`, and `SECURITY_GATEWAY_ENDPOINT_AUTH_MAX_FAILURES_PER_WINDOW`.
 - `WS /ws` – operator-authenticated health-only channel (sends `{"type":"ready","mode":"health_only"}` on connect, `ping`/`health` -> `pong`, unsupported messages return a structured unsupported response).
 - Operator-managed routes now require operator authorization:
   - `PUT /pam/secret`, `POST /pam/checkout`, `GET /pam/metrics`

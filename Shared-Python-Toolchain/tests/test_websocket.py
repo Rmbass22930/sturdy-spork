@@ -113,3 +113,30 @@ def test_websocket_accepts_pam_secret_backed_operator_token(monkeypatch):
             assert ready["type"] == "ready"
             websocket.send_text("health")
             assert websocket.receive_text() == "pong"
+
+
+def test_websocket_auth_rate_limits_repeated_failures(monkeypatch):
+    monkeypatch.setattr(service.automation, "start", lambda: None)
+    monkeypatch.setattr(service.automation, "stop", lambda: None)
+    monkeypatch.setattr(service.resolver, "close", lambda: None)
+    monkeypatch.setattr(service.settings, "operator_bearer_token", "expected-token")
+    monkeypatch.setattr(service.settings, "operator_bearer_secret_name", None)
+    monkeypatch.setattr(service.settings, "operator_allow_loopback_without_token", False)
+    monkeypatch.setattr(service.settings, "operator_auth_max_failures_per_window", 1)
+    monkeypatch.setattr(service.settings, "auth_failure_rate_limit_window_seconds", 60.0)
+    service.auth_failure_rate_limiter.clear()
+
+    with TestClient(service.app) as client:
+        with client.websocket_connect("/ws") as websocket:
+            error = websocket.receive_json()
+            assert error["type"] == "error"
+            assert error["message"] == "Operator authentication required."
+            with pytest.raises(WebSocketDisconnect):
+                websocket.receive_text()
+
+        with client.websocket_connect("/ws") as websocket:
+            error = websocket.receive_json()
+            assert error["type"] == "error"
+            assert error["message"] == "Too many authentication failures; retry later."
+            with pytest.raises(WebSocketDisconnect):
+                websocket.receive_text()

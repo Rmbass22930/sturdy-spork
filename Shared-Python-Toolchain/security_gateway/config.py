@@ -80,6 +80,9 @@ class Settings(BaseSettings):
         default_factory=lambda: ["localhost", "127.0.0.1", "[::1]", "testserver", "testclient"]
     )
     service_max_request_body_bytes: int = 65_536
+    auth_failure_rate_limit_window_seconds: float = 60.0
+    operator_auth_max_failures_per_window: int = 5
+    endpoint_auth_max_failures_per_window: int = 10
     websocket_allowed_origins: List[str] = Field(default_factory=list)
     websocket_max_messages_per_window: int = 30
     websocket_rate_window_seconds: float = 5.0

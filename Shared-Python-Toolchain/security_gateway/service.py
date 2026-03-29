@@ -204,6 +204,7 @@ class PublicRouteRateLimiter:
 
 
 public_rate_limiter = PublicRouteRateLimiter()
+auth_failure_rate_limiter = PublicRouteRateLimiter()
 
 
 def _is_loopback_client(host: str | None) -> bool:
@@ -279,6 +280,17 @@ def _enforce_public_rate_limit(request: Request, scope: str, max_requests: int) 
     )
 
 
+def _auth_failure_retry_after(scope: str, client_id: str | None, max_failures: int) -> float | None:
+    if max_failures < 1:
+        return None
+    return auth_failure_rate_limiter.check(
+        scope=scope,
+        client_id=client_id or "unknown",
+        max_requests=max_failures,
+        window_seconds=settings.auth_failure_rate_limit_window_seconds,
+    )
+
+
 def _resolve_bearer_token(secret_name: str | None, static_token: str | None) -> tuple[str | None, str | None]:
     if secret_name:
         try:
@@ -310,6 +322,21 @@ def require_operator_access(
         scheme, _, supplied_token = (authorization or "").partition(" ")
         if scheme.lower() == "bearer" and supplied_token and secrets.compare_digest(supplied_token, expected_token):
             return
+        retry_after = _auth_failure_retry_after(
+            "operator.http",
+            client_host,
+            settings.operator_auth_max_failures_per_window,
+        )
+        if retry_after is not None:
+            audit_logger.log(
+                "operator.auth.rate_limit.exceeded",
+                {"path": request.url.path, "source_ip": client_host, "retry_after_seconds": retry_after},
+            )
+            raise HTTPException(
+                status_code=429,
+                detail="Too many authentication failures; retry later.",
+                headers={"Retry-After": str(int(retry_after))},
+            )
         audit_logger.log(
             "operator.auth.failure",
             {"path": request.url.path, "source_ip": client_host, "reason": "missing_or_invalid_bearer_token"},
@@ -341,6 +368,21 @@ def require_endpoint_access(
         scheme, _, supplied_token = (authorization or "").partition(" ")
         if scheme.lower() == "bearer" and supplied_token and secrets.compare_digest(supplied_token, expected_token):
             return
+        retry_after = _auth_failure_retry_after(
+            "endpoint.http",
+            client_host,
+            settings.endpoint_auth_max_failures_per_window,
+        )
+        if retry_after is not None:
+            audit_logger.log(
+                "endpoint.auth.rate_limit.exceeded",
+                {"path": request.url.path, "source_ip": client_host, "retry_after_seconds": retry_after},
+            )
+            raise HTTPException(
+                status_code=429,
+                detail="Too many authentication failures; retry later.",
+                headers={"Retry-After": str(int(retry_after))},
+            )
         audit_logger.log(
             "endpoint.auth.failure",
             {"path": request.url.path, "source_ip": client_host, "reason": "missing_or_invalid_bearer_token"},
@@ -381,6 +423,20 @@ async def require_operator_websocket_access(websocket: WebSocket) -> bool:
         scheme, _, supplied_token = (authorization or "").partition(" ")
         if scheme.lower() == "bearer" and supplied_token and secrets.compare_digest(supplied_token, expected_token):
             return True
+        retry_after = _auth_failure_retry_after(
+            "operator.websocket",
+            client_host,
+            settings.operator_auth_max_failures_per_window,
+        )
+        if retry_after is not None:
+            audit_logger.log(
+                "operator.auth.rate_limit.exceeded",
+                {"path": websocket.url.path, "source_ip": client_host, "retry_after_seconds": retry_after},
+            )
+            await websocket.accept()
+            await websocket.send_json({"type": "error", "message": "Too many authentication failures; retry later."})
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return False
         audit_logger.log(
             "operator.auth.failure",
             {"path": websocket.url.path, "source_ip": client_host, "reason": "missing_or_invalid_bearer_token"},

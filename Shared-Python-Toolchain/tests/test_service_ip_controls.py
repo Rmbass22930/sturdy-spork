@@ -91,6 +91,7 @@ def _install_test_managers(monkeypatch, tmp_path):
     monkeypatch.setattr(service.automation, "stop", lambda: None)
     monkeypatch.setattr(service.resolver, "close", lambda: None)
     service.public_rate_limiter.clear()
+    service.auth_failure_rate_limiter.clear()
     return audit, blocklist, traceroute
 
 
@@ -172,6 +173,50 @@ def test_http_responses_include_security_headers(monkeypatch, tmp_path):
     assert response.headers["X-Frame-Options"] == "DENY"
     assert response.headers["Referrer-Policy"] == "no-referrer"
     assert response.headers["Permissions-Policy"] == "geolocation=(), camera=(), microphone=()"
+
+
+def test_operator_auth_rate_limits_repeated_failures(monkeypatch, tmp_path):
+    audit, _blocklist, _traceroute = _install_test_managers(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "operator_bearer_token", "expected-token")
+    monkeypatch.setattr(settings, "operator_bearer_secret_name", None)
+    monkeypatch.setattr(settings, "operator_allow_loopback_without_token", False)
+    monkeypatch.setattr(settings, "operator_auth_max_failures_per_window", 1)
+    monkeypatch.setattr(settings, "auth_failure_rate_limit_window_seconds", 60.0)
+
+    with TestClient(service.app) as client:
+        first = client.get("/automation/status")
+        second = client.get("/automation/status")
+
+    assert first.status_code == 401
+    assert second.status_code == 429
+    assert second.json()["detail"] == "Too many authentication failures; retry later."
+    assert any(event_type == "operator.auth.rate_limit.exceeded" for event_type, _payload in audit.events)
+
+
+def test_endpoint_auth_rate_limits_repeated_failures(monkeypatch, tmp_path):
+    audit, _blocklist, _traceroute = _install_test_managers(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "endpoint_bearer_token", "expected-endpoint-token")
+    monkeypatch.setattr(settings, "endpoint_bearer_secret_name", None)
+    monkeypatch.setattr(settings, "endpoint_allow_loopback_without_token", False)
+    monkeypatch.setattr(settings, "endpoint_auth_max_failures_per_window", 1)
+    monkeypatch.setattr(settings, "auth_failure_rate_limit_window_seconds", 60.0)
+
+    payload = {
+        "device_id": "device-123",
+        "os": "Windows",
+        "os_version": "11",
+        "compliance": "compliant",
+        "is_encrypted": True,
+        "edr_active": True,
+    }
+    with TestClient(service.app) as client:
+        first = client.post("/endpoint/telemetry", json=payload)
+        second = client.post("/endpoint/telemetry", json=payload)
+
+    assert first.status_code == 401
+    assert second.status_code == 429
+    assert second.json()["detail"] == "Too many authentication failures; retry later."
+    assert any(event_type == "endpoint.auth.rate_limit.exceeded" for event_type, _payload in audit.events)
 
 
 def test_rejects_oversized_non_multipart_request_bodies(monkeypatch, tmp_path):
