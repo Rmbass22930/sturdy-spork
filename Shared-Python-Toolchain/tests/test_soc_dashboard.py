@@ -57,3 +57,35 @@ def test_case_query_kwargs_allow_all_statuses() -> None:
 
 def test_case_status_parser_understands_investigating() -> None:
     assert SocDashboard._parse_case_status("investigating") is SocCaseStatus.investigating
+
+
+def test_selected_tree_item_id_returns_first_selection() -> None:
+    tree = type("Tree", (), {"selection": lambda self: ("alert-123",)})()
+    assert SocDashboard._selected_tree_item_id(tree) == "alert-123"
+
+
+def test_selected_tree_item_id_handles_empty_selection() -> None:
+    tree = type("Tree", (), {"selection": lambda self: ()})()
+    assert SocDashboard._selected_tree_item_id(tree) is None
+
+
+def test_build_promote_payload_uses_alert_defaults() -> None:
+    alert = type(
+        "Alert",
+        (),
+        {
+            "title": "Privileged access denied",
+            "summary": "Analyst review needed.",
+            "severity": SocSeverity.high,
+            "assignee": "tier1-analyst",
+        },
+    )()
+
+    payload = SocDashboard._build_promote_payload(alert)
+
+    assert payload.title == "Investigate Privileged access denied"
+    assert payload.summary == "Analyst review needed."
+    assert payload.severity is SocSeverity.high
+    assert payload.case_status is SocCaseStatus.investigating
+    assert payload.alert_status is SocAlertStatus.acknowledged
+    assert payload.assignee == "tier1-analyst"

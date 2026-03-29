@@ -6,15 +6,16 @@ from typing import Any, Callable, cast
 
 try:
     import tkinter as tk
-    from tkinter import ttk
+    from tkinter import messagebox, ttk
 except Exception:  # pragma: no cover
     tk = None  # type: ignore[assignment]
+    messagebox = None  # type: ignore[assignment]
     ttk = None  # type: ignore[assignment]
 
 from .alerts import alert_manager
 from .audit import AuditLogger
 from .config import settings
-from .models import SocAlertStatus, SocCaseStatus, SocSeverity
+from .models import SocAlertPromoteCaseRequest, SocAlertStatus, SocCaseStatus, SocSeverity
 from .soc import SecurityOperationsManager
 
 
@@ -199,6 +200,12 @@ class SocDashboard:
             width=14,
         ).grid(row=0, column=5, sticky="w", padx=(0, 12))
         ttk.Button(controls, text="Apply", command=self.refresh).grid(row=0, column=6, sticky="w")
+        ttk.Button(controls, text="Promote To Case", command=self.promote_selected_alert).grid(
+            row=0,
+            column=7,
+            sticky="w",
+            padx=(12, 0),
+        )
 
     def _build_case_controls(self, parent: Any) -> None:
         controls = ttk.Frame(parent, style="SOC.TFrame")
@@ -234,11 +241,13 @@ class SocDashboard:
             self.alert_tree,
             [item.model_dump(mode="json") for item in alert_rows],
             lambda item: (item["severity"], item["title"], item["updated_at"]),
+            item_id_key="alert_id",
         )
         self._populate_tree(
             self.case_tree,
             [item.model_dump(mode="json") for item in case_rows],
             lambda item: (item["status"], item["severity"], item["title"], item.get("assignee") or "-"),
+            item_id_key="case_id",
         )
         self._populate_tree(
             self.correlation_tree,
@@ -261,11 +270,32 @@ class SocDashboard:
         tree: Any,
         rows: Sequence[dict[str, Any]],
         row_builder: Callable[[dict[str, Any]], tuple[str, ...] | tuple[str, str, str] | tuple[str, str, str, str]],
+        item_id_key: str | None = None,
     ) -> None:
         for item in tree.get_children():
             tree.delete(item)
         for index, row in enumerate(rows):
-            tree.insert("", "end", iid=f"row-{index}", values=row_builder(row))
+            item_id = str(row[item_id_key]) if item_id_key is not None else f"row-{index}"
+            tree.insert("", "end", iid=item_id, values=row_builder(row))
+
+    def promote_selected_alert(self) -> None:
+        alert_id = self._selected_tree_item_id(self.alert_tree)
+        if alert_id is None:
+            if messagebox is not None:
+                messagebox.showwarning("No Alert Selected", "Select an alert from the queue before promoting it.")
+            return
+
+        alert = self.manager.get_alert(alert_id)
+        _, case = self.manager.promote_alert_to_case(
+            alert_id,
+            payload=self._build_promote_payload(alert),
+        )
+        if messagebox is not None:
+            messagebox.showinfo(
+                "Case Created",
+                f"Promoted alert {alert_id} into case {case.case_id}.",
+            )
+        self.refresh()
 
     def _alert_query_kwargs(self) -> dict[str, Any]:
         severity = self._parse_severity(self.alert_severity_var.get())
@@ -286,6 +316,28 @@ class SocDashboard:
             "sort": self.case_sort_var.get() or "updated_desc",
             "limit": 25,
         }
+
+    @staticmethod
+    def _selected_tree_item_id(tree: Any) -> str | None:
+        selection = tree.selection()
+        if not selection:
+            return None
+        selected = selection[0]
+        return str(selected) if selected else None
+
+    @staticmethod
+    def _build_promote_payload(alert: Any) -> SocAlertPromoteCaseRequest:
+        assignee = getattr(alert, "assignee", None)
+        payload: dict[str, Any] = {
+            "title": f"Investigate {alert.title}",
+            "summary": alert.summary,
+            "severity": alert.severity.value,
+            "case_status": "investigating",
+            "alert_status": "acknowledged",
+        }
+        if assignee:
+            payload["assignee"] = assignee
+        return SocAlertPromoteCaseRequest.model_validate(payload)
 
     @staticmethod
     def _parse_severity(value: str) -> SocSeverity | None:
