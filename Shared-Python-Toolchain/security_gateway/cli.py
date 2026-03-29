@@ -400,6 +400,7 @@ def _select_frozen_action() -> str:
     root = tk.Tk()
     root.title("Security Gateway")
     root.resizable(False, False)
+    root.geometry("360x185")
 
     selection = {"value": "report-browser"}
 
@@ -407,13 +408,26 @@ def _select_frozen_action() -> str:
         selection["value"] = action
         root.destroy()
 
+    menu_bar = tk.Menu(root)
+    tools_menu = tk.Menu(menu_bar, tearoff=False)
+    tools_menu.add_command(label="Open Reports", command=lambda: choose("report-browser"))
+    tools_menu.add_command(label="Run Uninstaller", command=lambda: choose("uninstall"))
+    tools_menu.add_separator()
+    tools_menu.add_command(label="Exit", command=lambda: choose("exit"))
+    menu_bar.add_cascade(label="Tools", menu=tools_menu)
+    root.config(menu=menu_bar)
+
     frame = tk.Frame(root, padx=18, pady=18)
     frame.pack(fill="both", expand=True)
 
     tk.Label(
         frame,
-        text="Choose what Security Gateway should do.",
+        text="Security Gateway Tools",
         font=("Segoe UI", 10, "bold"),
+    ).pack(fill="x", pady=(0, 8))
+    tk.Label(
+        frame,
+        text="Use the Tools menu or the buttons below.",
         justify="left",
         anchor="w",
     ).pack(fill="x", pady=(0, 12))
