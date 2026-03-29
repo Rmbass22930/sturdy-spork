@@ -45,6 +45,7 @@
     - Endpoint ingestion (`POST /endpoint/telemetry`, `POST /endpoint/scan`) uses a separate endpoint-agent bearer credential, while telemetry reads stay on the operator control plane.
     - FastAPI docs metadata endpoints are disabled by default so the deployed service does not advertise an OpenAPI surface unless an operator explicitly enables it for development.
     - Trusted host enforcement rejects unexpected `Host` headers before request handling so same-host origin logic and downstream routing do not trust arbitrary hostnames.
+    - Response middleware adds baseline anti-sniffing, anti-framing, and privacy-oriented security headers across the HTTP surface by default.
     - Public-facing HTTP routes apply lightweight per-client rate limits so policy evaluation, DNS lookups, and proxying cannot be spammed indefinitely from one source.
     - Public request models and DNS lookups validate bounded identifiers, finite signal maps, literal source IPs, hostnames, and record types before invoking policy or DoH providers.
     - Operator-facing report and tracker-event endpoints validate filter/query bounds before touching the audit log so pathological PDF requests cannot trigger whole-log scans.

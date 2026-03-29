@@ -151,6 +151,16 @@ app = FastAPI(
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(settings.service_allowed_hosts))
 
 
+@app.middleware("http")
+async def apply_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Permissions-Policy", "geolocation=(), camera=(), microphone=()")
+    return response
+
+
 class PublicRouteRateLimiter:
     def __init__(self) -> None:
         self._windows: dict[tuple[str, str], tuple[float, int]] = {}

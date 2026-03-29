@@ -156,6 +156,24 @@ def test_rejects_untrusted_host_headers(monkeypatch, tmp_path):
     assert response.status_code == 400
 
 
+def test_http_responses_include_security_headers(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        service.resolver,
+        "resolve",
+        lambda hostname, record_type: type("DummyResult", (), {"secure": True, "records": []})(),
+    )
+
+    with TestClient(service.app) as client:
+        response = client.get("/dns/resolve", params={"hostname": "example.com", "record_type": "A"})
+
+    assert response.status_code == 200
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
+    assert response.headers["X-Frame-Options"] == "DENY"
+    assert response.headers["Referrer-Policy"] == "no-referrer"
+    assert response.headers["Permissions-Policy"] == "geolocation=(), camera=(), microphone=()"
+
+
 def test_access_evaluate_auto_block_message(monkeypatch, tmp_path):
     audit, blocklist, traceroute = _install_test_managers(monkeypatch, tmp_path)
 
