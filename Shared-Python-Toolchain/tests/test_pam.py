@@ -52,6 +52,18 @@ def test_shared_master_key_recovers_secret_with_new_client():
     assert lease.secret == "super-secret"
 
 
+def test_rotated_secret_survives_restart_with_shared_backend():
+    backend = LocalMemoryBackend()
+    writer = VaultClient(backend=backend, audit_logger=DummyAuditLogger(), master_key="shared-master-key")
+    writer.force_rotate()
+    writer.store_secret("rotated-db", "rotated-secret")
+
+    reader = VaultClient(backend=backend, audit_logger=DummyAuditLogger(), master_key="shared-master-key")
+    lease = reader.checkout("rotated-db")
+
+    assert lease.secret == "rotated-secret"
+
+
 def test_invalid_secret_name_and_ttl_raise_value_error():
     vault = VaultClient(audit_logger=DummyAuditLogger())
 

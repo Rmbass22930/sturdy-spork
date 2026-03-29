@@ -982,6 +982,20 @@ def test_operator_routes_accept_pam_secret_backed_token(monkeypatch, tmp_path):
     assert stale_config_attempt.status_code == 401
 
 
+def test_operator_route_does_not_fall_back_to_static_token_when_pam_lookup_fails(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "operator_bearer_token", "stale-static-token")
+    monkeypatch.setattr(settings, "operator_bearer_secret_name", "operator-bearer-token")
+    monkeypatch.setattr(settings, "operator_allow_loopback_without_token", False)
+    monkeypatch.setattr(service.vault, "retrieve_secret", lambda name: (_ for _ in ()).throw(RuntimeError("vault offline")))
+
+    with TestClient(service.app) as client:
+        response = client.get("/automation/status", headers={"Authorization": "Bearer stale-static-token"})
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Operator bearer token backend is unavailable."
+
+
 def test_endpoint_ingest_secret_auth_and_operator_guarded_reads(monkeypatch, tmp_path):
     _install_test_managers(monkeypatch, tmp_path)
     endpoint_headers = _endpoint_secret_headers(monkeypatch, token="vault-endpoint-token")

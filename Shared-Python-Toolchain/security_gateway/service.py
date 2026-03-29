@@ -316,14 +316,19 @@ def _strip_internal_fields(value):
     return value
 
 
+class BearerTokenResolutionError(RuntimeError):
+    """Raised when a configured PAM-backed bearer token cannot be resolved."""
+
+
 def _resolve_bearer_token(secret_name: str | None, static_token: str | None) -> tuple[str | None, str | None]:
     if secret_name:
         try:
             secret_token = vault.retrieve_secret(secret_name)
-        except Exception:  # noqa: BLE001
-            secret_token = None
+        except Exception as exc:  # noqa: BLE001
+            raise BearerTokenResolutionError(f"Failed to resolve bearer token secret: {secret_name}") from exc
         if secret_token:
             return secret_token, "pam_secret"
+        return None, None
     if static_token:
         return static_token, "static_config"
     return None, None
@@ -341,8 +346,15 @@ def require_operator_access(
     request: Request,
     authorization: str | None = Header(default=None),
 ) -> None:
-    expected_token, _ = _expected_operator_token()
     client_host = request.client.host if request.client else None
+    try:
+        expected_token, _ = _expected_operator_token()
+    except BearerTokenResolutionError as exc:
+        audit_logger.log(
+            "operator.auth.failure",
+            {"path": request.url.path, "source_ip": client_host, "reason": "operator_token_resolution_failed"},
+        )
+        raise HTTPException(status_code=503, detail="Operator bearer token backend is unavailable.") from exc
     if expected_token:
         scheme, _, supplied_token = (authorization or "").partition(" ")
         if scheme.lower() == "bearer" and supplied_token and secrets.compare_digest(supplied_token, expected_token):
@@ -387,8 +399,15 @@ def require_endpoint_access(
     request: Request,
     authorization: str | None = Header(default=None),
 ) -> None:
-    expected_token, _ = _expected_endpoint_token()
     client_host = request.client.host if request.client else None
+    try:
+        expected_token, _ = _expected_endpoint_token()
+    except BearerTokenResolutionError as exc:
+        audit_logger.log(
+            "endpoint.auth.failure",
+            {"path": request.url.path, "source_ip": client_host, "reason": "endpoint_token_resolution_failed"},
+        )
+        raise HTTPException(status_code=503, detail="Endpoint bearer token backend is unavailable.") from exc
     if expected_token:
         scheme, _, supplied_token = (authorization or "").partition(" ")
         if scheme.lower() == "bearer" and supplied_token and secrets.compare_digest(supplied_token, expected_token):
@@ -443,7 +462,17 @@ async def require_operator_websocket_access(websocket: WebSocket) -> bool:
         await websocket.send_json({"type": "error", "message": "WebSocket origin is not allowed."})
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return False
-    expected_token, _ = _expected_operator_token()
+    try:
+        expected_token, _ = _expected_operator_token()
+    except BearerTokenResolutionError:
+        audit_logger.log(
+            "operator.auth.failure",
+            {"path": websocket.url.path, "source_ip": client_host, "reason": "operator_token_resolution_failed"},
+        )
+        await websocket.accept()
+        await websocket.send_json({"type": "error", "message": "Operator bearer token backend is unavailable."})
+        await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
+        return False
     if expected_token:
         scheme, _, supplied_token = (authorization or "").partition(" ")
         if scheme.lower() == "bearer" and supplied_token and secrets.compare_digest(supplied_token, expected_token):

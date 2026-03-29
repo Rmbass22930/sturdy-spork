@@ -1,6 +1,7 @@
 """Privileged access management utilities with automatic key rotation."""
 from __future__ import annotations
 
+import json
 import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Dict, List, Optional
@@ -15,6 +16,8 @@ MAX_SECRET_NAME_LENGTH = 64
 MAX_SECRET_VALUE_LENGTH = 8192
 MIN_LEASE_TTL_MINUTES = 1
 MAX_LEASE_TTL_MINUTES = 480
+KEY_METADATA_SECRET_NAME = "__security_gateway_key_metadata__"
+KEY_METADATA_VERSION = "v1"
 
 
 class VaultClient:
@@ -26,14 +29,16 @@ class VaultClient:
         master_key: str | None = None,
     ):
         self._rotation_interval = rotation_interval or timedelta(days=1)
+        self._root_master_key = master_key or settings.pam_master_key
         self._key_versions: Dict[str, str] = {}
         self._current_key_id: str = "v1"
-        self._key_versions[self._current_key_id] = master_key or settings.pam_master_key
+        self._key_versions[self._current_key_id] = self._root_master_key
         self._backend = backend or self._select_backend()
         self._leases: Dict[str, CredentialLease] = {}
         self._last_rotation = datetime.now(UTC)
         self._rotation_count = 0
         self._audit = audit_logger or AuditLogger(settings.audit_log_path)
+        self._load_key_metadata()
 
     def store_secret(self, name: str, plaintext: str) -> None:
         self._validate_secret_name(name)
@@ -120,6 +125,7 @@ class VaultClient:
         self._key_versions[new_version] = secrets.token_urlsafe(32)
         self._current_key_id = new_version
         self._rotation_count += 1
+        self._persist_key_metadata()
         expired = [lease_id for lease_id, lease in self._leases.items() if lease.expires_at <= datetime.now(UTC)]
         for lease_id in expired:
             del self._leases[lease_id]
@@ -131,6 +137,45 @@ class VaultClient:
         other_versions = sorted((v for v in self._key_versions if v != self._current_key_id), reverse=True)
         ordered.extend(other_versions)
         return ordered
+
+    def _persist_key_metadata(self) -> None:
+        payload = json.dumps(
+            {
+                "current_key_id": self._current_key_id,
+                "key_versions": self._key_versions,
+                "last_rotation": self._last_rotation.isoformat(),
+                "rotation_count": self._rotation_count,
+            },
+            sort_keys=True,
+        )
+        encrypted = encrypt_secret(self._root_master_key, payload)
+        self._backend.write(KEY_METADATA_SECRET_NAME, KEY_METADATA_VERSION, encrypted)
+
+    def _load_key_metadata(self) -> None:
+        encrypted = self._backend.read(KEY_METADATA_SECRET_NAME, KEY_METADATA_VERSION)
+        if not encrypted:
+            return
+        payload = decrypt_secret(self._root_master_key, encrypted)
+        data = json.loads(payload)
+        key_versions = data.get("key_versions")
+        current_key_id = data.get("current_key_id")
+        if not isinstance(key_versions, dict) or not isinstance(current_key_id, str):
+            raise RuntimeError("Stored PAM key metadata is invalid.")
+        normalized_versions = {
+            str(version): str(secret)
+            for version, secret in key_versions.items()
+            if str(version).strip() and str(secret).strip()
+        }
+        if "v1" not in normalized_versions:
+            normalized_versions["v1"] = self._root_master_key
+        self._key_versions = normalized_versions
+        self._current_key_id = current_key_id if current_key_id in self._key_versions else "v1"
+        last_rotation = data.get("last_rotation")
+        if isinstance(last_rotation, str):
+            self._last_rotation = datetime.fromisoformat(last_rotation)
+        rotation_count = data.get("rotation_count")
+        if isinstance(rotation_count, int):
+            self._rotation_count = rotation_count
 
     def _select_backend(self) -> SecretBackend:
         if settings.hashicorp_vault_url and settings.hashicorp_vault_token:
