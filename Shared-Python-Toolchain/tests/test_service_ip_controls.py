@@ -191,6 +191,54 @@ def test_startup_fails_when_endpoint_token_backend_is_unavailable(monkeypatch, t
             pass
 
 
+def test_security_health_reports_ready_auth_backends(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_secret_headers(monkeypatch, token="operator-token", secret_name="operator-bearer-token")
+    monkeypatch.setattr(settings, "endpoint_bearer_token", None)
+    monkeypatch.setattr(settings, "endpoint_bearer_secret_name", "endpoint-ingest-token")
+    monkeypatch.setattr(settings, "endpoint_allow_loopback_without_token", False)
+    service.vault.store_secret("endpoint-ingest-token", "endpoint-token")
+
+    with TestClient(service.app) as client:
+        response = client.get("/health/security", headers=headers)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["healthy"] is True
+    assert payload["warnings"] == []
+    assert payload["auth_backends"]["healthy"] is True
+    assert payload["auth_backends"]["warnings"] == []
+    assert payload["auth_backends"]["operator"]["status"] == "ready"
+    assert payload["auth_backends"]["operator"]["source"] == "pam_secret"
+    assert payload["auth_backends"]["endpoint"]["status"] == "ready"
+    assert payload["auth_backends"]["endpoint"]["source"] == "pam_secret"
+
+
+def test_security_health_reports_broken_auth_backend(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
+    monkeypatch.setattr(settings, "endpoint_bearer_token", None)
+    monkeypatch.setattr(settings, "endpoint_bearer_secret_name", "endpoint-ingest-token")
+    monkeypatch.setattr(settings, "endpoint_allow_loopback_without_token", False)
+    monkeypatch.setattr(service, "_validate_startup_security_dependencies", lambda: None)
+    monkeypatch.setattr(service.vault, "retrieve_secret", lambda name: (_ for _ in ()).throw(RuntimeError("vault offline")))
+
+    with TestClient(service.app) as client:
+        response = client.get("/health/security", headers=headers)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["healthy"] is False
+    assert "Endpoint bearer token backend is unavailable." in payload["warnings"]
+    assert payload["auth_backends"]["healthy"] is False
+    assert payload["auth_backends"]["endpoint"]["healthy"] is False
+    assert payload["auth_backends"]["endpoint"]["status"] == "backend_unavailable"
+    assert payload["auth_backends"]["endpoint"]["source"] == "pam_secret"
+    assert payload["auth_backends"]["endpoint"]["error"] == (
+        "Failed to resolve bearer token secret: endpoint-ingest-token"
+    )
+
+
 def test_rejects_untrusted_host_headers(monkeypatch, tmp_path):
     _install_test_managers(monkeypatch, tmp_path)
     monkeypatch.setattr(
@@ -1084,6 +1132,9 @@ def test_endpoint_scan_rejects_oversized_upload(monkeypatch, tmp_path):
 def test_security_health_and_rule_feed_routes(monkeypatch, tmp_path):
     _install_test_managers(monkeypatch, tmp_path)
     headers = _operator_headers(monkeypatch)
+    monkeypatch.setattr(settings, "endpoint_bearer_token", "endpoint-feed-token")
+    monkeypatch.setattr(settings, "endpoint_bearer_secret_name", None)
+    monkeypatch.setattr(settings, "endpoint_allow_loopback_without_token", False)
 
     class DummyTrackerIntel:
         def feed_status(self):

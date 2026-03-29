@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from ipaddress import ip_address
 from pathlib import Path
 from time import monotonic
+from typing import cast
 from urllib.parse import urlparse
 from fastapi.responses import FileResponse, Response
 
@@ -141,6 +142,75 @@ def _validate_startup_security_dependencies() -> None:
             vault.retrieve_secret(secret_name)
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(f"{label} bearer token backend is unavailable during startup.") from exc
+
+
+def _auth_backend_status(
+    label: str,
+    secret_name: str | None,
+    static_token: str | None,
+    loopback_allowed: bool,
+) -> tuple[dict[str, object], list[str]]:
+    status: dict[str, object] = {
+        "name": label,
+        "healthy": True,
+        "configured": False,
+        "source": "unconfigured",
+        "loopback_bypass_enabled": loopback_allowed,
+    }
+    warnings: list[str] = []
+
+    if secret_name:
+        status["configured"] = True
+        status["source"] = "pam_secret"
+        status["secret_configured"] = True
+        try:
+            token_value, source = _resolve_bearer_token(secret_name, static_token)
+        except BearerTokenResolutionError as exc:
+            status["healthy"] = False
+            status["status"] = "backend_unavailable"
+            status["error"] = str(exc)
+            warnings.append(f"{label} bearer token backend is unavailable.")
+            return status, warnings
+        status["source"] = source or "pam_secret"
+        status["status"] = "ready" if token_value else "missing_secret"
+        if not token_value:
+            status["healthy"] = False
+            warnings.append(f"{label} bearer token secret is missing or empty.")
+        return status, warnings
+
+    if static_token:
+        status["configured"] = True
+        status["source"] = "static_config"
+        status["status"] = "ready"
+        return status, warnings
+
+    status["healthy"] = loopback_allowed
+    status["status"] = "loopback_only" if loopback_allowed else "unconfigured"
+    if not loopback_allowed:
+        warnings.append(f"{label} bearer token is not configured.")
+    return status, warnings
+
+
+def _security_auth_health() -> dict[str, object]:
+    operator_status, operator_warnings = _auth_backend_status(
+        "Operator",
+        settings.operator_bearer_secret_name,
+        settings.operator_bearer_token,
+        settings.operator_allow_loopback_without_token,
+    )
+    endpoint_status, endpoint_warnings = _auth_backend_status(
+        "Endpoint",
+        settings.endpoint_bearer_secret_name,
+        settings.endpoint_bearer_token,
+        settings.endpoint_allow_loopback_without_token,
+    )
+    warnings = [*operator_warnings, *endpoint_warnings]
+    return {
+        "healthy": not warnings,
+        "warnings": warnings,
+        "operator": operator_status,
+        "endpoint": endpoint_status,
+    }
 
 
 @asynccontextmanager
@@ -952,10 +1022,13 @@ async def automation_status(_: None = Depends(require_operator_access)) -> dict:
 async def security_health() -> dict:
     tracker_health = tracker_intel.health_status()
     malware_health = scanner.health_status()
-    warnings = [*tracker_health["warnings"], *malware_health["warnings"]]
+    auth_health = _security_auth_health()
+    auth_warnings = cast(list[str], auth_health["warnings"])
+    warnings = [*tracker_health["warnings"], *malware_health["warnings"], *auth_warnings]
     return _strip_internal_fields({
         "healthy": not warnings,
         "warnings": warnings,
+        "auth_backends": auth_health,
         "tracker_intel": tracker_health,
         "malware_scanner": malware_health,
         "automation": automation.status(),
