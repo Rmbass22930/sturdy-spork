@@ -47,6 +47,21 @@ def _operator_secret_headers(monkeypatch, token="test-operator-token", secret_na
     return {"Authorization": f"Bearer {token}"}
 
 
+def _endpoint_headers(monkeypatch, token="test-endpoint-token"):
+    monkeypatch.setattr(settings, "endpoint_bearer_token", token)
+    monkeypatch.setattr(settings, "endpoint_bearer_secret_name", None)
+    monkeypatch.setattr(settings, "endpoint_allow_loopback_without_token", False)
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _endpoint_secret_headers(monkeypatch, token="test-endpoint-token", secret_name="endpoint-ingest-token"):
+    monkeypatch.setattr(settings, "endpoint_bearer_token", "stale-endpoint-token")
+    monkeypatch.setattr(settings, "endpoint_bearer_secret_name", secret_name)
+    monkeypatch.setattr(settings, "endpoint_allow_loopback_without_token", False)
+    service.vault.store_secret(secret_name, token)
+    return {"Authorization": f"Bearer {token}"}
+
+
 def _install_test_managers(monkeypatch, tmp_path):
     audit = DummyAuditLogger()
     operator_vault = VaultClient(audit_logger=audit, master_key="test-master-key")
@@ -478,6 +493,35 @@ def test_operator_routes_require_auth_for_pam_and_network(monkeypatch, tmp_path)
     assert automation_status.status_code == 401
 
 
+def test_endpoint_ingest_routes_require_auth(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "endpoint_bearer_token", "expected-endpoint-token")
+    monkeypatch.setattr(settings, "endpoint_bearer_secret_name", None)
+    monkeypatch.setattr(settings, "endpoint_allow_loopback_without_token", False)
+
+    with TestClient(service.app) as client:
+        telemetry_write = client.post(
+            "/endpoint/telemetry",
+            json={
+                "device_id": "device-42",
+                "os": "Windows",
+                "os_version": "11",
+                "compliance": DeviceCompliance.compliant.value,
+                "is_encrypted": True,
+                "edr_active": True,
+            },
+        )
+        scan = client.post(
+            "/endpoint/scan",
+            files={"file": ("sample.bin", b"hello", "application/octet-stream")},
+        )
+
+    assert telemetry_write.status_code == 401
+    assert telemetry_write.json()["detail"] == "Endpoint authentication required."
+    assert scan.status_code == 401
+    assert scan.json()["detail"] == "Endpoint authentication required."
+
+
 def test_pam_and_automation_routes_allow_operator_auth(monkeypatch, tmp_path):
     _install_test_managers(monkeypatch, tmp_path)
     headers = _operator_headers(monkeypatch)
@@ -513,6 +557,47 @@ def test_operator_routes_accept_pam_secret_backed_token(monkeypatch, tmp_path):
     assert metrics.status_code == 200
     assert "rotation_count" in metrics.json()
     assert stale_config_attempt.status_code == 401
+
+
+def test_endpoint_ingest_secret_auth_and_operator_guarded_reads(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    endpoint_headers = _endpoint_secret_headers(monkeypatch, token="vault-endpoint-token")
+    operator_headers = _operator_headers(monkeypatch, token="operator-token")
+
+    with TestClient(service.app) as client:
+        stored = client.post(
+            "/endpoint/telemetry",
+            json={
+                "device_id": "device-7",
+                "os": "Linux",
+                "os_version": "6.8",
+                "compliance": DeviceCompliance.compliant.value,
+                "is_encrypted": True,
+                "edr_active": True,
+            },
+            headers=endpoint_headers,
+        )
+        assert stored.status_code == 200
+        assert stored.json()["signature"]
+
+        scan = client.post(
+            "/endpoint/scan",
+            files={"file": ("sample.bin", b"hello", "application/octet-stream")},
+            headers=endpoint_headers,
+        )
+        assert scan.status_code in {200, 503}
+        if scan.status_code == 200:
+            assert scan.json()["malicious"] is False
+        else:
+            assert "python-multipart" in scan.json()["detail"]
+
+        unauthenticated_fetch = client.get("/endpoint/telemetry/device-7")
+        operator_fetch = client.get("/endpoint/telemetry/device-7", headers=operator_headers)
+
+    assert unauthenticated_fetch.status_code == 401
+    assert unauthenticated_fetch.json()["detail"] == "Operator authentication required."
+    assert operator_fetch.status_code == 200
+    assert operator_fetch.json()["device_id"] == "device-7"
 
 
 def test_security_health_and_rule_feed_routes(monkeypatch, tmp_path):

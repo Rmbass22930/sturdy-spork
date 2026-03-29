@@ -152,8 +152,7 @@ def _allowed_websocket_origins(websocket: WebSocket) -> set[str]:
     return allowed
 
 
-def _expected_operator_token() -> tuple[str | None, str | None]:
-    secret_name = settings.operator_bearer_secret_name
+def _resolve_bearer_token(secret_name: str | None, static_token: str | None) -> tuple[str | None, str | None]:
     if secret_name:
         try:
             secret_token = vault.retrieve_secret(secret_name)
@@ -161,9 +160,17 @@ def _expected_operator_token() -> tuple[str | None, str | None]:
             secret_token = None
         if secret_token:
             return secret_token, "pam_secret"
-    if settings.operator_bearer_token:
-        return settings.operator_bearer_token, "static_config"
+    if static_token:
+        return static_token, "static_config"
     return None, None
+
+
+def _expected_operator_token() -> tuple[str | None, str | None]:
+    return _resolve_bearer_token(settings.operator_bearer_secret_name, settings.operator_bearer_token)
+
+
+def _expected_endpoint_token() -> tuple[str | None, str | None]:
+    return _resolve_bearer_token(settings.endpoint_bearer_secret_name, settings.endpoint_bearer_token)
 
 
 def require_operator_access(
@@ -194,6 +201,37 @@ def require_operator_access(
     raise HTTPException(
         status_code=503,
         detail="Operator bearer token is not configured for remote management.",
+    )
+
+
+def require_endpoint_access(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> None:
+    expected_token, _ = _expected_endpoint_token()
+    client_host = request.client.host if request.client else None
+    if expected_token:
+        scheme, _, supplied_token = (authorization or "").partition(" ")
+        if scheme.lower() == "bearer" and supplied_token and secrets.compare_digest(supplied_token, expected_token):
+            return
+        audit_logger.log(
+            "endpoint.auth.failure",
+            {"path": request.url.path, "source_ip": client_host, "reason": "missing_or_invalid_bearer_token"},
+        )
+        raise HTTPException(
+            status_code=401,
+            detail="Endpoint authentication required.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if settings.endpoint_allow_loopback_without_token and _is_loopback_client(client_host):
+        return
+    audit_logger.log(
+        "endpoint.auth.failure",
+        {"path": request.url.path, "source_ip": client_host, "reason": "endpoint_token_not_configured"},
+    )
+    raise HTTPException(
+        status_code=503,
+        detail="Endpoint bearer token is not configured for remote ingestion.",
     )
 
 
@@ -321,13 +359,19 @@ async def resolve_dns(hostname: str, record_type: str = "A") -> dict:
 
 
 @app.post("/endpoint/telemetry")
-async def publish_telemetry(device: DeviceContext) -> dict:
+async def publish_telemetry(
+    device: DeviceContext,
+    _: None = Depends(require_endpoint_access),
+) -> dict:
     signature = telemetry.publish(device)
     return {"signature": signature}
 
 
 @app.get("/endpoint/telemetry/{device_id}")
-async def fetch_telemetry(device_id: str) -> dict:
+async def fetch_telemetry(
+    device_id: str,
+    _: None = Depends(require_operator_access),
+) -> dict:
     payload = telemetry.get_payload(device_id)
     if not payload:
         raise HTTPException(status_code=404, detail="Device not found or signature invalid")
@@ -336,13 +380,18 @@ async def fetch_telemetry(device_id: str) -> dict:
 
 if multipart_installed:
     @app.post("/endpoint/scan")
-    async def scan_file(file: UploadFile = File(...)) -> dict:
+    async def scan_file(
+        _: None = Depends(require_endpoint_access),
+        file: UploadFile = File(...),
+    ) -> dict:
         data = await file.read()
         malicious, verdict = scanner.scan_bytes(data)
         return {"malicious": malicious, "verdict": verdict}
 else:
     @app.post("/endpoint/scan")
-    async def scan_file_unavailable() -> dict:
+    async def scan_file_unavailable(
+        _: None = Depends(require_endpoint_access),
+    ) -> dict:
         raise HTTPException(
             status_code=503,
             detail="File upload scanning is unavailable; install python-multipart",

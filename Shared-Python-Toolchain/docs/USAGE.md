@@ -17,7 +17,8 @@ uvicorn security_gateway.service:app --reload
 - `GET /dns/resolve` – DoH lookup that records DNSSEC status for downstream risk scoring.
 - `POST /tor/request`, `GET /proxy/health` – send proxied HTTP requests and verify Tor/WARP health.
 - `GET /network/blocked-ips`, `POST /network/blocked-ips`, `DELETE /network/blocked-ips/{ip}`, `POST /network/blocked-ips/{ip}/promote` – review, block, unblock, and promote source IP blocks to permanent.
-- `POST /endpoint/scan` – malware scan uploads prior to privileged flows.
+- `POST /endpoint/telemetry`, `POST /endpoint/scan` – authenticated endpoint-agent ingestion for posture and malware scan uploads.
+- `GET /endpoint/telemetry/{device_id}` – operator-authenticated telemetry lookup.
 - `GET /endpoint/malware-feeds/status`, `POST /endpoint/malware-feeds/refresh` – inspect and refresh malware IOC/hash feeds for the scanner.
 - `GET /endpoint/malware-rule-feeds/status`, `POST /endpoint/malware-rule-feeds/refresh` – inspect and refresh malware rule/string feeds for the scanner.
 - `POST /privacy/tracker-feeds/import`, `POST /endpoint/malware-feeds/import`, `POST /endpoint/malware-rule-feeds/import` – seed local caches from offline files.
@@ -25,10 +26,14 @@ uvicorn security_gateway.service:app --reload
 - `WS /ws` – operator-authenticated health-only channel (sends `{"type":"ready","mode":"health_only"}` on connect, `ping`/`health` -> `pong`, unsupported messages return a structured unsupported response).
 - Operator-managed routes now require operator authorization:
   - `PUT /pam/secret`, `POST /pam/checkout`, `GET /pam/metrics`
+  - `GET /endpoint/telemetry/{device_id}`
   - `GET|POST|DELETE /network/blocked-ips*`
   - `GET /automation/status`
   - `WS /ws`
   - detection-content write routes (`*/refresh`, `*/import`)
+- Endpoint-ingest routes require endpoint authentication:
+  - `POST /endpoint/telemetry`
+  - `POST /endpoint/scan`
 
 ## CLI examples
 ```
@@ -123,12 +128,25 @@ SECURITY_GATEWAY_OPERATOR_BEARER_TOKEN=replace-me
 ```
 SECURITY_GATEWAY_OPERATOR_ALLOW_LOOPBACK_WITHOUT_TOKEN=false
 ```
+- Endpoint-agent ingestion can use a separate bearer token source:
+```
+SECURITY_GATEWAY_ENDPOINT_BEARER_SECRET_NAME=endpoint-ingest-token
+SECURITY_GATEWAY_ENDPOINT_BEARER_TOKEN=replace-me
+SECURITY_GATEWAY_ENDPOINT_ALLOW_LOOPBACK_WITHOUT_TOKEN=false
+```
 - Example:
 ```bash
 curl -X POST http://127.0.0.1:8000/privacy/tracker-feeds/refresh \
   -H "Authorization: Bearer $SECURITY_GATEWAY_OPERATOR_BEARER_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"urls":["https://example.com/custom-tracker-list.txt"]}'
+```
+- Example endpoint telemetry publish:
+```bash
+curl -X POST http://127.0.0.1:8000/endpoint/telemetry \
+  -H "Authorization: Bearer $SECURITY_GATEWAY_ENDPOINT_BEARER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"device_id":"device-42","os":"Windows","os_version":"11","compliance":"compliant","is_encrypted":true,"edr_active":true}'
 ```
 - The same header should be used for:
   - PAM secret storage and checkout
