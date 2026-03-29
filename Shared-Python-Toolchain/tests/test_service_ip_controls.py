@@ -129,6 +129,15 @@ def test_block_list_promote_unblock_api(monkeypatch, tmp_path):
         assert removed.status_code == 200
 
 
+def test_api_docs_are_disabled_by_default(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+
+    with TestClient(service.app) as client:
+        assert client.get("/docs").status_code == 404
+        assert client.get("/redoc").status_code == 404
+        assert client.get("/openapi.json").status_code == 404
+
+
 def test_access_evaluate_auto_block_message(monkeypatch, tmp_path):
     audit, blocklist, traceroute = _install_test_managers(monkeypatch, tmp_path)
 

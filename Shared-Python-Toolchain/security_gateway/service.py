@@ -139,7 +139,14 @@ async def lifespan(_: FastAPI):
         resolver.close()
 
 
-app = FastAPI(title="Security Gateway", version="0.1.0", lifespan=lifespan)
+app = FastAPI(
+    title="Security Gateway",
+    version="0.1.0",
+    lifespan=lifespan,
+    docs_url="/docs" if settings.service_enable_api_docs else None,
+    redoc_url="/redoc" if settings.service_enable_api_docs else None,
+    openapi_url="/openapi.json" if settings.service_enable_api_docs else None,
+)
 
 
 class PublicRouteRateLimiter:

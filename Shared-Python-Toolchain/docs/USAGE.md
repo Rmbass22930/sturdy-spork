@@ -24,6 +24,7 @@ uvicorn security_gateway.service:app --reload
 - `POST /privacy/tracker-feeds/import`, `POST /endpoint/malware-feeds/import`, `POST /endpoint/malware-rule-feeds/import` – seed local caches from offline files.
 - `GET /privacy/tracker-events`, `GET /reports`, `GET /reports/{report_name}`, `GET /reports/security-summary.pdf` – operator-authenticated audit/report visibility.
 - `GET /health/security` – consolidated detection/feed health summary for tracker intel, malware feeds, and automation state.
+- API docs/OpenAPI routes are disabled by default. Set `SECURITY_GATEWAY_SERVICE_ENABLE_API_DOCS=true` only for controlled development environments if you need `/docs`, `/redoc`, or `/openapi.json`.
 - `WS /ws` – operator-authenticated health-only channel (sends `{"type":"ready","mode":"health_only"}` on connect, `ping`/`health` -> `pong`, unsupported messages return a structured unsupported response).
 - Operator-managed routes now require operator authorization:
   - `PUT /pam/secret`, `POST /pam/checkout`, `GET /pam/metrics`
