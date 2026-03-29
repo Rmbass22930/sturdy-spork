@@ -208,6 +208,16 @@ SECURITY_GATEWAY_DNS_RESOLVE_MAX_REQUESTS_PER_WINDOW=60
 SECURITY_GATEWAY_PROXY_REQUEST_MAX_REQUESTS_PER_WINDOW=20
 ```
 
+## Public input validation
+- `POST /access/evaluate` now enforces bounded identifiers and collections:
+  - user IDs and device IDs: up to `128` characters
+  - groups: up to `32` entries, each up to `64` characters
+  - resource: up to `256` characters
+  - threat signal map: up to `32` entries with finite numeric values
+  - `source_ip`: must be a valid IPv4 or IPv6 literal when provided
+- `GET /dns/resolve` only accepts DNS hostnames up to `253` characters and record types from:
+  - `A`, `AAAA`, `CAA`, `CNAME`, `MX`, `NS`, `PTR`, `SRV`, `TXT`
+
 ## Malware feed refresh
 - Malware scanning can consume refreshable SHA-256 IOC/hash feeds in addition to the built-in heuristics.
 - Refresh feeds with:

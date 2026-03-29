@@ -1,4 +1,5 @@
 import httpx
+import pytest
 
 from security_gateway.dns import SecureDNSResolver
 
@@ -20,3 +21,13 @@ def test_dns_resolver_parses_answers():
     result = resolver.resolve("example.com")
     assert result.secure is True
     assert result.records[0].data == "93.184.216.34"
+
+
+def test_dns_resolver_rejects_invalid_hostname_and_record_type():
+    resolver = SecureDNSResolver(providers=["https://mock"], client=httpx.Client(transport=httpx.MockTransport(lambda r: None)))
+
+    with pytest.raises(ValueError, match="hostname"):
+        resolver.resolve("bad host", "A")
+
+    with pytest.raises(ValueError, match="record_type"):
+        resolver.resolve("example.com", "AXFR")

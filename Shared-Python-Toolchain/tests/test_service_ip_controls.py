@@ -273,6 +273,37 @@ def test_access_evaluate_rate_limits_abusive_clients(monkeypatch, tmp_path):
     assert second.headers["retry-after"]
 
 
+def test_access_evaluate_rejects_invalid_public_inputs(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+
+    payload = {
+        "user": {
+            "user_id": "user-123",
+            "email": "user@example.com",
+            "groups": ["engineering"],
+            "geo_lat": 37.7749,
+            "geo_lon": -122.4194,
+            "last_login": (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat(),
+        },
+        "device": {
+            "device_id": "device-1",
+            "os": "macOS",
+            "os_version": "15.0",
+            "compliance": DeviceCompliance.compliant.value,
+            "is_encrypted": True,
+            "edr_active": True,
+        },
+        "resource": "git",
+        "privilege_level": "standard",
+        "source_ip": "not-an-ip",
+    }
+
+    with TestClient(service.app) as client:
+        response = client.post("/access/evaluate", json=payload)
+
+    assert response.status_code == 422
+
+
 def test_reports_endpoints_list_and_fetch_saved_pdf(monkeypatch, tmp_path):
     _install_test_managers(monkeypatch, tmp_path)
     headers = _operator_headers(monkeypatch)
@@ -341,6 +372,17 @@ def test_dns_resolve_blocks_tracker_domains(monkeypatch, tmp_path):
     assert response.status_code == 403
     assert "Tracker domain blocked" in response.json()["detail"]
     assert any(event == "privacy.tracker_block" for event, _ in audit.events)
+
+
+def test_dns_resolve_rejects_invalid_inputs(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+
+    with TestClient(service.app) as client:
+        bad_host = client.get("/dns/resolve", params={"hostname": "bad host", "record_type": "A"})
+        bad_type = client.get("/dns/resolve", params={"hostname": "example.com", "record_type": "AXFR"})
+
+    assert bad_host.status_code == 400
+    assert bad_type.status_code == 400
 
 
 def test_dns_resolve_rate_limits_abusive_clients(monkeypatch, tmp_path):

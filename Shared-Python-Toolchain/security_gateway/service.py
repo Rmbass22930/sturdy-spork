@@ -176,6 +176,15 @@ def _is_loopback_client(host: str | None) -> bool:
         return host.lower() in {"localhost", "testclient"}
 
 
+def _normalized_ip_or_none(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        return str(ip_address(value))
+    except ValueError:
+        return None
+
+
 def _normalize_origin(origin: str | None) -> str | None:
     if not origin:
         return None
@@ -363,7 +372,7 @@ async def evaluate_access(access_request: AccessRequest, http_request: Request) 
         max_requests=settings.access_evaluate_max_requests_per_window,
     )
     if not access_request.source_ip and http_request.client:
-        access_request.source_ip = http_request.client.host
+        access_request.source_ip = _normalized_ip_or_none(http_request.client.host)
     decision = policy_engine.evaluate(access_request)
     audit_logger.log(
         "access.evaluate",
@@ -451,7 +460,15 @@ async def resolve_dns(request: Request, hostname: str, record_type: str = "A") -
         scope="dns.resolve",
         max_requests=settings.dns_resolve_max_requests_per_window,
     )
-    tracker_match = tracker_intel.is_tracker_hostname(hostname) if settings.tracker_block_enabled else None
+    try:
+        normalized_hostname, normalized_record_type = resolver.normalize_query(hostname, record_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    tracker_match = (
+        tracker_intel.is_tracker_hostname(normalized_hostname)
+        if settings.tracker_block_enabled
+        else None
+    )
     if tracker_match:
         audit_logger.log(
             "privacy.tracker_block",
@@ -466,8 +483,8 @@ async def resolve_dns(request: Request, hostname: str, record_type: str = "A") -
             },
         )
         raise HTTPException(status_code=403, detail=f"Tracker domain blocked: {tracker_match.hostname}")
-    result = resolver.resolve(hostname, record_type)
-    dns_security_cache.record(hostname, result.secure)
+    result = resolver.resolve(normalized_hostname, normalized_record_type)
+    dns_security_cache.record(normalized_hostname, result.secure)
     return {
         "secure": result.secure,
         "records": [record.__dict__ for record in result.records],

@@ -1,12 +1,16 @@
 """Encrypted DNS resolution (DoH)."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import List, Optional
 
 import httpx
 
 from .config import settings
+
+ALLOWED_RECORD_TYPES = {"A", "AAAA", "CAA", "CNAME", "MX", "NS", "PTR", "SRV", "TXT"}
+HOSTNAME_LABEL_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
 
 
 @dataclass
@@ -30,11 +34,12 @@ class SecureDNSResolver:
         timeout: float = 3.0,
         client: httpx.Client | None = None,
     ):
-        self.providers = providers or list(settings.doh_providers)
+        self.providers = [str(provider) for provider in (providers or list(settings.doh_providers))]
         self._external_client = client is not None
         self._client = client or httpx.Client(timeout=timeout, headers={"accept": "application/dns-json"})
 
     def resolve(self, hostname: str, record_type: str = "A") -> DNSResponse:
+        hostname, record_type = self.normalize_query(hostname, record_type)
         last_error: Exception | None = None
         for endpoint in self.providers:
             try:
@@ -56,6 +61,26 @@ class SecureDNSResolver:
                 last_error = exc
                 continue
         raise RuntimeError(f"All DoH providers failed: {last_error}")
+
+    def normalize_query(self, hostname: str, record_type: str = "A") -> tuple[str, str]:
+        return self._normalize_hostname(hostname), self._normalize_record_type(record_type)
+
+    def _normalize_hostname(self, hostname: str) -> str:
+        candidate = hostname.strip().rstrip(".")
+        if not candidate or len(candidate) > 253:
+            raise ValueError("hostname must be between 1 and 253 characters.")
+        labels = candidate.split(".")
+        if any(len(label) == 0 or len(label) > 63 for label in labels):
+            raise ValueError("hostname contains an invalid DNS label length.")
+        if any(not HOSTNAME_LABEL_PATTERN.fullmatch(label) for label in labels):
+            raise ValueError("hostname contains invalid characters.")
+        return candidate
+
+    def _normalize_record_type(self, record_type: str) -> str:
+        candidate = record_type.strip().upper()
+        if candidate not in ALLOWED_RECORD_TYPES:
+            raise ValueError(f"record_type must be one of: {', '.join(sorted(ALLOWED_RECORD_TYPES))}")
+        return candidate
 
     def close(self) -> None:
         if not self._external_client:
