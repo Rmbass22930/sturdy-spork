@@ -153,7 +153,27 @@ app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(settings.service_al
 
 @app.middleware("http")
 async def apply_security_headers(request: Request, call_next):
-    response = await call_next(request)
+    if (
+        request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"}
+        and not (request.headers.get("content-type") or "").lower().startswith("multipart/")
+    ):
+        body = await request.body()
+        if len(body) > settings.service_max_request_body_bytes:
+            client_host = request.client.host if request.client else "unknown"
+            audit_logger.log(
+                "http.request_too_large",
+                {
+                    "path": request.url.path,
+                    "source_ip": client_host,
+                    "size_bytes": len(body),
+                    "limit_bytes": settings.service_max_request_body_bytes,
+                },
+            )
+            response = Response(status_code=413, content="Request body too large.")
+        else:
+            response = await call_next(request)
+    else:
+        response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "no-referrer")

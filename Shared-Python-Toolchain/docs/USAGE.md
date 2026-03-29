@@ -27,6 +27,7 @@ uvicorn security_gateway.service:app --reload
 - API docs/OpenAPI routes are disabled by default. Set `SECURITY_GATEWAY_SERVICE_ENABLE_API_DOCS=true` only for controlled development environments if you need `/docs`, `/redoc`, or `/openapi.json`.
 - The service also enforces trusted `Host` headers. Set `SECURITY_GATEWAY_SERVICE_ALLOWED_HOSTS` to the exact hostnames clients should use in your environment.
 - HTTP responses include baseline security headers (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, and `Permissions-Policy`) by default.
+- Non-multipart request bodies are capped by `SECURITY_GATEWAY_SERVICE_MAX_REQUEST_BODY_BYTES` before route parsing begins. File uploads for `/endpoint/scan` still use their dedicated upload-size guard.
 - `WS /ws` – operator-authenticated health-only channel (sends `{"type":"ready","mode":"health_only"}` on connect, `ping`/`health` -> `pong`, unsupported messages return a structured unsupported response).
 - Operator-managed routes now require operator authorization:
   - `PUT /pam/secret`, `POST /pam/checkout`, `GET /pam/metrics`

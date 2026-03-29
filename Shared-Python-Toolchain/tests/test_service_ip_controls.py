@@ -174,6 +174,18 @@ def test_http_responses_include_security_headers(monkeypatch, tmp_path):
     assert response.headers["Permissions-Policy"] == "geolocation=(), camera=(), microphone=()"
 
 
+def test_rejects_oversized_non_multipart_request_bodies(monkeypatch, tmp_path):
+    audit, _blocklist, _traceroute = _install_test_managers(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "service_max_request_body_bytes", 32)
+
+    with TestClient(service.app) as client:
+        response = client.post("/tor/request", json={"url": "https://example.com/with-a-longer-path-than-the-limit"})
+
+    assert response.status_code == 413
+    assert response.text == "Request body too large."
+    assert any(event_type == "http.request_too_large" for event_type, _payload in audit.events)
+
+
 def test_access_evaluate_auto_block_message(monkeypatch, tmp_path):
     audit, blocklist, traceroute = _install_test_managers(monkeypatch, tmp_path)
 
