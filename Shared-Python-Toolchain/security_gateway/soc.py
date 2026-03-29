@@ -177,10 +177,16 @@ class SecurityOperationsManager:
                 notes = list(existing.notes)
                 if payload.note:
                     notes.append(payload.note)
+                next_status = payload.status or existing.status
                 updated = existing.model_copy(
                     update={
-                        "status": payload.status or existing.status,
+                        "status": next_status,
                         "assignee": payload.assignee if payload.assignee is not None else existing.assignee,
+                        "acknowledged_by": (
+                            payload.acted_by
+                            if payload.acted_by is not None and next_status is SocAlertStatus.acknowledged
+                            else existing.acknowledged_by
+                        ),
                         "notes": notes,
                         "updated_at": _utc_now(),
                     }
@@ -189,7 +195,12 @@ class SecurityOperationsManager:
                 self._write_records(self._alert_store_path, alerts)
                 self._audit.log(
                     "soc.alert.updated",
-                    {"alert_id": alert_id, "status": updated.status.value, "assignee": updated.assignee},
+                    {
+                        "alert_id": alert_id,
+                        "status": updated.status.value,
+                        "assignee": updated.assignee,
+                        "acted_by": payload.acted_by,
+                    },
                 )
                 return updated
         raise KeyError(f"Alert not found: {alert_id}")
@@ -257,6 +268,7 @@ class SecurityOperationsManager:
                 preserve_status=False,
                 alert_status=payload.alert_status,
                 note=payload.note,
+                escalated_by=payload.acted_by,
             )
             updated_alert = alerts[alert_index]
             self._write_records(self._case_store_path, cases)
@@ -269,6 +281,7 @@ class SecurityOperationsManager:
                 "case_id": case.case_id,
                 "alert_status": updated_alert.status.value,
                 "case_status": case.status.value,
+                "acted_by": payload.acted_by,
             },
         )
         return updated_alert, case
@@ -545,6 +558,7 @@ class SecurityOperationsManager:
         preserve_status: bool,
         alert_status: SocAlertStatus = SocAlertStatus.acknowledged,
         note: str | None = None,
+        escalated_by: str | None = None,
     ) -> None:
         linked_ids = set(case.linked_alert_ids)
         if not linked_ids:
@@ -567,6 +581,10 @@ class SecurityOperationsManager:
                 updates["assignee"] = case.assignee
             if not preserve_status:
                 updates["status"] = alert_status
+                if alert_status is SocAlertStatus.acknowledged and escalated_by is not None:
+                    updates["acknowledged_by"] = escalated_by
+                if escalated_by is not None:
+                    updates["escalated_by"] = escalated_by
             alerts[index] = existing.model_copy(update=updates)
 
     @staticmethod

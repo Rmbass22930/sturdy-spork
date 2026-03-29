@@ -362,6 +362,7 @@ def test_soc_alert_can_be_promoted_to_case(monkeypatch, tmp_path):
             json={
                 "assignee": "tier1-analyst",
                 "note": "Promoted directly from the triage queue.",
+                "acted_by": "tier1-analyst",
             },
             headers=headers,
         )
@@ -372,13 +373,44 @@ def test_soc_alert_can_be_promoted_to_case(monkeypatch, tmp_path):
     payload = promoted.json()
     assert payload["alert"]["status"] == "acknowledged"
     assert payload["alert"]["linked_case_id"] == payload["case"]["case_id"]
+    assert payload["alert"]["acknowledged_by"] == "tier1-analyst"
+    assert payload["alert"]["escalated_by"] == "tier1-analyst"
     assert payload["case"]["status"] == "investigating"
     assert payload["case"]["linked_alert_ids"] == [alert_id]
     assert payload["case"]["notes"] == ["Promoted directly from the triage queue."]
     assert refetch_alert.status_code == 200
     assert refetch_alert.json()["linked_case_id"] == payload["case"]["case_id"]
+    assert refetch_alert.json()["escalated_by"] == "tier1-analyst"
     assert dashboard.status_code == 200
     assert dashboard.json()["triage"]["unassigned_alerts"] == []
+
+
+def test_soc_alert_acknowledge_records_actor(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
+
+    with TestClient(service.app) as client:
+        event_response = client.post(
+            "/soc/events",
+            json={
+                "event_type": "endpoint.malware_detected",
+                "severity": "critical",
+                "title": "Malware detected",
+                "summary": "Manual acknowledgment check.",
+                "details": {"filename": "bad.exe"},
+            },
+            headers=headers,
+        )
+        alert_id = event_response.json()["alert"]["alert_id"]
+        updated = client.patch(
+            f"/soc/alerts/{alert_id}",
+            json={"status": "acknowledged", "acted_by": "tier2-analyst"},
+            headers=headers,
+        )
+
+    assert updated.status_code == 200
+    assert updated.json()["status"] == "acknowledged"
+    assert updated.json()["acknowledged_by"] == "tier2-analyst"
 
 
 def test_soc_alert_queries_support_filters_and_sort(monkeypatch, tmp_path):
