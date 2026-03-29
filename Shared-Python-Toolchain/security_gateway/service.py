@@ -236,16 +236,12 @@ def _normalize_origin(origin: str | None) -> str | None:
     return f"{parsed.scheme}://{parsed.netloc}".lower()
 
 
-def _allowed_websocket_origins(websocket: WebSocket) -> set[str]:
+def _allowed_websocket_origins() -> set[str]:
     allowed: set[str] = set()
     for origin in settings.websocket_allowed_origins:
         normalized = _normalize_origin(origin)
         if normalized is not None:
             allowed.add(normalized)
-    host = websocket.headers.get("host")
-    if host:
-        allowed.add(f"http://{host}".lower())
-        allowed.add(f"https://{host}".lower())
     return allowed
 
 
@@ -437,7 +433,7 @@ async def require_operator_websocket_access(websocket: WebSocket) -> bool:
     client_host = websocket.client.host if websocket.client else None
     authorization = websocket.headers.get("authorization")
     origin = _normalize_origin(websocket.headers.get("origin"))
-    allowed_origins = _allowed_websocket_origins(websocket)
+    allowed_origins = _allowed_websocket_origins()
     if origin and origin not in allowed_origins:
         audit_logger.log(
             "operator.auth.failure",
@@ -760,7 +756,7 @@ async def malware_rule_feed_import(
 
 
 @app.post("/tor/request")
-async def proxy_request(payload: ProxyPayload, request: Request) -> dict:
+async def proxy_request(payload: ProxyPayload, request: Request, _: None = Depends(require_operator_access)) -> dict:
     _enforce_public_rate_limit(
         request,
         scope="proxy.request",

@@ -66,8 +66,27 @@ def test_websocket_rejects_disallowed_origin(monkeypatch):
     monkeypatch.setattr(service.automation, "start", lambda: None)
     monkeypatch.setattr(service.automation, "stop", lambda: None)
     monkeypatch.setattr(service.resolver, "close", lambda: None)
+    monkeypatch.setattr(service.settings, "websocket_allowed_origins", ["https://app.example"])
     headers = _websocket_headers(monkeypatch)
     headers["Origin"] = "https://evil.example"
+
+    with TestClient(service.app) as client:
+        with client.websocket_connect("/ws", headers=headers) as websocket:
+            error = websocket.receive_json()
+            assert error["type"] == "error"
+            assert error["message"] == "WebSocket origin is not allowed."
+            with pytest.raises(WebSocketDisconnect):
+                websocket.receive_text()
+
+
+def test_websocket_rejects_host_header_origin_spoof(monkeypatch):
+    monkeypatch.setattr(service.automation, "start", lambda: None)
+    monkeypatch.setattr(service.automation, "stop", lambda: None)
+    monkeypatch.setattr(service.resolver, "close", lambda: None)
+    monkeypatch.setattr(service.settings, "websocket_allowed_origins", ["https://app.example"])
+    headers = _websocket_headers(monkeypatch)
+    headers["Origin"] = "https://testserver"
+    headers["Host"] = "testserver"
 
     with TestClient(service.app) as client:
         with client.websocket_connect("/ws", headers=headers) as websocket:

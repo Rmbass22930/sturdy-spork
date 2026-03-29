@@ -522,6 +522,7 @@ def test_proxy_request_blocks_tracker_like_urls(monkeypatch, tmp_path):
         response = client.post(
             "/tor/request",
             json={"url": "https://metrics.example.com/collect?utm_source=email&gclid=abc123", "method": "GET", "via": "direct"},
+            headers=headers,
         )
 
     assert response.status_code == 403
@@ -543,11 +544,13 @@ def test_proxy_request_blocks_tracker_like_urls(monkeypatch, tmp_path):
 
 def test_proxy_request_rejects_private_destinations(monkeypatch, tmp_path):
     _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
 
     with TestClient(service.app) as client:
         response = client.post(
             "/tor/request",
             json={"url": "http://127.0.0.1/admin", "method": "GET", "via": "direct"},
+            headers=headers,
         )
 
     assert response.status_code == 400
@@ -556,11 +559,13 @@ def test_proxy_request_rejects_private_destinations(monkeypatch, tmp_path):
 
 def test_proxy_request_rejects_disallowed_methods(monkeypatch, tmp_path):
     _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
 
     with TestClient(service.app) as client:
         response = client.post(
             "/tor/request",
             json={"url": "https://example.com/submit", "method": "POST", "via": "direct"},
+            headers=headers,
         )
 
     assert response.status_code == 422
@@ -569,6 +574,7 @@ def test_proxy_request_rejects_disallowed_methods(monkeypatch, tmp_path):
 
 def test_proxy_request_rate_limits_abusive_clients(monkeypatch, tmp_path):
     _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
     monkeypatch.setattr(settings, "proxy_request_max_requests_per_window", 1)
     monkeypatch.setattr(
         service.proxy,
@@ -590,10 +596,12 @@ def test_proxy_request_rate_limits_abusive_clients(monkeypatch, tmp_path):
         first = client.post(
             "/tor/request",
             json={"url": "https://example.com/health", "method": "GET", "via": "direct"},
+            headers=headers,
         )
         second = client.post(
             "/tor/request",
             json={"url": "https://example.com/health", "method": "GET", "via": "direct"},
+            headers=headers,
         )
 
     assert first.status_code == 200
@@ -603,6 +611,7 @@ def test_proxy_request_rate_limits_abusive_clients(monkeypatch, tmp_path):
 
 def test_proxy_request_allows_public_http_targets(monkeypatch, tmp_path):
     _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
 
     monkeypatch.setattr(
         service.proxy,
@@ -624,6 +633,7 @@ def test_proxy_request_allows_public_http_targets(monkeypatch, tmp_path):
         response = client.post(
             "/tor/request",
             json={"url": "https://example.com/health", "method": "GET", "via": "direct"},
+            headers=headers,
         )
 
     assert response.status_code == 200
@@ -633,6 +643,7 @@ def test_proxy_request_allows_public_http_targets(monkeypatch, tmp_path):
 
 def test_proxy_request_maps_response_too_large(monkeypatch, tmp_path):
     audit, _blocklist, _traceroute = _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
     monkeypatch.setattr(
         service.proxy,
         "request",
@@ -645,6 +656,7 @@ def test_proxy_request_maps_response_too_large(monkeypatch, tmp_path):
         response = client.post(
             "/tor/request",
             json={"url": "https://example.com/large", "method": "GET", "via": "direct"},
+            headers=headers,
         )
 
     assert response.status_code == 413
@@ -654,6 +666,7 @@ def test_proxy_request_maps_response_too_large(monkeypatch, tmp_path):
 
 def test_proxy_request_maps_upstream_timeout(monkeypatch, tmp_path):
     audit, _blocklist, _traceroute = _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
     monkeypatch.setattr(
         service.proxy,
         "request",
@@ -666,11 +679,28 @@ def test_proxy_request_maps_upstream_timeout(monkeypatch, tmp_path):
         response = client.post(
             "/tor/request",
             json={"url": "https://example.com/slow", "method": "GET", "via": "direct"},
+            headers=headers,
         )
 
     assert response.status_code == 504
     assert response.json()["detail"] == "Proxy request timed out."
     assert any(event_type == "proxy.request.failure" for event_type, _payload in audit.events)
+
+
+def test_proxy_request_requires_operator_auth(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "operator_bearer_token", "expected-token")
+    monkeypatch.setattr(settings, "operator_bearer_secret_name", None)
+    monkeypatch.setattr(settings, "operator_allow_loopback_without_token", False)
+
+    with TestClient(service.app) as client:
+        response = client.post(
+            "/tor/request",
+            json={"url": "https://example.com/health", "method": "GET", "via": "direct"},
+        )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Operator authentication required."
 
 
 def test_tracker_feed_status_and_refresh_api(monkeypatch, tmp_path):
