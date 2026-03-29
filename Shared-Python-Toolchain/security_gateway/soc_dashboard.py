@@ -14,6 +14,7 @@ except Exception:  # pragma: no cover
 from .alerts import alert_manager
 from .audit import AuditLogger
 from .config import settings
+from .models import SocAlertStatus, SocCaseStatus, SocSeverity
 from .soc import SecurityOperationsManager
 
 
@@ -41,6 +42,11 @@ class SocDashboard:
         self.root.configure(bg="#eef4ff")
         _center_window(self.root, 1420, 900)
         self.root.minsize(1180, 720)
+        self.alert_severity_var = tk.StringVar(value="all")
+        self.alert_link_state_var = tk.StringVar(value="unlinked")
+        self.alert_sort_var = tk.StringVar(value="severity_desc")
+        self.case_status_var = tk.StringVar(value="all")
+        self.case_sort_var = tk.StringVar(value="updated_desc")
         self._build_ui()
         self.refresh()
 
@@ -110,6 +116,7 @@ class SocDashboard:
             title="Unassigned Alerts",
             columns=("severity", "title", "updated"),
             headings={"severity": "Severity", "title": "Title", "updated": "Updated"},
+            controls=self._build_alert_controls,
         )
         self.case_tree = self._build_tree(
             body,
@@ -118,6 +125,7 @@ class SocDashboard:
             title="Active Cases",
             columns=("status", "severity", "title", "assignee"),
             headings={"status": "Status", "severity": "Severity", "title": "Title", "assignee": "Assignee"},
+            controls=self._build_case_controls,
         )
         self.correlation_tree = self._build_tree(
             body,
@@ -145,36 +153,91 @@ class SocDashboard:
         title: str,
         columns: Sequence[str],
         headings: dict[str, str],
+        controls: Callable[[Any], None] | None = None,
     ) -> Any:
         frame = ttk.LabelFrame(parent, text=title, padding=(10, 10), style="SOC.TLabelframe")
         frame.grid(row=row, column=column, sticky="nsew", padx=(0 if column == 0 else 8, 0), pady=(0 if row == 0 else 8, 0))
         frame.columnconfigure(0, weight=1)
-        frame.rowconfigure(0, weight=1)
+        frame.rowconfigure(1, weight=1)
+        if controls is not None:
+            controls(frame)
         tree = ttk.Treeview(frame, columns=list(columns), show="headings", style="SOC.Treeview")
-        tree.grid(row=0, column=0, sticky="nsew")
+        tree.grid(row=1, column=0, sticky="nsew")
         scrollbar = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
-        scrollbar.grid(row=0, column=1, sticky="ns")
+        scrollbar.grid(row=1, column=1, sticky="ns")
         tree.configure(yscrollcommand=scrollbar.set)
         for name in columns:
             tree.heading(name, text=headings[name])
             tree.column(name, anchor="w", width=180 if name != "title" else 320)
         return tree
 
+    def _build_alert_controls(self, parent: Any) -> None:
+        controls = ttk.Frame(parent, style="SOC.TFrame")
+        controls.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        ttk.Label(controls, text="Severity", style="SOC.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        ttk.Combobox(
+            controls,
+            textvariable=self.alert_severity_var,
+            values=("all", "critical", "high", "medium", "low"),
+            state="readonly",
+            width=10,
+        ).grid(row=0, column=1, sticky="w", padx=(0, 12))
+        ttk.Label(controls, text="Case", style="SOC.TLabel").grid(row=0, column=2, sticky="w", padx=(0, 6))
+        ttk.Combobox(
+            controls,
+            textvariable=self.alert_link_state_var,
+            values=("unlinked", "linked", "all"),
+            state="readonly",
+            width=10,
+        ).grid(row=0, column=3, sticky="w", padx=(0, 12))
+        ttk.Label(controls, text="Sort", style="SOC.TLabel").grid(row=0, column=4, sticky="w", padx=(0, 6))
+        ttk.Combobox(
+            controls,
+            textvariable=self.alert_sort_var,
+            values=("severity_desc", "updated_desc", "updated_asc", "severity_asc"),
+            state="readonly",
+            width=14,
+        ).grid(row=0, column=5, sticky="w", padx=(0, 12))
+        ttk.Button(controls, text="Apply", command=self.refresh).grid(row=0, column=6, sticky="w")
+
+    def _build_case_controls(self, parent: Any) -> None:
+        controls = ttk.Frame(parent, style="SOC.TFrame")
+        controls.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        ttk.Label(controls, text="Status", style="SOC.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        ttk.Combobox(
+            controls,
+            textvariable=self.case_status_var,
+            values=("all", "open", "investigating", "contained", "closed"),
+            state="readonly",
+            width=14,
+        ).grid(row=0, column=1, sticky="w", padx=(0, 12))
+        ttk.Label(controls, text="Sort", style="SOC.TLabel").grid(row=0, column=2, sticky="w", padx=(0, 6))
+        ttk.Combobox(
+            controls,
+            textvariable=self.case_sort_var,
+            values=("updated_desc", "severity_desc", "updated_asc", "severity_asc"),
+            state="readonly",
+            width=14,
+        ).grid(row=0, column=3, sticky="w", padx=(0, 12))
+        ttk.Button(controls, text="Apply", command=self.refresh).grid(row=0, column=4, sticky="w")
+
     def refresh(self) -> None:
         dashboard = cast(dict[str, Any], self.manager.dashboard())
         summary = cast(dict[str, Any], dashboard["summary"])
         triage = cast(dict[str, list[dict[str, Any]]], dashboard["triage"])
+        alert_rows = self.manager.query_alerts(**self._alert_query_kwargs())
+        case_rows = self.manager.query_cases(**self._case_query_kwargs())
         for key, value in self.summary_vars.items():
             value.set(str(summary.get(key, 0)))
         self.status_var.set(self._format_status_line(dashboard))
         self._populate_tree(
             self.alert_tree,
-            triage["unassigned_alerts"],
+            [item.model_dump(mode="json") for item in alert_rows],
             lambda item: (item["severity"], item["title"], item["updated_at"]),
         )
         self._populate_tree(
             self.case_tree,
-            triage["active_cases"],
+            [item.model_dump(mode="json") for item in case_rows],
             lambda item: (item["status"], item["severity"], item["title"], item.get("assignee") or "-"),
         )
         self._populate_tree(
@@ -203,6 +266,40 @@ class SocDashboard:
             tree.delete(item)
         for index, row in enumerate(rows):
             tree.insert("", "end", iid=f"row-{index}", values=row_builder(row))
+
+    def _alert_query_kwargs(self) -> dict[str, Any]:
+        severity = self._parse_severity(self.alert_severity_var.get())
+        linked_case_state = self.alert_link_state_var.get()
+        return {
+            "status": SocAlertStatus.open,
+            "severity": severity,
+            "assignee": "unassigned",
+            "linked_case_state": None if linked_case_state == "all" else linked_case_state,
+            "sort": self.alert_sort_var.get() or "severity_desc",
+            "limit": 25,
+        }
+
+    def _case_query_kwargs(self) -> dict[str, Any]:
+        status_value = self.case_status_var.get()
+        return {
+            "status": self._parse_case_status(status_value),
+            "sort": self.case_sort_var.get() or "updated_desc",
+            "limit": 25,
+        }
+
+    @staticmethod
+    def _parse_severity(value: str) -> SocSeverity | None:
+        normalized = value.strip().lower()
+        if normalized == "all" or not normalized:
+            return None
+        return SocSeverity(normalized)
+
+    @staticmethod
+    def _parse_case_status(value: str) -> SocCaseStatus | None:
+        normalized = value.strip().lower()
+        if normalized == "all" or not normalized:
+            return None
+        return SocCaseStatus(normalized)
 
     @staticmethod
     def _format_status_line(dashboard: dict[str, Any]) -> str:
