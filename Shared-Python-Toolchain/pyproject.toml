@@ -33,5 +33,6 @@ memory-optimizer = "memory_optimizer.cli:app"
 packages = ["security_gateway", "memory_optimizer", "common_crypto"]
 
 [tool.pytest.ini_options]
+addopts = ["--basetemp=.pytest_tmp"]
 pythonpath = ["."]
 testpaths = ["tests"]
