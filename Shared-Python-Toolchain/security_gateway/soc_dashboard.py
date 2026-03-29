@@ -294,10 +294,19 @@ class SocDashboard:
             width=14,
         ).grid(row=0, column=3, sticky="w", padx=(0, 12))
         ttk.Button(controls, text="Apply", command=self.refresh).grid(row=0, column=4, sticky="w")
-        ttk.Button(controls, text="Add Note", command=self.add_case_note).grid(row=0, column=5, sticky="w", padx=(12, 0))
-        ttk.Button(controls, text="Add Observable", command=self.add_case_observable).grid(
+        ttk.Button(controls, text="Assign", command=self.assign_selected_case).grid(row=0, column=5, sticky="w", padx=(12, 0))
+        ttk.Button(controls, text="Investigating", command=self.mark_case_investigating).grid(
             row=0,
             column=6,
+            sticky="w",
+            padx=(8, 0),
+        )
+        ttk.Button(controls, text="Contained", command=self.mark_case_contained).grid(row=0, column=7, sticky="w", padx=(8, 0))
+        ttk.Button(controls, text="Close", command=self.close_selected_case).grid(row=0, column=8, sticky="w", padx=(8, 0))
+        ttk.Button(controls, text="Add Note", command=self.add_case_note).grid(row=0, column=9, sticky="w", padx=(12, 0))
+        ttk.Button(controls, text="Add Observable", command=self.add_case_observable).grid(
+            row=0,
+            column=10,
             sticky="w",
             padx=(8, 0),
         )
@@ -413,6 +422,32 @@ class SocDashboard:
             prompt="Enter an observable for the selected case:",
         )
 
+    def assign_selected_case(self) -> None:
+        case_id = self._selected_tree_item_id(self.case_tree)
+        if case_id is None:
+            if messagebox is not None:
+                messagebox.showwarning("No Case Selected", "Select a case before assigning it.")
+            return
+        if simpledialog is None:
+            return
+        assignee = simpledialog.askstring("Assign Case", "Enter the analyst or queue for the selected case:", parent=self.root)
+        if assignee is None or not assignee.strip():
+            return
+        payload = self._build_case_update_payload(field="assignee", value=assignee.strip())
+        self.manager.update_case(case_id, payload)
+        self.refresh()
+        self.case_tree.selection_set(case_id)
+        self._refresh_case_detail()
+
+    def mark_case_investigating(self) -> None:
+        self._apply_case_status("investigating", "Case Updated")
+
+    def mark_case_contained(self) -> None:
+        self._apply_case_status("contained", "Case Updated")
+
+    def close_selected_case(self) -> None:
+        self._apply_case_status("closed", "Case Updated")
+
     def _apply_alert_status(self, status_value: str, title: str) -> None:
         alert_id = self._selected_tree_item_id(self.alert_tree)
         if alert_id is None:
@@ -429,6 +464,20 @@ class SocDashboard:
             messagebox.showinfo(title, f"Updated alert {alert_id} to {status_value}.")
         self.refresh()
         self._refresh_alert_detail()
+
+    def _apply_case_status(self, status_value: str, title: str) -> None:
+        case_id = self._selected_tree_item_id(self.case_tree)
+        if case_id is None:
+            if messagebox is not None:
+                messagebox.showwarning("No Case Selected", "Select a case before applying a status update.")
+            return
+        payload = self._build_case_update_payload(field="status", value=status_value)
+        self.manager.update_case(case_id, payload)
+        if messagebox is not None:
+            messagebox.showinfo(title, f"Updated case {case_id} to {status_value}.")
+        self.refresh()
+        self.case_tree.selection_set(case_id)
+        self._refresh_case_detail()
 
     def _alert_query_kwargs(self) -> dict[str, Any]:
         severity = self._parse_severity(self.alert_severity_var.get())
@@ -497,6 +546,10 @@ class SocDashboard:
             return SocCaseUpdate(note=value)
         if field == "observable":
             return SocCaseUpdate(observable=value)
+        if field == "assignee":
+            return SocCaseUpdate(assignee=value)
+        if field == "status":
+            return SocCaseUpdate(status=SocCaseStatus(value))
         raise ValueError(f"Unsupported case update field: {field}")
 
     @staticmethod

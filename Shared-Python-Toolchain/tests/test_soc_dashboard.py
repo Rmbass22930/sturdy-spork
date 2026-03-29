@@ -116,6 +116,18 @@ def test_build_case_update_payload_for_observable() -> None:
     assert payload.note is None
 
 
+def test_build_case_update_payload_for_assignee() -> None:
+    payload = SocDashboard._build_case_update_payload(field="assignee", value="tier2-analyst")
+    assert payload.assignee == "tier2-analyst"
+    assert payload.status is None
+
+
+def test_build_case_update_payload_for_status() -> None:
+    payload = SocDashboard._build_case_update_payload(field="status", value="contained")
+    assert payload.status is SocCaseStatus.contained
+    assert payload.assignee is None
+
+
 def test_format_case_detail_includes_notes_and_observables() -> None:
     text = SocDashboard._format_case_detail(
         {
