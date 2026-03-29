@@ -127,6 +127,14 @@ curl -X POST http://127.0.0.1:8000/privacy/tracker-feeds/refresh \
   - blocked-IP administration
   - automation status checks
   - websocket connections to `/ws`
+- Browser-based WebSocket clients should also send an allowed `Origin` header.
+- Configure WebSocket origin/rate controls with:
+```
+SECURITY_GATEWAY_WEBSOCKET_ALLOWED_ORIGINS=[]
+SECURITY_GATEWAY_WEBSOCKET_MAX_MESSAGES_PER_WINDOW=30
+SECURITY_GATEWAY_WEBSOCKET_RATE_WINDOW_SECONDS=5
+```
+- If `SECURITY_GATEWAY_WEBSOCKET_ALLOWED_ORIGINS` is populated, browser origins outside that set are rejected.
 
 ## Outbound proxy guardrails
 - `POST /tor/request` and `security-gateway proxy-request` now reject unsafe proxy targets before issuing a request.

@@ -47,3 +47,42 @@ def test_websocket_requires_operator_auth(monkeypatch):
             assert error["message"] == "Operator authentication required."
             with pytest.raises(WebSocketDisconnect):
                 websocket.receive_text()
+
+
+def test_websocket_rejects_disallowed_origin(monkeypatch):
+    monkeypatch.setattr(service.automation, "start", lambda: None)
+    monkeypatch.setattr(service.automation, "stop", lambda: None)
+    monkeypatch.setattr(service.resolver, "close", lambda: None)
+    headers = _websocket_headers(monkeypatch)
+    headers["Origin"] = "https://evil.example"
+
+    with TestClient(service.app) as client:
+        with client.websocket_connect("/ws", headers=headers) as websocket:
+            error = websocket.receive_json()
+            assert error["type"] == "error"
+            assert error["message"] == "WebSocket origin is not allowed."
+            with pytest.raises(WebSocketDisconnect):
+                websocket.receive_text()
+
+
+def test_websocket_rate_limits_abusive_message_volume(monkeypatch):
+    monkeypatch.setattr(service.automation, "start", lambda: None)
+    monkeypatch.setattr(service.automation, "stop", lambda: None)
+    monkeypatch.setattr(service.resolver, "close", lambda: None)
+    headers = _websocket_headers(monkeypatch)
+    monkeypatch.setattr(service.settings, "websocket_max_messages_per_window", 2)
+    monkeypatch.setattr(service.settings, "websocket_rate_window_seconds", 60.0)
+
+    with TestClient(service.app) as client:
+        with client.websocket_connect("/ws", headers=headers) as websocket:
+            websocket.receive_json()
+            websocket.send_text("ping")
+            assert websocket.receive_text() == "pong"
+            websocket.send_text("health")
+            assert websocket.receive_text() == "pong"
+            websocket.send_text("ping")
+            error = websocket.receive_json()
+            assert error["type"] == "error"
+            assert error["message"] == "WebSocket message rate limit exceeded."
+            with pytest.raises(WebSocketDisconnect):
+                websocket.receive_text()

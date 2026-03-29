@@ -59,6 +59,9 @@ class Settings(BaseSettings):
     automation_malware_rule_feed_refresh_every_ticks: int = 12
     operator_bearer_token: Optional[str] = None
     operator_allow_loopback_without_token: bool = True
+    websocket_allowed_origins: List[str] = Field(default_factory=list)
+    websocket_max_messages_per_window: int = 30
+    websocket_rate_window_seconds: float = 5.0
     alert_webhook_url: Optional[str] = None
     alert_enable_toast: bool = False
     threat_rotation_enabled: bool = True

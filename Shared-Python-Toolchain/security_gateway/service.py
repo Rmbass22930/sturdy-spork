@@ -7,6 +7,8 @@ import secrets
 from contextlib import asynccontextmanager
 from ipaddress import ip_address
 from pathlib import Path
+from time import monotonic
+from urllib.parse import urlparse
 from fastapi.responses import FileResponse, Response
 
 from fastapi import (
@@ -131,6 +133,25 @@ def _is_loopback_client(host: str | None) -> bool:
         return host.lower() in {"localhost", "testclient"}
 
 
+def _normalize_origin(origin: str | None) -> str | None:
+    if not origin:
+        return None
+    parsed = urlparse(origin)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    return f"{parsed.scheme}://{parsed.netloc}".lower()
+
+
+def _allowed_websocket_origins(websocket: WebSocket) -> set[str]:
+    allowed = {_normalize_origin(origin) for origin in settings.websocket_allowed_origins}
+    allowed.discard(None)
+    host = websocket.headers.get("host")
+    if host:
+        allowed.add(f"http://{host}".lower())
+        allowed.add(f"https://{host}".lower())
+    return allowed
+
+
 def require_operator_access(
     request: Request,
     authorization: str | None = Header(default=None),
@@ -165,6 +186,17 @@ def require_operator_access(
 async def require_operator_websocket_access(websocket: WebSocket) -> bool:
     client_host = websocket.client.host if websocket.client else None
     authorization = websocket.headers.get("authorization")
+    origin = _normalize_origin(websocket.headers.get("origin"))
+    allowed_origins = _allowed_websocket_origins(websocket)
+    if origin and origin not in allowed_origins:
+        audit_logger.log(
+            "operator.auth.failure",
+            {"path": websocket.url.path, "source_ip": client_host, "reason": "disallowed_origin", "origin": origin},
+        )
+        await websocket.accept()
+        await websocket.send_json({"type": "error", "message": "WebSocket origin is not allowed."})
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return False
     expected_token = settings.operator_bearer_token
     if expected_token:
         scheme, _, supplied_token = (authorization or "").partition(" ")
@@ -585,9 +617,25 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         return
     await websocket.accept()
     await websocket.send_json({"type": "ready", "message": "connected", "mode": "health_only"})
+    window_started_at = monotonic()
+    message_count = 0
     try:
         while True:
             payload = await websocket.receive_text()
+            now = monotonic()
+            if now - window_started_at > settings.websocket_rate_window_seconds:
+                window_started_at = now
+                message_count = 0
+            message_count += 1
+            if message_count > settings.websocket_max_messages_per_window:
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "message": "WebSocket message rate limit exceeded.",
+                    }
+                )
+                await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+                break
             message = payload.strip()
             if message.lower() in {"ping", "health"}:
                 await websocket.send_text("pong")
