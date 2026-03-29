@@ -160,6 +160,7 @@ class SocAlertRecord(BaseModel):
     source_event_ids: list[str] = Field(default_factory=list, max_length=64)
     correlation_rule: Optional[str] = Field(default=None, max_length=128)
     correlation_key: Optional[str] = Field(default=None, max_length=256)
+    linked_case_id: Optional[str] = Field(default=None, max_length=64)
     assignee: Optional[str] = Field(default=None, max_length=128)
     notes: list[str] = Field(default_factory=list, max_length=64)
     created_at: datetime
@@ -178,6 +179,16 @@ class SocAlertUpdate(BaseModel):
     status: Optional[SocAlertStatus] = None
     assignee: Optional[str] = Field(default=None, max_length=128)
     note: Optional[str] = Field(default=None, max_length=512)
+
+
+class SocAlertPromoteCaseRequest(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=160)
+    summary: Optional[str] = Field(default=None, min_length=1, max_length=2_000)
+    severity: Optional[SocSeverity] = None
+    assignee: Optional[str] = Field(default=None, max_length=128)
+    note: Optional[str] = Field(default=None, max_length=512)
+    case_status: SocCaseStatus = SocCaseStatus.investigating
+    alert_status: SocAlertStatus = SocAlertStatus.acknowledged
 
 
 class SocCaseCreate(BaseModel):

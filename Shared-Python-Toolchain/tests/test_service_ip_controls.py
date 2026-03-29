@@ -322,13 +322,57 @@ def test_soc_case_lifecycle(monkeypatch, tmp_path):
             headers=headers,
         )
         fetched = client.get(f"/soc/cases/{case_id}", headers=headers)
+        fetched_alert = client.get(f"/soc/alerts/{event_payload['alert']['alert_id']}", headers=headers)
 
     assert created.status_code == 200
     assert updated.status_code == 200
     assert fetched.status_code == 200
+    assert fetched_alert.status_code == 200
     assert updated.json()["status"] == "investigating"
     assert updated.json()["notes"] == ["Owner assigned and triage started."]
     assert fetched.json()["assignee"] == "tier2-analyst"
+    assert fetched_alert.json()["linked_case_id"] == case_id
+
+
+def test_soc_alert_can_be_promoted_to_case(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
+
+    with TestClient(service.app) as client:
+        event_response = client.post(
+            "/soc/events",
+            json={
+                "event_type": "policy.access_decision",
+                "severity": "high",
+                "title": "Privileged access denied",
+                "summary": "A privileged action was denied and needs triage.",
+                "details": {"resource": "vpn-admin"},
+            },
+            headers=headers,
+        )
+        alert_id = event_response.json()["alert"]["alert_id"]
+        promoted = client.post(
+            f"/soc/alerts/{alert_id}/case",
+            json={
+                "assignee": "tier1-analyst",
+                "note": "Promoted directly from the triage queue.",
+            },
+            headers=headers,
+        )
+        refetch_alert = client.get(f"/soc/alerts/{alert_id}", headers=headers)
+        dashboard = client.get("/soc/dashboard", headers=headers)
+
+    assert promoted.status_code == 200
+    payload = promoted.json()
+    assert payload["alert"]["status"] == "acknowledged"
+    assert payload["alert"]["linked_case_id"] == payload["case"]["case_id"]
+    assert payload["case"]["status"] == "investigating"
+    assert payload["case"]["linked_alert_ids"] == [alert_id]
+    assert payload["case"]["notes"] == ["Promoted directly from the triage queue."]
+    assert refetch_alert.status_code == 200
+    assert refetch_alert.json()["linked_case_id"] == payload["case"]["case_id"]
+    assert dashboard.status_code == 200
+    assert dashboard.json()["triage"]["unassigned_alerts"] == []
 
 
 def test_access_deny_is_mirrored_into_soc_events(monkeypatch, tmp_path):

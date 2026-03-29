@@ -40,8 +40,9 @@ from .models import (
     AccessRequest,
     CredentialLease,
     DeviceContext,
-    SocAlertStatus,
     SocAlertRecord,
+    SocAlertPromoteCaseRequest,
+    SocAlertStatus,
     SocAlertUpdate,
     SocCaseCreate,
     SocCaseStatus,
@@ -1209,6 +1210,24 @@ async def soc_update_alert(
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return alert.model_dump(mode="json")
+
+
+@app.post("/soc/alerts/{alert_id}/case")
+async def soc_promote_alert_to_case(
+    alert_id: str,
+    payload: SocAlertPromoteCaseRequest,
+    _: None = Depends(require_operator_access),
+) -> dict:
+    try:
+        alert, case = soc_manager.promote_alert_to_case(alert_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "alert": alert.model_dump(mode="json"),
+        "case": case.model_dump(mode="json"),
+    }
 
 
 @app.post("/soc/cases")

@@ -13,6 +13,7 @@ from .alerts import AlertEvent, AlertLevel, AlertManager
 from .audit import AuditLogger
 from .models import (
     SocAlertRecord,
+    SocAlertPromoteCaseRequest,
     SocAlertStatus,
     SocAlertUpdate,
     SocCaseCreate,
@@ -170,9 +171,12 @@ class SecurityOperationsManager:
             updated_at=created_at,
         )
         with self._lock:
+            alerts = self._read_records(self._alert_store_path, SocAlertRecord)
             cases = self._read_records(self._case_store_path, SocCaseRecord)
             cases.append(case)
             self._write_records(self._case_store_path, cases)
+            self._link_case_alerts(alerts, case, preserve_status=True)
+            self._write_records(self._alert_store_path, alerts)
         self._audit.log(
             "soc.case.created",
             {
@@ -183,6 +187,59 @@ class SecurityOperationsManager:
             },
         )
         return case
+
+    def promote_alert_to_case(
+        self,
+        alert_id: str,
+        payload: SocAlertPromoteCaseRequest,
+    ) -> tuple[SocAlertRecord, SocCaseRecord]:
+        with self._lock:
+            alerts = self._read_records(self._alert_store_path, SocAlertRecord)
+            alert_index = next((index for index, item in enumerate(alerts) if item.alert_id == alert_id), None)
+            if alert_index is None:
+                raise KeyError(f"Alert not found: {alert_id}")
+
+            existing_alert = alerts[alert_index]
+            if existing_alert.linked_case_id:
+                raise ValueError(f"Alert already linked to case: {existing_alert.linked_case_id}")
+
+            created_at = _utc_now()
+            case = SocCaseRecord(
+                case_id=f"case-{uuid4().hex[:12]}",
+                title=payload.title or existing_alert.title,
+                summary=payload.summary or existing_alert.summary,
+                severity=payload.severity or existing_alert.severity,
+                source_event_ids=list(existing_alert.source_event_ids),
+                linked_alert_ids=[existing_alert.alert_id],
+                assignee=payload.assignee if payload.assignee is not None else existing_alert.assignee,
+                status=payload.case_status,
+                notes=[payload.note] if payload.note else [],
+                created_at=created_at,
+                updated_at=created_at,
+            )
+            cases = self._read_records(self._case_store_path, SocCaseRecord)
+            cases.append(case)
+            self._link_case_alerts(
+                alerts,
+                case,
+                preserve_status=False,
+                alert_status=payload.alert_status,
+                note=payload.note,
+            )
+            updated_alert = alerts[alert_index]
+            self._write_records(self._case_store_path, cases)
+            self._write_records(self._alert_store_path, alerts)
+
+        self._audit.log(
+            "soc.alert.promoted",
+            {
+                "alert_id": updated_alert.alert_id,
+                "case_id": case.case_id,
+                "alert_status": updated_alert.status.value,
+                "case_status": case.status.value,
+            },
+        )
+        return updated_alert, case
 
     def list_cases(self, *, status: SocCaseStatus | None = None) -> list[SocCaseRecord]:
         cases = self._read_records(self._case_store_path, SocCaseRecord)
@@ -255,11 +312,17 @@ class SecurityOperationsManager:
             "case_status": dict(case_status),
             "top_event_types": dict(event_types.most_common(10)),
             "triage": {
-                "unassigned_alerts": [item.model_dump(mode="json") for item in alerts if not item.assignee][:10],
+                "unassigned_alerts": [
+                    item.model_dump(mode="json")
+                    for item in alerts
+                    if not item.assignee and not item.linked_case_id
+                ][:10],
                 "stale_open_alerts": [
                     item.model_dump(mode="json")
                     for item in alerts
-                    if item.status is SocAlertStatus.open and item.updated_at < stale_cutoff
+                    if item.status is SocAlertStatus.open
+                    and item.updated_at < stale_cutoff
+                    and not item.linked_case_id
                 ][:10],
                 "recent_correlations": [item.model_dump(mode="json") for item in correlation_alerts[:10]],
                 "active_cases": [
@@ -405,6 +468,38 @@ class SecurityOperationsManager:
                 context={"alert_id": alert.alert_id, "rule": rule, "key": key},
             )
         )
+
+    def _link_case_alerts(
+        self,
+        alerts: list[SocAlertRecord],
+        case: SocCaseRecord,
+        *,
+        preserve_status: bool,
+        alert_status: SocAlertStatus = SocAlertStatus.acknowledged,
+        note: str | None = None,
+    ) -> None:
+        linked_ids = set(case.linked_alert_ids)
+        if not linked_ids:
+            return
+
+        now = _utc_now()
+        for index, existing in enumerate(alerts):
+            if existing.alert_id not in linked_ids:
+                continue
+
+            notes = list(existing.notes)
+            if note:
+                notes.append(note)
+            updates: dict[str, object] = {
+                "linked_case_id": case.case_id,
+                "notes": notes,
+                "updated_at": now,
+            }
+            if case.assignee is not None:
+                updates["assignee"] = case.assignee
+            if not preserve_status:
+                updates["status"] = alert_status
+            alerts[index] = existing.model_copy(update=updates)
 
     def _append_event(self, event: SocEventRecord) -> None:
         line = event.model_dump_json()
