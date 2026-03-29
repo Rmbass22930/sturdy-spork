@@ -67,6 +67,11 @@
    - Delivers alerts to optional webhooks or local toast notifications.
    - Webhook delivery validates HTTPS-only public destinations and fails closed when the configured endpoint is unsafe.
 
+11. **security_gateway/soc.py**
+   - Provides a lightweight SOC layer with persisted security events, analyst alerts, and cases.
+   - High and critical events automatically promote into analyst-facing alerts, while cases track triage, ownership, and containment workflow.
+   - This is the first milestone toward a broader security-operations platform; it is intentionally lightweight and file-backed rather than a full SIEM/SOC stack.
+
 ## Data Flow
 1. A client invokes `/access/evaluate` with user/device/app context.
 2. PolicyEngine pulls the latest telemetry, verifies MFA, and can request PAM credentials if the resource is privileged.
@@ -79,3 +84,10 @@
 - Configuration lives in `security_gateway/config.py` plus `.env` support for secrets.
 - Detection feeds can be bootstrapped from local files for offline environments and then refreshed later when a trusted public HTTPS network path becomes available.
 - Tests target the policy engine, DNS resolver, and CLI flows using pytest + httpx mocks.
+
+## SOC Roadmap
+- Security Gateway is not a full Security Onion Pro equivalent today.
+- The current direction is staged:
+  - phase 1: persisted SOC events, alerts, cases, and analyst APIs
+  - phase 2: richer event correlation, escalation workflows, and dashboards
+  - phase 3: broader telemetry ingestion, durable background jobs, and external integrations

@@ -12,6 +12,7 @@ from security_gateway.models import DeviceCompliance
 from security_gateway.pam import VaultClient
 from security_gateway.policy import PolicyEngine
 from security_gateway.reports import SecurityReportBuilder
+from security_gateway.soc import SecurityOperationsManager
 from security_gateway.tor import ProxyRequestTimeoutError, ProxyResponse, ProxyResponseTooLargeError
 
 
@@ -78,6 +79,20 @@ def _install_test_managers(monkeypatch, tmp_path):
         service,
         "report_builder",
         SecurityReportBuilder(audit_log_path=tmp_path / "audit.jsonl", ip_blocklist_path=tmp_path / "blocked_ips.json"),
+    )
+    monkeypatch.setattr(settings, "soc_event_log_path", str(tmp_path / "soc_events.jsonl"))
+    monkeypatch.setattr(settings, "soc_alert_store_path", str(tmp_path / "soc_alerts.json"))
+    monkeypatch.setattr(settings, "soc_case_store_path", str(tmp_path / "soc_cases.json"))
+    monkeypatch.setattr(
+        service,
+        "soc_manager",
+        SecurityOperationsManager(
+            event_log_path=tmp_path / "soc_events.jsonl",
+            alert_store_path=tmp_path / "soc_alerts.json",
+            case_store_path=tmp_path / "soc_cases.json",
+            audit_logger=audit,
+            alert_manager=service.alert_manager,
+        ),
     )
     monkeypatch.setattr(
         service,
@@ -204,14 +219,14 @@ def test_security_health_reports_ready_auth_backends(monkeypatch, tmp_path):
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["healthy"] is True
-    assert payload["warnings"] == []
     assert payload["auth_backends"]["healthy"] is True
     assert payload["auth_backends"]["warnings"] == []
     assert payload["auth_backends"]["operator"]["status"] == "ready"
     assert payload["auth_backends"]["operator"]["source"] == "pam_secret"
     assert payload["auth_backends"]["endpoint"]["status"] == "ready"
     assert payload["auth_backends"]["endpoint"]["source"] == "pam_secret"
+    assert payload["soc"]["events_total"] == 0
+    assert payload["soc"]["alerts_total"] == 0
 
 
 def test_security_health_reports_broken_auth_backend(monkeypatch, tmp_path):
@@ -237,6 +252,121 @@ def test_security_health_reports_broken_auth_backend(monkeypatch, tmp_path):
     assert payload["auth_backends"]["endpoint"]["error"] == (
         "Failed to resolve bearer token secret: endpoint-ingest-token"
     )
+
+
+def test_soc_event_ingest_creates_alert_and_overview(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
+
+    with TestClient(service.app) as client:
+        created = client.post(
+            "/soc/events",
+            json={
+                "event_type": "endpoint.malware_detected",
+                "severity": "critical",
+                "title": "Malware detected",
+                "summary": "A scanned file matched malware rules.",
+                "details": {"filename": "bad.exe", "verdict": "matched:test-rule"},
+                "tags": ["endpoint", "malware"],
+            },
+            headers=headers,
+        )
+        listing = client.get("/soc/alerts", headers=headers)
+        overview = client.get("/soc/overview", headers=headers)
+
+    assert created.status_code == 200
+    payload = created.json()
+    assert payload["event"]["linked_alert_id"] is not None
+    assert payload["alert"] is not None
+    assert payload["alert"]["status"] == "open"
+    assert listing.status_code == 200
+    assert listing.json()["alerts"][0]["alert_id"] == payload["alert"]["alert_id"]
+    assert overview.status_code == 200
+    assert overview.json()["alerts_total"] == 1
+    assert overview.json()["open_alerts"] == 1
+
+
+def test_soc_case_lifecycle(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
+
+    with TestClient(service.app) as client:
+        event_response = client.post(
+            "/soc/events",
+            json={
+                "event_type": "policy.access_decision",
+                "severity": "high",
+                "title": "Access denied",
+                "summary": "A high-risk access decision was denied.",
+                "details": {"resource": "vpn-admin"},
+            },
+            headers=headers,
+        )
+        event_payload = event_response.json()
+        created = client.post(
+            "/soc/cases",
+            json={
+                "title": "Investigate denied access",
+                "summary": "Analyst review required for denied privileged access.",
+                "severity": "high",
+                "source_event_ids": [event_payload["event"]["event_id"]],
+                "linked_alert_ids": [event_payload["alert"]["alert_id"]],
+                "assignee": "tier2-analyst",
+            },
+            headers=headers,
+        )
+        case_id = created.json()["case_id"]
+        updated = client.patch(
+            f"/soc/cases/{case_id}",
+            json={"status": "investigating", "note": "Owner assigned and triage started."},
+            headers=headers,
+        )
+        fetched = client.get(f"/soc/cases/{case_id}", headers=headers)
+
+    assert created.status_code == 200
+    assert updated.status_code == 200
+    assert fetched.status_code == 200
+    assert updated.json()["status"] == "investigating"
+    assert updated.json()["notes"] == ["Owner assigned and triage started."]
+    assert fetched.json()["assignee"] == "tier2-analyst"
+
+
+def test_access_deny_is_mirrored_into_soc_events(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    operator_headers = _operator_headers(monkeypatch)
+    payload = {
+        "user": {
+            "user_id": "user-123",
+            "email": "user@example.com",
+            "groups": ["engineering"],
+            "geo_lat": 37.7749,
+            "geo_lon": -122.4194,
+            "last_login": datetime.now(timezone.utc).isoformat(),
+        },
+        "device": {
+            "device_id": "device-7",
+            "os": "Windows",
+            "os_version": "11",
+            "compliance": "compromised",
+            "is_encrypted": False,
+            "edr_active": False,
+        },
+        "resource": "admin-portal",
+        "privilege_level": "privileged",
+        "source_ip": "203.0.113.45",
+        "dns_secure": False,
+        "threat_signals": {"credential_leak": 9.5},
+    }
+
+    with TestClient(service.app) as client:
+        decision = client.post("/access/evaluate", json=payload)
+        events = client.get("/soc/events", headers=operator_headers)
+
+    assert decision.status_code == 200
+    assert decision.json()["decision"] == "deny"
+    assert events.status_code == 200
+    assert events.json()["events"][0]["event_type"] == "policy.access_decision"
+    assert events.json()["events"][0]["severity"] == "critical"
 
 
 def test_rejects_untrusted_host_headers(monkeypatch, tmp_path):

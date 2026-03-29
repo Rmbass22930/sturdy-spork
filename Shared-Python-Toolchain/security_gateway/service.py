@@ -35,7 +35,21 @@ from .config import settings
 from .dns import SecureDNSResolver
 from .endpoint import EndpointTelemetryService, MalwareScanner
 from .ip_controls import IPBlocklistManager
-from .models import AccessDecision, AccessRequest, CredentialLease, DeviceContext
+from .models import (
+    AccessDecision,
+    AccessRequest,
+    CredentialLease,
+    DeviceContext,
+    SocAlertStatus,
+    SocAlertRecord,
+    SocAlertUpdate,
+    SocCaseCreate,
+    SocCaseStatus,
+    SocCaseUpdate,
+    SocEventIngest,
+    SocEventRecord,
+    SocSeverity,
+)
 from .pam import (
     MAX_LEASE_TTL_MINUTES,
     MAX_SECRET_NAME_LENGTH,
@@ -53,6 +67,7 @@ from .reports import (
     MIN_REPORT_MIN_RISK_SCORE,
 )
 from .state import dns_security_cache
+from .soc import SecurityOperationsManager
 from .tracker_intel import TrackerIntel
 from .tor import ALLOWED_PROXY_METHODS, OutboundProxy, ProxyRequestTimeoutError, ProxyResponseTooLargeError
 from .threat_response import ThreatResponseCoordinator
@@ -92,6 +107,13 @@ scanner = MalwareScanner(
     rule_feed_ca_bundle_path=settings.malware_rule_feed_ca_bundle_path,
 )
 report_builder = SecurityReportBuilder()
+soc_manager = SecurityOperationsManager(
+    event_log_path=settings.soc_event_log_path,
+    alert_store_path=settings.soc_alert_store_path,
+    case_store_path=settings.soc_case_store_path,
+    audit_logger=audit_logger,
+    alert_manager=alert_manager,
+)
 tracker_intel = TrackerIntel(
     extra_domains_path=settings.tracker_domain_list_path,
     feed_cache_path=settings.tracker_feed_cache_path,
@@ -211,6 +233,31 @@ def _security_auth_health() -> dict[str, object]:
         "operator": operator_status,
         "endpoint": endpoint_status,
     }
+
+
+def _record_soc_event(
+    *,
+    event_type: str,
+    severity: SocSeverity,
+    title: str,
+    summary: str,
+    details: dict[str, object],
+    artifacts: list[str] | None = None,
+    tags: list[str] | None = None,
+) -> tuple[SocEventRecord, SocAlertRecord | None]:
+    result = soc_manager.ingest_event(
+        SocEventIngest(
+            event_type=event_type,
+            source="security_gateway",
+            severity=severity,
+            title=title,
+            summary=summary,
+            details=details,
+            artifacts=artifacts or [],
+            tags=tags or [],
+        )
+    )
+    return result.event, result.alert
 
 
 @asynccontextmanager
@@ -622,6 +669,24 @@ async def evaluate_access(access_request: AccessRequest, http_request: Request) 
             "reasons": decision.reasons,
         },
     )
+    if decision.decision.value != "allow":
+        severity = SocSeverity.critical if decision.decision.value == "deny" else SocSeverity.high
+        _record_soc_event(
+            event_type="policy.access_decision",
+            severity=severity,
+            title=f"Access {decision.decision.value} for {access_request.resource}",
+            summary=f"User {access_request.user.user_id} received a {decision.decision.value} decision.",
+            details={
+                "user_id": access_request.user.user_id,
+                "resource": access_request.resource,
+                "privilege_level": access_request.privilege_level,
+                "source_ip": access_request.source_ip,
+                "decision": decision.decision.value,
+                "risk_score": decision.risk_score,
+                "reasons": decision.reasons,
+            },
+            tags=["access", decision.decision.value],
+        )
     return decision
 
 
@@ -716,6 +781,22 @@ async def resolve_dns(request: Request, hostname: str, record_type: str = "A") -
                 "record_type": record_type,
             },
         )
+        _record_soc_event(
+            event_type="privacy.tracker_block",
+            severity=SocSeverity.medium,
+            title=f"Tracker domain blocked: {tracker_match.hostname}",
+            summary="DNS resolution was denied because the hostname matched tracker intelligence.",
+            details={
+                "target_type": "dns",
+                "hostname": tracker_match.hostname,
+                "matched_domain": tracker_match.matched_domain,
+                "source": tracker_match.source,
+                "confidence": tracker_match.confidence,
+                "reason": tracker_match.reason,
+                "record_type": record_type,
+            },
+            tags=["privacy", "tracker"],
+        )
         raise HTTPException(status_code=403, detail=f"Tracker domain blocked: {tracker_match.hostname}")
     result = resolver.resolve(normalized_hostname, normalized_record_type)
     dns_security_cache.record(normalized_hostname, result.secure)
@@ -731,6 +812,15 @@ async def publish_telemetry(
     _: None = Depends(require_endpoint_access),
 ) -> dict:
     signature = telemetry.publish(device)
+    if device.compliance.value in {"drifted", "compromised"}:
+        _record_soc_event(
+            event_type="endpoint.telemetry_posture",
+            severity=SocSeverity.high if device.compliance.value == "compromised" else SocSeverity.medium,
+            title=f"Endpoint posture {device.compliance.value}: {device.device_id}",
+            summary=f"Endpoint {device.device_id} reported {device.compliance.value} posture.",
+            details=device.model_dump(mode="json"),
+            tags=["endpoint", device.compliance.value],
+        )
     return {"signature": signature}
 
 
@@ -753,6 +843,15 @@ if multipart_installed:
     ) -> dict:
         data = await _read_upload_with_limit(file, settings.endpoint_scan_max_upload_bytes)
         malicious, verdict = scanner.scan_bytes(data)
+        if malicious:
+            _record_soc_event(
+                event_type="endpoint.malware_detected",
+                severity=SocSeverity.critical,
+                title=f"Malware detected in upload: {file.filename or 'unknown'}",
+                summary="The endpoint scanner marked an uploaded file as malicious.",
+                details={"filename": file.filename, "verdict": verdict},
+                tags=["endpoint", "malware"],
+            )
         return {"malicious": malicious, "verdict": verdict}
 else:
     @app.post("/endpoint/scan")
@@ -891,6 +990,23 @@ async def proxy_request(payload: ProxyPayload, request: Request, _: None = Depen
                 "via": payload.via,
             },
         )
+        _record_soc_event(
+            event_type="privacy.tracker_block",
+            severity=SocSeverity.medium,
+            title=f"Tracker request blocked: {tracker_match.hostname}",
+            summary="Proxy egress was denied because the destination matched tracker intelligence.",
+            details={
+                "target_type": "proxy",
+                "url": payload.url,
+                "hostname": tracker_match.hostname,
+                "matched_domain": tracker_match.matched_domain,
+                "source": tracker_match.source,
+                "confidence": tracker_match.confidence,
+                "reason": tracker_match.reason,
+                "via": payload.via,
+            },
+            tags=["privacy", "tracker", "proxy"],
+        )
         raise HTTPException(status_code=403, detail=f"Tracker destination blocked: {tracker_match.hostname}")
     try:
         result = proxy.request(payload.method, payload.url, via=payload.via)
@@ -1018,6 +1134,120 @@ async def automation_status(_: None = Depends(require_operator_access)) -> dict:
     return automation.status()
 
 
+@app.get("/soc/overview")
+async def soc_overview(_: None = Depends(require_operator_access)) -> dict:
+    return soc_manager.overview()
+
+
+@app.post("/soc/events")
+async def soc_ingest_event(
+    payload: SocEventIngest,
+    _: None = Depends(require_operator_access),
+) -> dict:
+    result = _record_soc_event(
+        event_type=payload.event_type,
+        severity=payload.severity,
+        title=payload.title,
+        summary=payload.summary,
+        details=payload.details,
+        artifacts=payload.artifacts,
+        tags=payload.tags,
+    )
+    event_record, alert_record = result
+    return {
+        "event": event_record.model_dump(mode="json"),
+        "alert": alert_record.model_dump(mode="json") if alert_record is not None else None,
+    }
+
+
+@app.get("/soc/events")
+async def soc_list_events(
+    limit: int = Query(default=50, ge=1, le=250),
+    severity: SocSeverity | None = None,
+    event_type: str | None = None,
+    _: None = Depends(require_operator_access),
+) -> dict:
+    events = soc_manager.list_events(limit=limit, severity=severity, event_type=event_type)
+    return {"events": [event.model_dump(mode="json") for event in events]}
+
+
+@app.get("/soc/alerts")
+async def soc_list_alerts(
+    status: SocAlertStatus | None = None,
+    _: None = Depends(require_operator_access),
+) -> dict:
+    alerts = soc_manager.list_alerts(status=status)
+    return {"alerts": [alert.model_dump(mode="json") for alert in alerts]}
+
+
+@app.get("/soc/alerts/{alert_id}")
+async def soc_get_alert(
+    alert_id: str,
+    _: None = Depends(require_operator_access),
+) -> dict:
+    try:
+        alert = soc_manager.get_alert(alert_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return alert.model_dump(mode="json")
+
+
+@app.patch("/soc/alerts/{alert_id}")
+async def soc_update_alert(
+    alert_id: str,
+    payload: SocAlertUpdate,
+    _: None = Depends(require_operator_access),
+) -> dict:
+    try:
+        alert = soc_manager.update_alert(alert_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return alert.model_dump(mode="json")
+
+
+@app.post("/soc/cases")
+async def soc_create_case(
+    payload: SocCaseCreate,
+    _: None = Depends(require_operator_access),
+) -> dict:
+    case = soc_manager.create_case(payload)
+    return case.model_dump(mode="json")
+
+
+@app.get("/soc/cases")
+async def soc_list_cases(
+    status: SocCaseStatus | None = None,
+    _: None = Depends(require_operator_access),
+) -> dict:
+    cases = soc_manager.list_cases(status=status)
+    return {"cases": [case.model_dump(mode="json") for case in cases]}
+
+
+@app.get("/soc/cases/{case_id}")
+async def soc_get_case(
+    case_id: str,
+    _: None = Depends(require_operator_access),
+) -> dict:
+    try:
+        case = soc_manager.get_case(case_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return case.model_dump(mode="json")
+
+
+@app.patch("/soc/cases/{case_id}")
+async def soc_update_case(
+    case_id: str,
+    payload: SocCaseUpdate,
+    _: None = Depends(require_operator_access),
+) -> dict:
+    try:
+        case = soc_manager.update_case(case_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return case.model_dump(mode="json")
+
+
 @app.get("/health/security")
 async def security_health() -> dict:
     tracker_health = tracker_intel.health_status()
@@ -1032,6 +1262,11 @@ async def security_health() -> dict:
         "tracker_intel": tracker_health,
         "malware_scanner": malware_health,
         "automation": automation.status(),
+        "soc": {
+            key: value
+            for key, value in soc_manager.overview().items()
+            if key != "recent_events"
+        },
     })
 
 

@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SECURITY_GATEWAY_", env_file=".env")
     environment: str = Field("dev", description="Deployment environment tag")
     audit_log_path: str = Field("logs/audit.jsonl")
+    soc_event_log_path: str = Field("logs/soc_events.jsonl")
+    soc_alert_store_path: str = Field("logs/soc_alerts.json")
+    soc_case_store_path: str = Field("logs/soc_cases.json")
     ip_blocklist_path: str = Field("logs/blocked_ips.json")
     report_output_dir: str = Field(default_factory=_default_report_output_dir)
     hashicorp_vault_url: Optional[str] = None

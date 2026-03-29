@@ -5,7 +5,7 @@ import math
 from datetime import datetime
 from enum import Enum
 from ipaddress import ip_address
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -103,3 +103,106 @@ class CredentialLease(BaseModel):
     lease_id: str
     secret: str
     expires_at: datetime
+
+
+class SocSeverity(str, Enum):
+    low = "low"
+    medium = "medium"
+    high = "high"
+    critical = "critical"
+
+
+class SocAlertStatus(str, Enum):
+    open = "open"
+    acknowledged = "acknowledged"
+    closed = "closed"
+
+
+class SocCaseStatus(str, Enum):
+    open = "open"
+    investigating = "investigating"
+    contained = "contained"
+    closed = "closed"
+
+
+class SocEventIngest(BaseModel):
+    event_type: str = Field(min_length=1, max_length=128)
+    source: str = Field(default="security_gateway", min_length=1, max_length=64)
+    severity: SocSeverity = SocSeverity.medium
+    title: str = Field(min_length=1, max_length=160)
+    summary: str = Field(min_length=1, max_length=2_000)
+    details: Dict[str, Any] = Field(default_factory=dict)
+    artifacts: list[str] = Field(default_factory=list, max_length=32)
+    tags: list[str] = Field(default_factory=list, max_length=32)
+
+    @field_validator("artifacts", "tags")
+    @classmethod
+    def validate_string_lists(cls, value: list[str]) -> list[str]:
+        for item in value:
+            if not item or len(item) > 256:
+                raise ValueError("List entries must be between 1 and 256 characters.")
+        return value
+
+
+class SocEventRecord(SocEventIngest):
+    event_id: str = Field(min_length=1, max_length=64)
+    created_at: datetime
+    linked_alert_id: Optional[str] = Field(default=None, max_length=64)
+
+
+class SocAlertRecord(BaseModel):
+    alert_id: str = Field(min_length=1, max_length=64)
+    title: str = Field(min_length=1, max_length=160)
+    summary: str = Field(min_length=1, max_length=2_000)
+    severity: SocSeverity
+    status: SocAlertStatus = SocAlertStatus.open
+    source_event_ids: list[str] = Field(default_factory=list, max_length=64)
+    assignee: Optional[str] = Field(default=None, max_length=128)
+    notes: list[str] = Field(default_factory=list, max_length=64)
+    created_at: datetime
+    updated_at: datetime
+
+    @field_validator("source_event_ids", "notes")
+    @classmethod
+    def validate_record_lists(cls, value: list[str]) -> list[str]:
+        for item in value:
+            if not item or len(item) > 512:
+                raise ValueError("List entries must be between 1 and 512 characters.")
+        return value
+
+
+class SocAlertUpdate(BaseModel):
+    status: Optional[SocAlertStatus] = None
+    assignee: Optional[str] = Field(default=None, max_length=128)
+    note: Optional[str] = Field(default=None, max_length=512)
+
+
+class SocCaseCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=160)
+    summary: str = Field(min_length=1, max_length=2_000)
+    severity: SocSeverity = SocSeverity.medium
+    source_event_ids: list[str] = Field(default_factory=list, max_length=64)
+    linked_alert_ids: list[str] = Field(default_factory=list, max_length=64)
+    assignee: Optional[str] = Field(default=None, max_length=128)
+
+    @field_validator("source_event_ids", "linked_alert_ids")
+    @classmethod
+    def validate_reference_lists(cls, value: list[str]) -> list[str]:
+        for item in value:
+            if not item or len(item) > 64:
+                raise ValueError("Reference IDs must be between 1 and 64 characters.")
+        return value
+
+
+class SocCaseRecord(SocCaseCreate):
+    case_id: str = Field(min_length=1, max_length=64)
+    status: SocCaseStatus = SocCaseStatus.open
+    notes: list[str] = Field(default_factory=list, max_length=64)
+    created_at: datetime
+    updated_at: datetime
+
+
+class SocCaseUpdate(BaseModel):
+    status: Optional[SocCaseStatus] = None
+    assignee: Optional[str] = Field(default=None, max_length=128)
+    note: Optional[str] = Field(default=None, max_length=512)
