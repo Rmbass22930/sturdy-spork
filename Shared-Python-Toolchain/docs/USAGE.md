@@ -255,6 +255,8 @@ SECURITY_GATEWAY_MALWARE_FEED_VERIFY_TLS=true
 SECURITY_GATEWAY_MALWARE_FEED_CA_BUNDLE_PATH=C:\path\to\trusted-ca.pem
 SECURITY_GATEWAY_MALWARE_FEED_URLS=["https://example.com/list1.txt","https://example.com/list2.json"]
 ```
+- Network refreshes only accept public HTTPS feed URLs.
+- Embedded credentials, localhost, metadata-style hosts, and private or link-local destinations are rejected before any request is sent.
 
 ## Malware rule feeds
 - Malware scanning can also consume refreshable rule/string feeds for simple pattern-based detections.
@@ -281,6 +283,7 @@ SECURITY_GATEWAY_MALWARE_RULE_FEED_VERIFY_TLS=true
 SECURITY_GATEWAY_MALWARE_RULE_FEED_CA_BUNDLE_PATH=C:\path\to\trusted-ca.pem
 SECURITY_GATEWAY_MALWARE_RULE_FEED_URLS=["https://example.com/list1.txt","https://example.com/list2.json"]
 ```
+- Rule-feed refreshes use the same public-HTTPS validation as malware hash feeds.
 
 ## HashiCorp Vault backend
 Set the following environment variables (or `.env`) to push PAM secrets into Vault KV v2:
@@ -384,6 +387,7 @@ SECURITY_GATEWAY_TRACKER_FEED_URLS=["https://example.com/list1.txt","https://exa
 SECURITY_GATEWAY_TRACKER_FEED_VERIFY_TLS=true
 SECURITY_GATEWAY_TRACKER_FEED_CA_BUNDLE_PATH=C:\path\to\trusted-ca.pem
 ```
+- Tracker feed refreshes only fetch from public HTTPS hosts and reject localhost, metadata-style hosts, embedded credentials, and private-network destinations.
 
 ## Offline seed files
 - Airgapped environments can seed tracker, malware hash, and malware rule caches from local files before any network refresh is attempted.

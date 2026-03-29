@@ -207,3 +207,43 @@ def test_malware_feed_import_and_health_status(tmp_path):
     assert health["healthy"] is False
     assert "malware hash feed TLS verification is disabled" in health["warnings"]
     assert "malware rule feed TLS verification is disabled" in health["warnings"]
+
+
+def test_malware_scanner_rejects_unsafe_hash_feed_urls(tmp_path):
+    cache_path = tmp_path / "malware-feed-hashes.json"
+    scanner = MalwareScanner(
+        feed_cache_path=cache_path,
+        feed_urls=["https://127.0.0.1/malware.txt"],
+        min_total_hashes=1,
+    )
+
+    try:
+        scanner.refresh_feed_cache()
+    except RuntimeError as exc:
+        assert "blocked address" in str(exc)
+    else:
+        raise AssertionError("Expected refresh_feed_cache to reject unsafe malware feed URLs")
+
+    status = scanner.feed_status()
+    assert status["last_refresh_result"] == "failed"
+    assert "blocked address" in status["last_error"]
+
+
+def test_malware_scanner_rejects_unsafe_rule_feed_urls(tmp_path):
+    cache_path = tmp_path / "malware-rule-feed-rules.json"
+    scanner = MalwareScanner(
+        rule_feed_cache_path=cache_path,
+        rule_feed_urls=["https://127.0.0.1/rules.json"],
+        min_total_rules=1,
+    )
+
+    try:
+        scanner.refresh_rule_feed_cache()
+    except RuntimeError as exc:
+        assert "blocked address" in str(exc)
+    else:
+        raise AssertionError("Expected refresh_rule_feed_cache to reject unsafe malware rule feed URLs")
+
+    status = scanner.rule_feed_status()
+    assert status["last_refresh_result"] == "failed"
+    assert "blocked address" in status["last_error"]

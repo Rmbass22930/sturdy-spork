@@ -269,3 +269,23 @@ def test_feed_import_and_health_status_capture_tls_settings(tmp_path: Path) -> N
     assert health["healthy"] is False
     assert "tracker feed TLS verification is disabled" in health["warnings"]
     assert health["feed_status"]["domain_count"] == 2
+
+
+def test_refresh_feed_cache_rejects_unsafe_feed_urls(tmp_path: Path) -> None:
+    cache_path = tmp_path / "tracker-feeds.json"
+    intel = TrackerIntel(
+        feed_cache_path=cache_path,
+        feed_urls=["https://127.0.0.1/tracker-feed.txt"],
+        min_total_domains=1,
+    )
+
+    try:
+        intel.refresh_feed_cache()
+    except RuntimeError as exc:
+        assert "blocked address" in str(exc)
+    else:
+        raise AssertionError("Expected refresh_feed_cache to reject unsafe tracker feed URLs")
+
+    status = intel.feed_status()
+    assert status["last_refresh_result"] == "failed"
+    assert "blocked address" in status["last_error"]

@@ -13,6 +13,7 @@ from typing import Any, Dict, Iterable, Tuple
 from urllib.request import urlopen
 
 from .models import DeviceContext
+from .url_safety import validate_public_https_url
 
 
 SHA256_PATTERN = re.compile(r"\b[a-fA-F0-9]{64}\b")
@@ -344,7 +345,7 @@ class MalwareScanner:
                 }
             )
             self._write_feed_cache_payload(failed_payload)
-            if suspicious_reason:
+            if suspicious_reason and source_summaries:
                 raise ValueError(f"Refusing to replace malware feed cache: {suspicious_reason}")
             raise RuntimeError(failed_payload["last_error"])
 
@@ -433,7 +434,7 @@ class MalwareScanner:
                 }
             )
             self._write_rule_feed_cache_payload(failed_payload)
-            if suspicious_reason:
+            if suspicious_reason and source_summaries:
                 raise ValueError(f"Refusing to replace malware rule feed cache: {suspicious_reason}")
             raise RuntimeError(failed_payload["last_error"])
 
@@ -726,6 +727,7 @@ class MalwareScanner:
         verify_tls: bool,
         ca_bundle_path: str | Path | None,
     ) -> str:
+        validate_public_https_url(url, label="Malware feed URL")
         context = self._build_ssl_context(verify_tls, ca_bundle_path)
         with urlopen(url, timeout=timeout, context=context) as response:  # noqa: S310
             return response.read().decode("utf-8", errors="replace")

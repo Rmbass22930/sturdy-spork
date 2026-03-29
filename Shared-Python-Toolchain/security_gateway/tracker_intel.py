@@ -11,6 +11,8 @@ from typing import Any, Iterable, List, Optional
 from urllib.parse import parse_qs, urlparse
 from urllib.request import urlopen
 
+from .url_safety import validate_public_https_url
+
 
 BUILTIN_TRACKER_DOMAINS = [
     "google-analytics.com",
@@ -424,6 +426,7 @@ class TrackerIntel:
         ]
 
     def _fetch_payload(self, url: str, *, timeout: float) -> str:
+        validate_public_https_url(url, label="Tracker feed URL")
         context = self._build_ssl_context()
         with urlopen(url, timeout=timeout, context=context) as response:  # noqa: S310
             return response.read().decode("utf-8", errors="replace")

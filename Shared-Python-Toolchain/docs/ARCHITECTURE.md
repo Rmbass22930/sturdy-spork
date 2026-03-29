@@ -36,7 +36,7 @@
     - Telemetry signatures now derive from configured stable key material, and the in-memory record store is bounded by retention age and maximum record count.
     - `MalwareScanner` runs files through local heuristics plus refreshable malware hash feeds and simple string/rule feeds before the file is handed to a privileged workflow.
     - Upload scanning is bounded by a configured maximum file size before payloads are materialized in memory.
-   - Feed refreshes support explicit TLS verification controls, custom CA bundles, local-cache imports for airgapped environments, and health reporting for stale or failed detection content.
+   - Feed refreshes support explicit TLS verification controls, custom CA bundles, local-cache imports for airgapped environments, health reporting for stale or failed detection content, and public-HTTPS URL validation before any refresh request leaves the process.
 
 7. **security_gateway/service.py**
     - FastAPI service that exposes: `/access/evaluate`, `/pam/checkout`, `/dns/resolve`, `/endpoint/scan`, `/endpoint/malware-feeds/*`, `/endpoint/malware-rule-feeds/*`, `/privacy/tracker-feeds/*`, `/health/security`, `/tor/request`.
@@ -68,5 +68,5 @@
 ## Extensibility
 - Each module isolates vendor-specific code so swapping Tor for WARP or adding a new DoH provider requires small edits.
 - Configuration lives in `security_gateway/config.py` plus `.env` support for secrets.
-- Detection feeds can be bootstrapped from local files for offline environments and then refreshed later when a trusted network path becomes available.
+- Detection feeds can be bootstrapped from local files for offline environments and then refreshed later when a trusted public HTTPS network path becomes available.
 - Tests target the policy engine, DNS resolver, and CLI flows using pytest + httpx mocks.
