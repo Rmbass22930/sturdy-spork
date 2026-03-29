@@ -130,6 +130,38 @@ class SecurityOperationsManager:
         alerts.sort(key=lambda item: item.updated_at, reverse=True)
         return alerts
 
+    def query_alerts(
+        self,
+        *,
+        status: SocAlertStatus | None = None,
+        severity: SocSeverity | None = None,
+        assignee: str | None = None,
+        linked_case_state: str | None = None,
+        sort: str = "updated_desc",
+        limit: int = 100,
+    ) -> list[SocAlertRecord]:
+        alerts = self._read_records(self._alert_store_path, SocAlertRecord)
+        if status is not None:
+            alerts = [item for item in alerts if item.status is status]
+        if severity is not None:
+            alerts = [item for item in alerts if item.severity is severity]
+        if assignee is not None:
+            normalized_assignee = assignee.strip().casefold()
+            if normalized_assignee == "unassigned":
+                alerts = [item for item in alerts if not item.assignee]
+            else:
+                alerts = [
+                    item
+                    for item in alerts
+                    if item.assignee is not None and item.assignee.casefold() == normalized_assignee
+                ]
+        if linked_case_state == "linked":
+            alerts = [item for item in alerts if item.linked_case_id]
+        elif linked_case_state == "unlinked":
+            alerts = [item for item in alerts if not item.linked_case_id]
+        self._sort_alerts(alerts, sort)
+        return alerts[:limit]
+
     def get_alert(self, alert_id: str) -> SocAlertRecord:
         for alert in self.list_alerts():
             if alert.alert_id == alert_id:
@@ -247,6 +279,33 @@ class SecurityOperationsManager:
             cases = [item for item in cases if item.status is status]
         cases.sort(key=lambda item: item.updated_at, reverse=True)
         return cases
+
+    def query_cases(
+        self,
+        *,
+        status: SocCaseStatus | None = None,
+        severity: SocSeverity | None = None,
+        assignee: str | None = None,
+        sort: str = "updated_desc",
+        limit: int = 100,
+    ) -> list[SocCaseRecord]:
+        cases = self._read_records(self._case_store_path, SocCaseRecord)
+        if status is not None:
+            cases = [item for item in cases if item.status is status]
+        if severity is not None:
+            cases = [item for item in cases if item.severity is severity]
+        if assignee is not None:
+            normalized_assignee = assignee.strip().casefold()
+            if normalized_assignee == "unassigned":
+                cases = [item for item in cases if not item.assignee]
+            else:
+                cases = [
+                    item
+                    for item in cases
+                    if item.assignee is not None and item.assignee.casefold() == normalized_assignee
+                ]
+        self._sort_cases(cases, sort)
+        return cases[:limit]
 
     def get_case(self, case_id: str) -> SocCaseRecord:
         for case in self.list_cases():
@@ -500,6 +559,40 @@ class SecurityOperationsManager:
             if not preserve_status:
                 updates["status"] = alert_status
             alerts[index] = existing.model_copy(update=updates)
+
+    @staticmethod
+    def _sort_alerts(alerts: list[SocAlertRecord], sort: str) -> None:
+        severity_rank = {
+            SocSeverity.low: 0,
+            SocSeverity.medium: 1,
+            SocSeverity.high: 2,
+            SocSeverity.critical: 3,
+        }
+        if sort == "updated_asc":
+            alerts.sort(key=lambda item: item.updated_at)
+        elif sort == "severity_desc":
+            alerts.sort(key=lambda item: (severity_rank[item.severity], item.updated_at), reverse=True)
+        elif sort == "severity_asc":
+            alerts.sort(key=lambda item: (severity_rank[item.severity], item.updated_at))
+        else:
+            alerts.sort(key=lambda item: item.updated_at, reverse=True)
+
+    @staticmethod
+    def _sort_cases(cases: list[SocCaseRecord], sort: str) -> None:
+        severity_rank = {
+            SocSeverity.low: 0,
+            SocSeverity.medium: 1,
+            SocSeverity.high: 2,
+            SocSeverity.critical: 3,
+        }
+        if sort == "updated_asc":
+            cases.sort(key=lambda item: item.updated_at)
+        elif sort == "severity_desc":
+            cases.sort(key=lambda item: (severity_rank[item.severity], item.updated_at), reverse=True)
+        elif sort == "severity_asc":
+            cases.sort(key=lambda item: (severity_rank[item.severity], item.updated_at))
+        else:
+            cases.sort(key=lambda item: item.updated_at, reverse=True)
 
     def _append_event(self, event: SocEventRecord) -> None:
         line = event.model_dump_json()

@@ -1181,9 +1181,21 @@ async def soc_list_events(
 @app.get("/soc/alerts")
 async def soc_list_alerts(
     status: SocAlertStatus | None = None,
+    severity: SocSeverity | None = None,
+    assignee: str | None = Query(default=None, min_length=1, max_length=128),
+    linked_case_state: str | None = Query(default=None, pattern="^(linked|unlinked)$"),
+    sort: str = Query(default="updated_desc", pattern="^(updated_desc|updated_asc|severity_desc|severity_asc)$"),
+    limit: int = Query(default=100, ge=1, le=250),
     _: None = Depends(require_operator_access),
 ) -> dict:
-    alerts = soc_manager.list_alerts(status=status)
+    alerts = soc_manager.query_alerts(
+        status=status,
+        severity=severity,
+        assignee=assignee,
+        linked_case_state=linked_case_state,
+        sort=sort,
+        limit=limit,
+    )
     return {"alerts": [alert.model_dump(mode="json") for alert in alerts]}
 
 
@@ -1242,9 +1254,19 @@ async def soc_create_case(
 @app.get("/soc/cases")
 async def soc_list_cases(
     status: SocCaseStatus | None = None,
+    severity: SocSeverity | None = None,
+    assignee: str | None = Query(default=None, min_length=1, max_length=128),
+    sort: str = Query(default="updated_desc", pattern="^(updated_desc|updated_asc|severity_desc|severity_asc)$"),
+    limit: int = Query(default=100, ge=1, le=250),
     _: None = Depends(require_operator_access),
 ) -> dict:
-    cases = soc_manager.list_cases(status=status)
+    cases = soc_manager.query_cases(
+        status=status,
+        severity=severity,
+        assignee=assignee,
+        sort=sort,
+        limit=limit,
+    )
     return {"cases": [case.model_dump(mode="json") for case in cases]}
 
 

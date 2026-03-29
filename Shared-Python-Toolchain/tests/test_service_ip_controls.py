@@ -375,6 +375,89 @@ def test_soc_alert_can_be_promoted_to_case(monkeypatch, tmp_path):
     assert dashboard.json()["triage"]["unassigned_alerts"] == []
 
 
+def test_soc_alert_queries_support_filters_and_sort(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
+
+    with TestClient(service.app) as client:
+        for severity, title in [
+            ("medium", "Medium tracker alert"),
+            ("critical", "Critical malware alert"),
+        ]:
+            response = client.post(
+                "/soc/events",
+                json={
+                    "event_type": "endpoint.malware_detected",
+                    "severity": severity,
+                    "title": title,
+                    "summary": f"{title} summary.",
+                    "details": {"filename": title.replace(" ", "_")},
+                },
+                headers=headers,
+            )
+            assert response.status_code == 200
+
+        alerts = client.get("/soc/alerts", params={"sort": "severity_desc", "limit": 1}, headers=headers)
+        critical_id = alerts.json()["alerts"][0]["alert_id"]
+        promoted = client.post(
+            f"/soc/alerts/{critical_id}/case",
+            json={"assignee": "tier1-analyst"},
+            headers=headers,
+        )
+        linked_only = client.get("/soc/alerts", params={"linked_case_state": "linked"}, headers=headers)
+        unlinked_only = client.get("/soc/alerts", params={"linked_case_state": "unlinked"}, headers=headers)
+        assigned_only = client.get("/soc/alerts", params={"assignee": "tier1-analyst"}, headers=headers)
+
+    assert promoted.status_code == 200
+    assert alerts.status_code == 200
+    assert len(alerts.json()["alerts"]) == 1
+    assert alerts.json()["alerts"][0]["severity"] == "critical"
+    assert linked_only.status_code == 200
+    assert [item["alert_id"] for item in linked_only.json()["alerts"]] == [critical_id]
+    assert unlinked_only.status_code == 200
+    assert all(item["linked_case_id"] is None for item in unlinked_only.json()["alerts"])
+    assert assigned_only.status_code == 200
+    assert [item["alert_id"] for item in assigned_only.json()["alerts"]] == [critical_id]
+
+
+def test_soc_case_queries_support_filters_and_sort(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
+
+    with TestClient(service.app) as client:
+        first = client.post(
+            "/soc/cases",
+            json={
+                "title": "Medium case",
+                "summary": "Initial review",
+                "severity": "medium",
+            },
+            headers=headers,
+        )
+        second = client.post(
+            "/soc/cases",
+            json={
+                "title": "Critical case",
+                "summary": "Escalated review",
+                "severity": "critical",
+                "assignee": "tier2-analyst",
+            },
+            headers=headers,
+        )
+        sorted_cases = client.get("/soc/cases", params={"sort": "severity_desc", "limit": 1}, headers=headers)
+        assigned_cases = client.get("/soc/cases", params={"assignee": "tier2-analyst"}, headers=headers)
+        unassigned_cases = client.get("/soc/cases", params={"assignee": "unassigned"}, headers=headers)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert sorted_cases.status_code == 200
+    assert sorted_cases.json()["cases"][0]["severity"] == "critical"
+    assert assigned_cases.status_code == 200
+    assert [item["title"] for item in assigned_cases.json()["cases"]] == ["Critical case"]
+    assert unassigned_cases.status_code == 200
+    assert [item["title"] for item in unassigned_cases.json()["cases"]] == ["Medium case"]
+
+
 def test_access_deny_is_mirrored_into_soc_events(monkeypatch, tmp_path):
     _install_test_managers(monkeypatch, tmp_path)
     operator_headers = _operator_headers(monkeypatch)
