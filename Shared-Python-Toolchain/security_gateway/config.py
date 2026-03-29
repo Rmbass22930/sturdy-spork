@@ -72,14 +72,14 @@ class Settings(BaseSettings):
     proxy_request_max_requests_per_window: int = 20
     endpoint_bearer_token: Optional[str] = None
     endpoint_bearer_secret_name: Optional[str] = "endpoint-ingest-token"
-    endpoint_allow_loopback_without_token: bool = True
+    endpoint_allow_loopback_without_token: bool = False
     endpoint_telemetry_signing_key: Optional[str] = None
     endpoint_telemetry_max_records: int = 10_000
     endpoint_telemetry_retention_hours: float = 168.0
     endpoint_scan_max_upload_bytes: int = 5_242_880
     operator_bearer_token: Optional[str] = None
     operator_bearer_secret_name: Optional[str] = "operator-bearer-token"
-    operator_allow_loopback_without_token: bool = True
+    operator_allow_loopback_without_token: bool = False
     service_enable_api_docs: bool = False
     service_allowed_hosts: List[str] = Field(
         default_factory=lambda: ["localhost", "127.0.0.1", "[::1]", "testserver", "testclient"]

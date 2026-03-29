@@ -139,6 +139,34 @@ def test_api_docs_are_disabled_by_default(monkeypatch, tmp_path):
         assert client.get("/openapi.json").status_code == 404
 
 
+def test_operator_and_endpoint_routes_fail_closed_when_tokens_are_unconfigured(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "operator_bearer_token", None)
+    monkeypatch.setattr(settings, "operator_bearer_secret_name", None)
+    monkeypatch.setattr(settings, "operator_allow_loopback_without_token", False)
+    monkeypatch.setattr(settings, "endpoint_bearer_token", None)
+    monkeypatch.setattr(settings, "endpoint_bearer_secret_name", None)
+    monkeypatch.setattr(settings, "endpoint_allow_loopback_without_token", False)
+
+    payload = {
+        "device_id": "device-123",
+        "os": "Windows",
+        "os_version": "11",
+        "compliance": "compliant",
+        "is_encrypted": True,
+        "edr_active": True,
+    }
+
+    with TestClient(service.app) as client:
+        operator_response = client.get("/automation/status")
+        endpoint_response = client.post("/endpoint/telemetry", json=payload)
+
+    assert operator_response.status_code == 503
+    assert operator_response.json()["detail"] == "Operator bearer token is not configured for remote management."
+    assert endpoint_response.status_code == 503
+    assert endpoint_response.json()["detail"] == "Endpoint bearer token is not configured for remote ingestion."
+
+
 def test_rejects_untrusted_host_headers(monkeypatch, tmp_path):
     _install_test_managers(monkeypatch, tmp_path)
     monkeypatch.setattr(

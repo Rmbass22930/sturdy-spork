@@ -48,6 +48,7 @@ uvicorn security_gateway.service:app --reload
 - Endpoint-ingest routes require endpoint authentication:
   - `POST /endpoint/telemetry`
   - `POST /endpoint/scan`
+- Operator and endpoint loopback bypasses are disabled by default. If you intentionally want local unauthenticated access during development, enable the corresponding `*_ALLOW_LOOPBACK_WITHOUT_TOKEN` setting explicitly.
 
 ## CLI examples
 ```
