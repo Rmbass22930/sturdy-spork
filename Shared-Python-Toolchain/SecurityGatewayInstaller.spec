@@ -3,6 +3,12 @@
 import os
 from pathlib import Path
 
+runtime_root = os.path.join(
+    os.environ.get("TEMP", os.path.expanduser("~")),
+    "SecurityGatewayRuntime",
+    "_runtime",
+)
+
 project_root = Path.cwd()
 payload_env = os.environ.get("SECURITY_GATEWAY_PAYLOAD_PATH")
 if not payload_env:
@@ -49,7 +55,7 @@ exe = EXE(
     strip=False,
     upx=True,
     upx_exclude=[],
-    runtime_tmpdir=None,
+    runtime_tmpdir=runtime_root,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
