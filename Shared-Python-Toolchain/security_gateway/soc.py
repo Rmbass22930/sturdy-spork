@@ -320,13 +320,17 @@ class SecurityOperationsManager:
                 if existing.case_id != case_id:
                     continue
                 notes = list(existing.notes)
+                observables = list(existing.observables)
                 if payload.note:
                     notes.append(payload.note)
+                if payload.observable and payload.observable not in observables:
+                    observables.append(payload.observable)
                 updated = existing.model_copy(
                     update={
                         "status": payload.status or existing.status,
                         "assignee": payload.assignee if payload.assignee is not None else existing.assignee,
                         "notes": notes,
+                        "observables": observables,
                         "updated_at": _utc_now(),
                     }
                 )
@@ -334,7 +338,12 @@ class SecurityOperationsManager:
                 self._write_records(self._case_store_path, cases)
                 self._audit.log(
                     "soc.case.updated",
-                    {"case_id": case_id, "status": updated.status.value, "assignee": updated.assignee},
+                    {
+                        "case_id": case_id,
+                        "status": updated.status.value,
+                        "assignee": updated.assignee,
+                        "observable_added": payload.observable,
+                    },
                 )
                 return updated
         raise KeyError(f"Case not found: {case_id}")

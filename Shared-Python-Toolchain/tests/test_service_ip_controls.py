@@ -318,7 +318,11 @@ def test_soc_case_lifecycle(monkeypatch, tmp_path):
         case_id = created.json()["case_id"]
         updated = client.patch(
             f"/soc/cases/{case_id}",
-            json={"status": "investigating", "note": "Owner assigned and triage started."},
+            json={
+                "status": "investigating",
+                "note": "Owner assigned and triage started.",
+                "observable": "203.0.113.55",
+            },
             headers=headers,
         )
         fetched = client.get(f"/soc/cases/{case_id}", headers=headers)
@@ -330,7 +334,9 @@ def test_soc_case_lifecycle(monkeypatch, tmp_path):
     assert fetched_alert.status_code == 200
     assert updated.json()["status"] == "investigating"
     assert updated.json()["notes"] == ["Owner assigned and triage started."]
+    assert updated.json()["observables"] == ["203.0.113.55"]
     assert fetched.json()["assignee"] == "tier2-analyst"
+    assert fetched.json()["observables"] == ["203.0.113.55"]
     assert fetched_alert.json()["linked_case_id"] == case_id
 
 

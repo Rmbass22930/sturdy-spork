@@ -197,6 +197,7 @@ class SocCaseCreate(BaseModel):
     severity: SocSeverity = SocSeverity.medium
     source_event_ids: list[str] = Field(default_factory=list, max_length=64)
     linked_alert_ids: list[str] = Field(default_factory=list, max_length=64)
+    observables: list[str] = Field(default_factory=list, max_length=64)
     assignee: Optional[str] = Field(default=None, max_length=128)
 
     @field_validator("source_event_ids", "linked_alert_ids")
@@ -205,6 +206,14 @@ class SocCaseCreate(BaseModel):
         for item in value:
             if not item or len(item) > 64:
                 raise ValueError("Reference IDs must be between 1 and 64 characters.")
+        return value
+
+    @field_validator("observables")
+    @classmethod
+    def validate_observables(cls, value: list[str]) -> list[str]:
+        for item in value:
+            if not item or len(item) > 256:
+                raise ValueError("Observables must be between 1 and 256 characters.")
         return value
 
 
@@ -220,3 +229,4 @@ class SocCaseUpdate(BaseModel):
     status: Optional[SocCaseStatus] = None
     assignee: Optional[str] = Field(default=None, max_length=128)
     note: Optional[str] = Field(default=None, max_length=512)
+    observable: Optional[str] = Field(default=None, max_length=256)
