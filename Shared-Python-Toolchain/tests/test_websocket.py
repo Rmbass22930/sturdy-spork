@@ -3,11 +3,23 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from security_gateway import service
+from security_gateway.pam import VaultClient
 
 
 def _websocket_headers(monkeypatch, token="test-operator-token"):
     monkeypatch.setattr(service.settings, "operator_bearer_token", token)
+    monkeypatch.setattr(service.settings, "operator_bearer_secret_name", None)
     monkeypatch.setattr(service.settings, "operator_allow_loopback_without_token", False)
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _websocket_secret_headers(monkeypatch, token="test-operator-token", secret_name="operator-bearer-token"):
+    monkeypatch.setattr(service.settings, "operator_bearer_token", "stale-fallback-token")
+    monkeypatch.setattr(service.settings, "operator_bearer_secret_name", secret_name)
+    monkeypatch.setattr(service.settings, "operator_allow_loopback_without_token", False)
+    operator_vault = VaultClient(audit_logger=service.audit_logger, master_key="test-master-key")
+    operator_vault.store_secret(secret_name, token)
+    monkeypatch.setattr(service, "vault", operator_vault)
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -38,6 +50,7 @@ def test_websocket_requires_operator_auth(monkeypatch):
     monkeypatch.setattr(service.automation, "stop", lambda: None)
     monkeypatch.setattr(service.resolver, "close", lambda: None)
     monkeypatch.setattr(service.settings, "operator_bearer_token", "expected-token")
+    monkeypatch.setattr(service.settings, "operator_bearer_secret_name", None)
     monkeypatch.setattr(service.settings, "operator_allow_loopback_without_token", False)
 
     with TestClient(service.app) as client:
@@ -86,3 +99,17 @@ def test_websocket_rate_limits_abusive_message_volume(monkeypatch):
             assert error["message"] == "WebSocket message rate limit exceeded."
             with pytest.raises(WebSocketDisconnect):
                 websocket.receive_text()
+
+
+def test_websocket_accepts_pam_secret_backed_operator_token(monkeypatch):
+    monkeypatch.setattr(service.automation, "start", lambda: None)
+    monkeypatch.setattr(service.automation, "stop", lambda: None)
+    monkeypatch.setattr(service.resolver, "close", lambda: None)
+    headers = _websocket_secret_headers(monkeypatch, token="vault-backed-token")
+
+    with TestClient(service.app) as client:
+        with client.websocket_connect("/ws", headers=headers) as websocket:
+            ready = websocket.receive_json()
+            assert ready["type"] == "ready"
+            websocket.send_text("health")
+            assert websocket.receive_text() == "pong"

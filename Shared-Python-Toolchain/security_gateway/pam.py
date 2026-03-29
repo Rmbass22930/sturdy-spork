@@ -18,11 +18,12 @@ class VaultClient:
         rotation_interval: timedelta | None = None,
         backend: SecretBackend | None = None,
         audit_logger: AuditLogger | None = None,
+        master_key: str | None = None,
     ):
         self._rotation_interval = rotation_interval or timedelta(days=1)
         self._key_versions: Dict[str, str] = {}
         self._current_key_id: str = "v1"
-        self._key_versions[self._current_key_id] = secrets.token_urlsafe(32)
+        self._key_versions[self._current_key_id] = master_key or settings.pam_master_key
         self._backend = backend or self._select_backend()
         self._leases: Dict[str, CredentialLease] = {}
         self._last_rotation = datetime.now(UTC)

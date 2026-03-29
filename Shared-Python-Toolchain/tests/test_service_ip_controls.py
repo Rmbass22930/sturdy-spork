@@ -7,6 +7,7 @@ from security_gateway import service
 from security_gateway.config import settings
 from security_gateway.ip_controls import IPBlocklistManager
 from security_gateway.models import DeviceCompliance
+from security_gateway.pam import VaultClient
 from security_gateway.policy import PolicyEngine
 from security_gateway.reports import SecurityReportBuilder
 from security_gateway.tor import ProxyResponse
@@ -31,17 +32,30 @@ class DummyTraceRunner:
 
 def _operator_headers(monkeypatch, token="test-operator-token"):
     monkeypatch.setattr(settings, "operator_bearer_token", token)
+    monkeypatch.setattr(settings, "operator_bearer_secret_name", None)
     monkeypatch.setattr(settings, "operator_allow_loopback_without_token", False)
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _operator_secret_headers(monkeypatch, token="test-operator-token", secret_name="operator-bearer-token"):
+    monkeypatch.setattr(settings, "operator_bearer_token", "stale-fallback-token")
+    monkeypatch.setattr(settings, "operator_bearer_secret_name", secret_name)
+    monkeypatch.setattr(settings, "operator_allow_loopback_without_token", False)
+    operator_vault = VaultClient(audit_logger=DummyAuditLogger(), master_key="test-master-key")
+    operator_vault.store_secret(secret_name, token)
+    monkeypatch.setattr(service, "vault", operator_vault)
     return {"Authorization": f"Bearer {token}"}
 
 
 def _install_test_managers(monkeypatch, tmp_path):
     audit = DummyAuditLogger()
+    operator_vault = VaultClient(audit_logger=audit, master_key="test-master-key")
     blocklist = IPBlocklistManager(path=tmp_path / "blocked_ips.json", audit_logger=audit)
     traceroute = DummyTraceRunner()
     report_dir = tmp_path / "reports"
     monkeypatch.setattr(settings, "report_output_dir", str(report_dir))
     monkeypatch.setattr(service, "audit_logger", audit)
+    monkeypatch.setattr(service, "vault", operator_vault)
     monkeypatch.setattr(service, "ip_blocklist", blocklist)
     monkeypatch.setattr(
         service,
@@ -435,6 +449,7 @@ def test_malware_feed_refresh_api_returns_400_on_bad_config(monkeypatch, tmp_pat
 def test_feed_management_routes_require_operator_auth(monkeypatch, tmp_path):
     _install_test_managers(monkeypatch, tmp_path)
     monkeypatch.setattr(settings, "operator_bearer_token", "expected-token")
+    monkeypatch.setattr(settings, "operator_bearer_secret_name", None)
     monkeypatch.setattr(settings, "operator_allow_loopback_without_token", False)
 
     with TestClient(service.app) as client:
@@ -450,6 +465,7 @@ def test_feed_management_routes_require_operator_auth(monkeypatch, tmp_path):
 def test_operator_routes_require_auth_for_pam_and_network(monkeypatch, tmp_path):
     _install_test_managers(monkeypatch, tmp_path)
     monkeypatch.setattr(settings, "operator_bearer_token", "expected-token")
+    monkeypatch.setattr(settings, "operator_bearer_secret_name", None)
     monkeypatch.setattr(settings, "operator_allow_loopback_without_token", False)
 
     with TestClient(service.app) as client:
@@ -481,6 +497,22 @@ def test_pam_and_automation_routes_allow_operator_auth(monkeypatch, tmp_path):
         automation_status = client.get("/automation/status", headers=headers)
         assert automation_status.status_code == 200
         assert "running" in automation_status.json()
+
+
+def test_operator_routes_accept_pam_secret_backed_token(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_secret_headers(monkeypatch, token="vault-backed-token")
+
+    with TestClient(service.app) as client:
+        metrics = client.get("/pam/metrics", headers=headers)
+        stale_config_attempt = client.get(
+            "/pam/metrics",
+            headers={"Authorization": "Bearer stale-fallback-token"},
+        )
+
+    assert metrics.status_code == 200
+    assert "rotation_count" in metrics.json()
+    assert stale_config_attempt.status_code == 401
 
 
 def test_security_health_and_rule_feed_routes(monkeypatch, tmp_path):

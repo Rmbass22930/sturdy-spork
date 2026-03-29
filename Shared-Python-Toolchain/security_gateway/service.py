@@ -152,11 +152,25 @@ def _allowed_websocket_origins(websocket: WebSocket) -> set[str]:
     return allowed
 
 
+def _expected_operator_token() -> tuple[str | None, str | None]:
+    secret_name = settings.operator_bearer_secret_name
+    if secret_name:
+        try:
+            secret_token = vault.retrieve_secret(secret_name)
+        except Exception:  # noqa: BLE001
+            secret_token = None
+        if secret_token:
+            return secret_token, "pam_secret"
+    if settings.operator_bearer_token:
+        return settings.operator_bearer_token, "static_config"
+    return None, None
+
+
 def require_operator_access(
     request: Request,
     authorization: str | None = Header(default=None),
 ) -> None:
-    expected_token = settings.operator_bearer_token
+    expected_token, _ = _expected_operator_token()
     client_host = request.client.host if request.client else None
     if expected_token:
         scheme, _, supplied_token = (authorization or "").partition(" ")
@@ -197,7 +211,7 @@ async def require_operator_websocket_access(websocket: WebSocket) -> bool:
         await websocket.send_json({"type": "error", "message": "WebSocket origin is not allowed."})
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return False
-    expected_token = settings.operator_bearer_token
+    expected_token, _ = _expected_operator_token()
     if expected_token:
         scheme, _, supplied_token = (authorization or "").partition(" ")
         if scheme.lower() == "bearer" and supplied_token and secrets.compare_digest(supplied_token, expected_token):

@@ -3,6 +3,7 @@ from datetime import timedelta
 import pytest
 
 from security_gateway.pam import VaultClient
+from security_gateway.secret_backends import LocalMemoryBackend
 
 
 class DummyAuditLogger:
@@ -38,3 +39,14 @@ def test_metrics_increment_after_rotation():
     vault.force_rotate()
     after = vault.get_metrics()
     assert after["rotation_count"] == before["rotation_count"] + 1
+
+
+def test_shared_master_key_recovers_secret_with_new_client():
+    backend = LocalMemoryBackend()
+    writer = VaultClient(backend=backend, audit_logger=DummyAuditLogger(), master_key="shared-master-key")
+    writer.store_secret("db", "super-secret")
+
+    reader = VaultClient(backend=backend, audit_logger=DummyAuditLogger(), master_key="shared-master-key")
+    lease = reader.checkout("db")
+
+    assert lease.secret == "super-secret"

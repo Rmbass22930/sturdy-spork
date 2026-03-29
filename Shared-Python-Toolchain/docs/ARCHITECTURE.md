@@ -18,8 +18,9 @@
    - Wraps WebAuthn/FIDO2 (mocked) and TOTP factors. Provides challenge issuance + verification as first-class steps during `/access/evaluate`.
 
 3. **security_gateway/pam.py**
-   - `VaultClient` encrypts passwords/API keys, rotates them daily, and issues short-lived checkout tokens.
-   - Supports pluggable backends (in-memory or HashiCorp Vault KV v2) plus JSONL audit logging and rotation metrics exposed via API/CLI.
+    - `VaultClient` encrypts passwords/API keys, rotates them daily, and issues short-lived checkout tokens.
+    - Supports pluggable backends (in-memory or HashiCorp Vault KV v2) plus JSONL audit logging and rotation metrics exposed via API/CLI.
+    - Uses the configured PAM master key for bootstrap-version secret recovery so operator credentials stored in PAM can be reused after a restart.
 
 4. **security_gateway/dns.py**
    - `SecureDNSResolver` performs DNS over HTTPS (Cloudflare + Quad9). Validates responses via DNSSEC flags when available.
@@ -33,9 +34,9 @@
    - Feed refreshes support explicit TLS verification controls, custom CA bundles, local-cache imports for airgapped environments, and health reporting for stale or failed detection content.
 
 7. **security_gateway/service.py**
-   - FastAPI service that exposes: `/access/evaluate`, `/pam/checkout`, `/dns/resolve`, `/endpoint/scan`, `/endpoint/malware-feeds/*`, `/endpoint/malware-rule-feeds/*`, `/privacy/tracker-feeds/*`, `/health/security`, `/tor/request`.
-   - PAM operations, IP block management, automation status, and detection-content refresh/import routes require operator authorization via a bearer token, with an explicit loopback-only fallback for local-only development.
-   - The WebSocket channel is also operator-gated, origin-aware for browser clients, rate-limited per connection, and limited to health-style control messages instead of arbitrary echo traffic.
+    - FastAPI service that exposes: `/access/evaluate`, `/pam/checkout`, `/dns/resolve`, `/endpoint/scan`, `/endpoint/malware-feeds/*`, `/endpoint/malware-rule-feeds/*`, `/privacy/tracker-feeds/*`, `/health/security`, `/tor/request`.
+    - PAM operations, IP block management, automation status, and detection-content refresh/import routes require operator authorization via a bearer token, preferring a PAM/Vault-backed operator secret and falling back to a static bootstrap token only when needed.
+    - The WebSocket channel is also operator-gated, origin-aware for browser clients, rate-limited per connection, and limited to health-style control messages instead of arbitrary echo traffic.
    - Emits audit events to stdout + JSONL for SIEM ingestion.
 
 8. **security_gateway/automation.py**

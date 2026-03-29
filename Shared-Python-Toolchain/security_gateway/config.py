@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     automation_malware_rule_feed_refresh_enabled: bool = False
     automation_malware_rule_feed_refresh_every_ticks: int = 12
     operator_bearer_token: Optional[str] = None
+    operator_bearer_secret_name: Optional[str] = "operator-bearer-token"
     operator_allow_loopback_without_token: bool = True
     websocket_allowed_origins: List[str] = Field(default_factory=list)
     websocket_max_messages_per_window: int = 30

@@ -111,6 +111,14 @@ SECURITY_GATEWAY_OPERATOR_BEARER_TOKEN=replace-with-a-long-random-token
 ```
 SECURITY_GATEWAY_OPERATOR_ALLOW_LOOPBACK_WITHOUT_TOKEN=true
 ```
+- For secret-store-backed operator auth, the service first checks the PAM/Vault secret named by:
+```
+SECURITY_GATEWAY_OPERATOR_BEARER_SECRET_NAME=operator-bearer-token
+```
+- If that secret is absent, the service falls back to:
+```
+SECURITY_GATEWAY_OPERATOR_BEARER_TOKEN=replace-me
+```
 - To require the bearer token even on loopback:
 ```
 SECURITY_GATEWAY_OPERATOR_ALLOW_LOOPBACK_WITHOUT_TOKEN=false
@@ -127,6 +135,7 @@ curl -X POST http://127.0.0.1:8000/privacy/tracker-feeds/refresh \
   - blocked-IP administration
   - automation status checks
   - websocket connections to `/ws`
+- A practical bootstrap flow is: start with a loopback-only session or temporary `SECURITY_GATEWAY_OPERATOR_BEARER_TOKEN`, store the long-lived operator token in PAM as `operator-bearer-token`, then remove the static fallback token.
 - Browser-based WebSocket clients should also send an allowed `Origin` header.
 - Configure WebSocket origin/rate controls with:
 ```
@@ -219,6 +228,7 @@ With these in place, `VaultClient` stores each rotated version at `secret/data/s
 ## Encryption defaults
 - Privileged secrets use a shared `common_crypto.AES256GCMCipher`, which derives 256-bit AES keys via PBKDF2-HMAC-SHA256 (310k iterations) and seals data with AES-256-GCM.
 - Associated data can be supplied by callers that need to bind ciphertexts to contextual metadata (e.g., service identifiers) without re-implementing crypto primitives.
+- Keep `SECURITY_GATEWAY_PAM_MASTER_KEY` stable across restarts so bootstrap-version secrets, including operator bearer secrets stored in PAM, remain readable after a service restart.
 
 ## IP blocking
 - Manual IP blocks can be created through the CLI or API and can expire automatically.
