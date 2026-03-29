@@ -12,7 +12,7 @@
 1. **security_gateway/policy.py**
    - `PolicyEngine` orchestrates device/user signals, MFA status, endpoint posture, and threat intel to decide allow/deny or step-up.
    - Uses `RiskCalculator` to combine heuristics (geo velocity, device compliance, known malware) into a normalized risk score.
-   - When a request is denied for high risk, the embedded traceroute runner (with operator confirmation to avoid false positives) captures a back-trace to the source IP, displays the results locally, and attaches the preview to alerts/audit logs.
+   - When a request is denied for high risk, the embedded traceroute runner (with operator confirmation to avoid false positives) captures a back-trace to the source IP, validates the target as a public hostname or IP, displays the results locally, and attaches the preview to alerts/audit logs.
 
 2. **security_gateway/mfa.py**
    - Wraps WebAuthn/FIDO2 (mocked) and TOTP factors. Provides challenge issuance + verification as first-class steps during `/access/evaluate`.

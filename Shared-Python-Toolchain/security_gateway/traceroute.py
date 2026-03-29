@@ -7,6 +7,8 @@ import subprocess
 from dataclasses import dataclass
 from typing import List, Optional
 
+from .url_safety import validate_public_host_or_ip
+
 try:  # pragma: no cover - Windows-only dependency
     import ctypes
 except ImportError:  # pragma: no cover
@@ -43,18 +45,28 @@ class TraceRouteRunner:
     def trace(self, target: str | None, context: Optional[str] = None) -> Optional[TraceRouteResult]:
         if not target:
             return None
-        command = self._build_command(target)
+        try:
+            normalized_target = validate_public_host_or_ip(target, label="Traceroute target")
+        except ValueError as exc:
+            return TraceRouteResult(
+                target=str(target),
+                command=[],
+                exit_code=None,
+                output="",
+                error=str(exc),
+            )
+        command = self._build_command(normalized_target)
         if not command:
             return TraceRouteResult(
-                target=target,
+                target=normalized_target,
                 command=[],
                 exit_code=None,
                 output="",
                 error="No traceroute executable available on this platform.",
             )
-        if self.confirm_before_trace and not self._confirm_trace(target, context):
+        if self.confirm_before_trace and not self._confirm_trace(normalized_target, context):
             return TraceRouteResult(
-                target=target,
+                target=normalized_target,
                 command=command,
                 exit_code=None,
                 output="",
@@ -70,7 +82,7 @@ class TraceRouteRunner:
                 check=False,
             )
             result = TraceRouteResult(
-                target=target,
+                target=normalized_target,
                 command=command,
                 exit_code=completed.returncode,
                 output=completed.stdout.strip(),
@@ -82,7 +94,7 @@ class TraceRouteRunner:
             return result
         except FileNotFoundError:
             return TraceRouteResult(
-                target=target,
+                target=normalized_target,
                 command=command,
                 exit_code=None,
                 output="",
@@ -90,7 +102,7 @@ class TraceRouteRunner:
             )
         except subprocess.TimeoutExpired as exc:
             return TraceRouteResult(
-                target=target,
+                target=normalized_target,
                 command=command,
                 exit_code=None,
                 output=exc.stdout.strip() if exc.stdout else "",
