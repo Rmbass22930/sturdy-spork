@@ -10,7 +10,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['IPython', 'pytest', '_pytest'],
     noarchive=False,
     optimize=0,
 )
@@ -35,4 +35,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    version='spec\\SecurityGateway.version.txt',
 )
