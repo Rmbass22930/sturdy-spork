@@ -89,3 +89,50 @@ def test_build_promote_payload_uses_alert_defaults() -> None:
     assert payload.case_status is SocCaseStatus.investigating
     assert payload.alert_status is SocAlertStatus.acknowledged
     assert payload.assignee == "tier1-analyst"
+
+
+def test_build_case_update_payload_for_note() -> None:
+    payload = SocDashboard._build_case_update_payload(field="note", value="Investigating suspicious login")
+    assert payload.note == "Investigating suspicious login"
+    assert payload.observable is None
+
+
+def test_build_case_update_payload_for_observable() -> None:
+    payload = SocDashboard._build_case_update_payload(field="observable", value="203.0.113.55")
+    assert payload.observable == "203.0.113.55"
+    assert payload.note is None
+
+
+def test_format_case_detail_includes_notes_and_observables() -> None:
+    text = SocDashboard._format_case_detail(
+        {
+            "case_id": "case-123",
+            "title": "Investigate denied access",
+            "status": "investigating",
+            "severity": "high",
+            "assignee": "tier2-analyst",
+            "summary": "Analyst review required.",
+            "observables": ["203.0.113.55", "vpn-admin"],
+            "notes": ["Owner assigned.", "IP added to case."],
+        }
+    )
+    assert "Case: case-123" in text
+    assert "- 203.0.113.55" in text
+    assert "- vpn-admin" in text
+    assert "- Owner assigned." in text
+
+
+def test_format_case_detail_handles_empty_lists() -> None:
+    text = SocDashboard._format_case_detail(
+        {
+            "case_id": "case-456",
+            "title": "Empty case",
+            "status": "open",
+            "severity": "medium",
+            "summary": "No enrichment yet.",
+            "observables": [],
+            "notes": [],
+        }
+    )
+    assert "Observables:\n- none" in text
+    assert "Notes:\n- none" in text

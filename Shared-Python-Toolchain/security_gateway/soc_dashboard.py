@@ -6,16 +6,17 @@ from typing import Any, Callable, cast
 
 try:
     import tkinter as tk
-    from tkinter import messagebox, ttk
+    from tkinter import messagebox, simpledialog, ttk
 except Exception:  # pragma: no cover
     tk = None  # type: ignore[assignment]
     messagebox = None  # type: ignore[assignment]
+    simpledialog = None  # type: ignore[assignment]
     ttk = None  # type: ignore[assignment]
 
 from .alerts import alert_manager
 from .audit import AuditLogger
 from .config import settings
-from .models import SocAlertPromoteCaseRequest, SocAlertStatus, SocCaseStatus, SocSeverity
+from .models import SocAlertPromoteCaseRequest, SocAlertStatus, SocCaseStatus, SocCaseUpdate, SocSeverity
 from .soc import SecurityOperationsManager
 
 
@@ -48,6 +49,7 @@ class SocDashboard:
         self.alert_sort_var = tk.StringVar(value="severity_desc")
         self.case_status_var = tk.StringVar(value="all")
         self.case_sort_var = tk.StringVar(value="updated_desc")
+        self.case_rows_by_id: dict[str, dict[str, Any]] = {}
         self._build_ui()
         self.refresh()
 
@@ -109,6 +111,7 @@ class SocDashboard:
         body.columnconfigure(1, weight=1)
         body.rowconfigure(0, weight=1)
         body.rowconfigure(1, weight=1)
+        body.rowconfigure(2, weight=0)
 
         self.alert_tree = self._build_tree(
             body,
@@ -128,6 +131,7 @@ class SocDashboard:
             headings={"status": "Status", "severity": "Severity", "title": "Title", "assignee": "Assignee"},
             controls=self._build_case_controls,
         )
+        self.case_tree.bind("<<TreeviewSelect>>", lambda _event: self._refresh_case_detail())
         self.correlation_tree = self._build_tree(
             body,
             row=1,
@@ -144,6 +148,23 @@ class SocDashboard:
             columns=("type", "severity", "title", "created"),
             headings={"type": "Type", "severity": "Severity", "title": "Title", "created": "Created"},
         )
+        detail_frame = ttk.LabelFrame(body, text="Case Details", padding=(10, 10), style="SOC.TLabelframe")
+        detail_frame.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(8, 0))
+        detail_frame.columnconfigure(0, weight=1)
+        detail_frame.rowconfigure(0, weight=1)
+        self.case_detail_text = tk.Text(
+            detail_frame,
+            height=10,
+            wrap="word",
+            bg="#f8fbff",
+            fg="#24364a",
+            font=("Consolas", 10),
+            relief="flat",
+            padx=10,
+            pady=10,
+        )
+        self.case_detail_text.grid(row=0, column=0, sticky="nsew")
+        self.case_detail_text.configure(state="disabled")
 
     def _build_tree(
         self,
@@ -227,6 +248,13 @@ class SocDashboard:
             width=14,
         ).grid(row=0, column=3, sticky="w", padx=(0, 12))
         ttk.Button(controls, text="Apply", command=self.refresh).grid(row=0, column=4, sticky="w")
+        ttk.Button(controls, text="Add Note", command=self.add_case_note).grid(row=0, column=5, sticky="w", padx=(12, 0))
+        ttk.Button(controls, text="Add Observable", command=self.add_case_observable).grid(
+            row=0,
+            column=6,
+            sticky="w",
+            padx=(8, 0),
+        )
 
     def refresh(self) -> None:
         dashboard = cast(dict[str, Any], self.manager.dashboard())
@@ -249,6 +277,8 @@ class SocDashboard:
             lambda item: (item["status"], item["severity"], item["title"], item.get("assignee") or "-"),
             item_id_key="case_id",
         )
+        self.case_rows_by_id = {item.case_id: item.model_dump(mode="json") for item in case_rows}
+        self._refresh_case_detail()
         self._populate_tree(
             self.correlation_tree,
             triage["recent_correlations"],
@@ -297,6 +327,20 @@ class SocDashboard:
             )
         self.refresh()
 
+    def add_case_note(self) -> None:
+        self._prompt_case_update(
+            field="note",
+            title="Add Case Note",
+            prompt="Enter a note for the selected case:",
+        )
+
+    def add_case_observable(self) -> None:
+        self._prompt_case_update(
+            field="observable",
+            title="Add Case Observable",
+            prompt="Enter an observable for the selected case:",
+        )
+
     def _alert_query_kwargs(self) -> dict[str, Any]:
         severity = self._parse_severity(self.alert_severity_var.get())
         linked_case_state = self.alert_link_state_var.get()
@@ -325,6 +369,23 @@ class SocDashboard:
         selected = selection[0]
         return str(selected) if selected else None
 
+    def _prompt_case_update(self, *, field: str, title: str, prompt: str) -> None:
+        case_id = self._selected_tree_item_id(self.case_tree)
+        if case_id is None:
+            if messagebox is not None:
+                messagebox.showwarning("No Case Selected", "Select a case before applying an update.")
+            return
+        if simpledialog is None:
+            return
+        value = simpledialog.askstring(title, prompt, parent=self.root)
+        if value is None or not value.strip():
+            return
+        payload = self._build_case_update_payload(field=field, value=value.strip())
+        self.manager.update_case(case_id, payload)
+        self.refresh()
+        self.case_tree.selection_set(case_id)
+        self._refresh_case_detail()
+
     @staticmethod
     def _build_promote_payload(alert: Any) -> SocAlertPromoteCaseRequest:
         assignee = getattr(alert, "assignee", None)
@@ -338,6 +399,14 @@ class SocDashboard:
         if assignee:
             payload["assignee"] = assignee
         return SocAlertPromoteCaseRequest.model_validate(payload)
+
+    @staticmethod
+    def _build_case_update_payload(*, field: str, value: str) -> SocCaseUpdate:
+        if field == "note":
+            return SocCaseUpdate(note=value)
+        if field == "observable":
+            return SocCaseUpdate(observable=value)
+        raise ValueError(f"Unsupported case update field: {field}")
 
     @staticmethod
     def _parse_severity(value: str) -> SocSeverity | None:
@@ -362,6 +431,40 @@ class SocDashboard:
             f"Open alerts: {summary['open_alerts']} | "
             f"Open cases: {summary['open_cases']} | "
             f"Top event types: {most_common}"
+        )
+
+    def _refresh_case_detail(self) -> None:
+        case_id = self._selected_tree_item_id(self.case_tree)
+        if case_id is None:
+            self._set_case_detail_text("Select a case to view notes and observables.")
+            return
+        case_payload = self.case_rows_by_id.get(case_id)
+        if case_payload is None:
+            self._set_case_detail_text("Selected case is no longer available in the current filtered view.")
+            return
+        self._set_case_detail_text(self._format_case_detail(case_payload))
+
+    def _set_case_detail_text(self, text: str) -> None:
+        self.case_detail_text.configure(state="normal")
+        self.case_detail_text.delete("1.0", "end")
+        self.case_detail_text.insert("1.0", text)
+        self.case_detail_text.configure(state="disabled")
+
+    @staticmethod
+    def _format_case_detail(case_payload: dict[str, Any]) -> str:
+        notes = case_payload.get("notes") or []
+        observables = case_payload.get("observables") or []
+        note_lines = "\n".join(f"- {item}" for item in notes) if notes else "- none"
+        observable_lines = "\n".join(f"- {item}" for item in observables) if observables else "- none"
+        return (
+            f"Case: {case_payload.get('case_id', '-')}\n"
+            f"Title: {case_payload.get('title', '-')}\n"
+            f"Status: {case_payload.get('status', '-')}\n"
+            f"Severity: {case_payload.get('severity', '-')}\n"
+            f"Assignee: {case_payload.get('assignee') or '-'}\n\n"
+            f"Summary:\n{case_payload.get('summary', '-')}\n\n"
+            f"Observables:\n{observable_lines}\n\n"
+            f"Notes:\n{note_lines}"
         )
 
 
