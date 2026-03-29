@@ -49,6 +49,7 @@ def test_launch_uses_report_browser_when_frozen_without_args(monkeypatch) -> Non
     calls = []
     monkeypatch.setattr(cli.sys, "frozen", True, raising=False)
     monkeypatch.setattr(cli.sys, "argv", ["SecurityGateway.exe"])
+    monkeypatch.setattr(cli, "_select_frozen_action", lambda: "report-browser")
     monkeypatch.setattr(cli, "run_report_browser", lambda builder=None: calls.append("browser"))
     monkeypatch.setattr(cli, "app", lambda *args, **kwargs: calls.append("app"))
 
@@ -67,3 +68,32 @@ def test_launch_uses_cli_when_args_present(monkeypatch) -> None:
     cli.launch()
 
     assert calls == ["app"]
+
+
+def test_launch_runs_uninstaller_when_selected(monkeypatch, tmp_path) -> None:
+    calls = []
+    uninstaller = tmp_path / "SecurityGateway-Uninstall.exe"
+    uninstaller.write_text("stub")
+    monkeypatch.setattr(cli.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(cli.sys, "argv", ["SecurityGateway.exe"])
+    monkeypatch.setattr(cli, "_select_frozen_action", lambda: "uninstall")
+    monkeypatch.setattr(cli, "_resolve_uninstaller_path", lambda: uninstaller)
+    monkeypatch.setattr(cli, "_launch_uninstaller", lambda target: calls.append(target))
+
+    cli.launch()
+
+    assert calls == [uninstaller]
+
+
+def test_launch_exits_when_uninstaller_is_missing(monkeypatch) -> None:
+    monkeypatch.setattr(cli.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(cli.sys, "argv", ["SecurityGateway.exe"])
+    monkeypatch.setattr(cli, "_select_frozen_action", lambda: "uninstall")
+    monkeypatch.setattr(cli, "_resolve_uninstaller_path", lambda: None)
+
+    try:
+        cli.launch()
+    except cli.typer.Exit as exc:
+        assert exc.exit_code == 1
+    else:  # pragma: no cover - defensive assertion path
+        raise AssertionError("Expected launch() to raise typer.Exit when uninstaller is missing")

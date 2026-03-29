@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -372,9 +373,76 @@ def health_status() -> None:
     )
 
 
+def _resolve_uninstaller_path() -> Path | None:
+    candidates: list[Path] = []
+    executable = Path(getattr(sys, "executable", ""))
+    if executable:
+        candidates.append(executable.with_name("SecurityGateway-Uninstall.exe"))
+        candidates.append(executable.with_name("Uninstall-SecurityGateway.ps1"))
+    candidates.append(Path.cwd() / "SecurityGateway-Uninstall.exe")
+    candidates.append(Path.cwd() / "Uninstall-SecurityGateway.ps1")
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _launch_uninstaller(target: Path) -> None:
+    if target.suffix.lower() == ".ps1":
+        subprocess.Popen(["powershell.exe", "-ExecutionPolicy", "Bypass", "-File", str(target)])
+        return
+    os.startfile(str(target))  # type: ignore[attr-defined]
+
+
+def _select_frozen_action() -> str:
+    import tkinter as tk
+
+    root = tk.Tk()
+    root.title("Security Gateway")
+    root.resizable(False, False)
+
+    selection = {"value": "report-browser"}
+
+    def choose(action: str) -> None:
+        selection["value"] = action
+        root.destroy()
+
+    frame = tk.Frame(root, padx=18, pady=18)
+    frame.pack(fill="both", expand=True)
+
+    tk.Label(
+        frame,
+        text="Choose what Security Gateway should do.",
+        font=("Segoe UI", 10, "bold"),
+        justify="left",
+        anchor="w",
+    ).pack(fill="x", pady=(0, 12))
+    tk.Button(frame, text="Open Reports", width=28, command=lambda: choose("report-browser")).pack(pady=4)
+    tk.Button(frame, text="Run Uninstaller", width=28, command=lambda: choose("uninstall")).pack(pady=4)
+    tk.Button(frame, text="Exit", width=28, command=lambda: choose("exit")).pack(pady=4)
+
+    root.protocol("WM_DELETE_WINDOW", lambda: choose("exit"))
+    root.mainloop()
+    return selection["value"]
+
+
+def _launch_frozen_desktop_entry() -> None:
+    action = _select_frozen_action()
+    if action == "report-browser":
+        run_report_browser(report_builder)
+        return
+    if action == "uninstall":
+        target = _resolve_uninstaller_path()
+        if target is None:
+            typer.echo("Security Gateway uninstaller was not found.", err=True)
+            raise typer.Exit(code=1)
+        _launch_uninstaller(target)
+        return
+
+
 def launch() -> None:
     if getattr(sys, "frozen", False) and len(sys.argv) == 1:
-        run_report_browser(report_builder)
+        _launch_frozen_desktop_entry()
     else:
         app()
 
