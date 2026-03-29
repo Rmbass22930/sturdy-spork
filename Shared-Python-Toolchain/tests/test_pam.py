@@ -50,3 +50,22 @@ def test_shared_master_key_recovers_secret_with_new_client():
     lease = reader.checkout("db")
 
     assert lease.secret == "super-secret"
+
+
+def test_invalid_secret_name_and_ttl_raise_value_error():
+    vault = VaultClient(audit_logger=DummyAuditLogger())
+
+    with pytest.raises(ValueError):
+        vault.store_secret("../bad", "super-secret")
+
+    vault.store_secret("db", "super-secret")
+
+    with pytest.raises(ValueError):
+        vault.checkout("db", 0)
+
+
+def test_empty_secret_value_is_rejected():
+    vault = VaultClient(audit_logger=DummyAuditLogger())
+
+    with pytest.raises(ValueError):
+        vault.store_secret("db", "")

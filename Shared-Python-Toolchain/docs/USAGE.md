@@ -157,6 +157,8 @@ curl -X POST http://127.0.0.1:8000/endpoint/telemetry \
   - automation status checks
   - websocket connections to `/ws`
 - A practical bootstrap flow is: start with a loopback-only session or temporary `SECURITY_GATEWAY_OPERATOR_BEARER_TOKEN`, store the long-lived operator token in PAM as `operator-bearer-token`, then remove the static fallback token.
+- PAM secret names may contain letters, numbers, `.`, `_`, `-`, `:`, and `/`, must not start or end with `.` or `/`, and are limited to 64 characters.
+- PAM checkout TTLs are limited to `1`-`480` minutes, and secret values must be non-empty.
 - Browser-based WebSocket clients should also send an allowed `Origin` header.
 - Configure WebSocket origin/rate controls with:
 ```

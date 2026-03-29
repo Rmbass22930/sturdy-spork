@@ -22,8 +22,8 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
     status,
-)
-from pydantic import BaseModel
+ )
+from pydantic import BaseModel, Field, field_validator
 
 from .audit import AuditLogger
 from .alerts import alert_manager, AlertEvent, AlertLevel
@@ -33,7 +33,13 @@ from .dns import SecureDNSResolver
 from .endpoint import EndpointTelemetryService, MalwareScanner
 from .ip_controls import IPBlocklistManager
 from .models import AccessDecision, AccessRequest, CredentialLease, DeviceContext
-from .pam import VaultClient
+from .pam import (
+    MAX_LEASE_TTL_MINUTES,
+    MAX_SECRET_NAME_LENGTH,
+    MAX_SECRET_VALUE_LENGTH,
+    MIN_LEASE_TTL_MINUTES,
+    VaultClient,
+)
 from .policy import PolicyEngine
 from .reports import SecurityReportBuilder
 from .state import dns_security_cache
@@ -365,8 +371,19 @@ async def evaluate_access(access_request: AccessRequest, http_request: Request) 
 
 
 class SecretPayload(BaseModel):
-    name: str
-    secret: str
+    name: str = Field(
+        min_length=1,
+        max_length=MAX_SECRET_NAME_LENGTH,
+        pattern=r"^[A-Za-z0-9._:/-]+$",
+    )
+    secret: str = Field(min_length=1, max_length=MAX_SECRET_VALUE_LENGTH)
+
+    @field_validator("name")
+    @classmethod
+    def validate_name_boundaries(cls, value: str) -> str:
+        if value[0] in "./" or value[-1] in "./":
+            raise ValueError("Secret name must not start or end with '.' or '/'.")
+        return value
 
 
 @app.put("/pam/secret")
@@ -374,13 +391,27 @@ async def store_secret(
     payload: SecretPayload,
     _: None = Depends(require_operator_access),
 ) -> dict:
-    vault.store_secret(payload.name, payload.secret)
+    try:
+        vault.store_secret(payload.name, payload.secret)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"status": "stored", "name": payload.name, "metrics": vault.get_metrics()}
 
 
 class CheckoutPayload(BaseModel):
-    name: str
-    ttl_minutes: int = 15
+    name: str = Field(
+        min_length=1,
+        max_length=MAX_SECRET_NAME_LENGTH,
+        pattern=r"^[A-Za-z0-9._:/-]+$",
+    )
+    ttl_minutes: int = Field(default=15, ge=MIN_LEASE_TTL_MINUTES, le=MAX_LEASE_TTL_MINUTES)
+
+    @field_validator("name")
+    @classmethod
+    def validate_name_boundaries(cls, value: str) -> str:
+        if value[0] in "./" or value[-1] in "./":
+            raise ValueError("Secret name must not start or end with '.' or '/'.")
+        return value
 
 
 @app.post("/pam/checkout", response_model=CredentialLease)
@@ -390,6 +421,8 @@ async def checkout_secret(
 ) -> CredentialLease:
     try:
         return vault.checkout(payload.name, payload.ttl_minutes)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

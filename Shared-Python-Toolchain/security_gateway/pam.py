@@ -11,6 +11,11 @@ from .models import CredentialLease
 from .secret_backends import HashicorpVaultBackend, LocalMemoryBackend, SecretBackend
 from .utils import decrypt_secret, encrypt_secret
 
+MAX_SECRET_NAME_LENGTH = 64
+MAX_SECRET_VALUE_LENGTH = 8192
+MIN_LEASE_TTL_MINUTES = 1
+MAX_LEASE_TTL_MINUTES = 480
+
 
 class VaultClient:
     def __init__(
@@ -31,6 +36,11 @@ class VaultClient:
         self._audit = audit_logger or AuditLogger(settings.audit_log_path)
 
     def store_secret(self, name: str, plaintext: str) -> None:
+        self._validate_secret_name(name)
+        if not plaintext:
+            raise ValueError("Secret value must not be empty.")
+        if len(plaintext) > MAX_SECRET_VALUE_LENGTH:
+            raise ValueError(f"Secret value exceeds the configured limit of {MAX_SECRET_VALUE_LENGTH} characters.")
         self.rotate_if_needed()
         version = self._current_key_id
         encrypted = encrypt_secret(self._key_versions[version], plaintext)
@@ -41,6 +51,7 @@ class VaultClient:
         )
 
     def retrieve_secret(self, name: str) -> Optional[str]:
+        self._validate_secret_name(name)
         self.rotate_if_needed()
         for version in self._preferred_versions():
             encrypted = self._backend.read(name, version)
@@ -55,6 +66,11 @@ class VaultClient:
         return None
 
     def checkout(self, name: str, ttl_minutes: int = 15) -> CredentialLease:
+        self._validate_secret_name(name)
+        if ttl_minutes < MIN_LEASE_TTL_MINUTES or ttl_minutes > MAX_LEASE_TTL_MINUTES:
+            raise ValueError(
+                f"Lease TTL must be between {MIN_LEASE_TTL_MINUTES} and {MAX_LEASE_TTL_MINUTES} minutes."
+            )
         secret = self.retrieve_secret(name)
         if not secret:
             raise KeyError(f"Secret {name} not found")
@@ -125,3 +141,17 @@ class VaultClient:
                 settings.hashicorp_vault_namespace,
             )
         return LocalMemoryBackend()
+
+    @staticmethod
+    def _validate_secret_name(name: str) -> None:
+        if not name:
+            raise ValueError("Secret name must not be empty.")
+        if len(name) > MAX_SECRET_NAME_LENGTH:
+            raise ValueError(
+                f"Secret name exceeds the configured limit of {MAX_SECRET_NAME_LENGTH} characters."
+            )
+        if name[0] in "./" or name[-1] in "./":
+            raise ValueError("Secret name must not start or end with '.' or '/'.")
+        allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._:/")
+        if any(char not in allowed for char in name):
+            raise ValueError("Secret name may only contain letters, numbers, '.', '_', '-', ':', and '/'.")

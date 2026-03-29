@@ -704,6 +704,20 @@ def test_pam_and_automation_routes_allow_operator_auth(monkeypatch, tmp_path):
         assert "running" in automation_status.json()
 
 
+def test_pam_routes_reject_invalid_names_and_ttls(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
+
+    with TestClient(service.app) as client:
+        invalid_name = client.put("/pam/secret", json={"name": "../bad", "secret": "super-secret"}, headers=headers)
+        empty_secret = client.put("/pam/secret", json={"name": "db", "secret": ""}, headers=headers)
+        invalid_ttl = client.post("/pam/checkout", json={"name": "db", "ttl_minutes": 0}, headers=headers)
+
+    assert invalid_name.status_code == 422
+    assert empty_secret.status_code == 422
+    assert invalid_ttl.status_code == 422
+
+
 def test_operator_routes_accept_pam_secret_backed_token(monkeypatch, tmp_path):
     _install_test_managers(monkeypatch, tmp_path)
     headers = _operator_secret_headers(monkeypatch, token="vault-backed-token")

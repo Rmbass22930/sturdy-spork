@@ -21,6 +21,7 @@
     - `VaultClient` encrypts passwords/API keys, rotates them daily, and issues short-lived checkout tokens.
     - Supports pluggable backends (in-memory or HashiCorp Vault KV v2) plus JSONL audit logging and rotation metrics exposed via API/CLI.
     - Uses the configured PAM master key for bootstrap-version secret recovery so operator credentials stored in PAM can be reused after a restart.
+    - Validates secret names, rejects empty secret values, and bounds lease TTLs so control-plane callers cannot create pathological secret identifiers or indefinite leases.
 
 4. **security_gateway/dns.py**
    - `SecureDNSResolver` performs DNS over HTTPS (Cloudflare + Quad9). Validates responses via DNSSEC flags when available.
