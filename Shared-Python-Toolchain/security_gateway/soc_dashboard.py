@@ -267,9 +267,10 @@ class SocDashboard:
             padx=(8, 0),
         )
         ttk.Button(controls, text="Close", command=self.close_selected_alert).grid(row=0, column=9, sticky="w", padx=(8, 0))
+        ttk.Button(controls, text="Add Note", command=self.add_alert_note).grid(row=0, column=10, sticky="w", padx=(8, 0))
         ttk.Button(controls, text="Promote To Case", command=self.promote_selected_alert).grid(
             row=0,
-            column=10,
+            column=11,
             sticky="w",
             padx=(12, 0),
         )
@@ -408,6 +409,13 @@ class SocDashboard:
     def close_selected_alert(self) -> None:
         self._apply_alert_status("closed", "Alert Closed")
 
+    def add_alert_note(self) -> None:
+        self._prompt_alert_update(
+            field="note",
+            title="Add Alert Note",
+            prompt="Enter a note for the selected alert:",
+        )
+
     def add_case_note(self) -> None:
         self._prompt_case_update(
             field="note",
@@ -463,6 +471,27 @@ class SocDashboard:
         if messagebox is not None:
             messagebox.showinfo(title, f"Updated alert {alert_id} to {status_value}.")
         self.refresh()
+        self._refresh_alert_detail()
+
+    def _prompt_alert_update(self, *, field: str, title: str, prompt: str) -> None:
+        alert_id = self._selected_tree_item_id(self.alert_tree)
+        if alert_id is None:
+            if messagebox is not None:
+                messagebox.showwarning("No Alert Selected", "Select an alert before applying an update.")
+            return
+        if simpledialog is None:
+            return
+        value = simpledialog.askstring(title, prompt, parent=self.root)
+        if value is None or not value.strip():
+            return
+        payload = self._build_alert_update_payload(
+            field=field,
+            value=value.strip(),
+            acted_by=self._current_analyst_identity(),
+        )
+        self.manager.update_alert(alert_id, payload)
+        self.refresh()
+        self.alert_tree.selection_set(alert_id)
         self._refresh_alert_detail()
 
     def _apply_case_status(self, status_value: str, title: str) -> None:
@@ -634,15 +663,19 @@ class SocDashboard:
     def _format_alert_detail(alert_payload: dict[str, Any]) -> str:
         notes = alert_payload.get("notes") or []
         note_lines = "\n".join(f"- {item}" for item in notes) if notes else "- none"
+        source_event_ids = alert_payload.get("source_event_ids") or []
         return (
             f"Alert: {alert_payload.get('alert_id', '-')}\n"
             f"Title: {alert_payload.get('title', '-')}\n"
             f"Status: {alert_payload.get('status', '-')}\n"
             f"Severity: {alert_payload.get('severity', '-')}\n"
+            f"Category: {alert_payload.get('category', '-')}\n"
             f"Assignee: {alert_payload.get('assignee') or '-'}\n"
             f"Linked Case: {alert_payload.get('linked_case_id') or '-'}\n"
             f"Acknowledged By: {alert_payload.get('acknowledged_by') or '-'}\n"
             f"Escalated By: {alert_payload.get('escalated_by') or '-'}\n\n"
+            f"Correlation Rule: {alert_payload.get('correlation_rule') or '-'}\n"
+            f"Source Events: {len(source_event_ids)}\n\n"
             f"Summary:\n{alert_payload.get('summary', '-')}\n\n"
             f"Notes:\n{note_lines}"
         )

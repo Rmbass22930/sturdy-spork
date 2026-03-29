@@ -104,6 +104,12 @@ def test_build_alert_update_payload_for_assignee() -> None:
     assert payload.status is None
 
 
+def test_build_alert_update_payload_for_note() -> None:
+    payload = SocDashboard._build_alert_update_payload(field="note", value="Initial queue triage complete.")
+    assert payload.note == "Initial queue triage complete."
+    assert payload.assignee is None
+
+
 def test_build_case_update_payload_for_note() -> None:
     payload = SocDashboard._build_case_update_payload(field="note", value="Investigating suspicious login")
     assert payload.note == "Investigating suspicious login"
@@ -154,19 +160,25 @@ def test_format_alert_detail_includes_assignment_and_actor_fields() -> None:
             "title": "Repeated tracker activity",
             "status": "acknowledged",
             "severity": "high",
+            "category": "correlation",
             "assignee": "tier1-analyst",
             "linked_case_id": "case-999",
             "acknowledged_by": "tier1-analyst",
             "escalated_by": "tier2-analyst",
+            "correlation_rule": "tracker-repeat",
+            "source_event_ids": ["event-1", "event-2"],
             "summary": "Correlation threshold exceeded.",
             "notes": ["Initial triage complete."],
         }
     )
     assert "Alert: alert-123" in text
+    assert "Category: correlation" in text
     assert "Assignee: tier1-analyst" in text
     assert "Linked Case: case-999" in text
     assert "Acknowledged By: tier1-analyst" in text
     assert "Escalated By: tier2-analyst" in text
+    assert "Correlation Rule: tracker-repeat" in text
+    assert "Source Events: 2" in text
     assert "- Initial triage complete." in text
 
 
