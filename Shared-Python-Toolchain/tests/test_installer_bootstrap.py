@@ -115,6 +115,7 @@ def test_print_install_summary_lists_shortcuts_and_dependencies(capsys, tmp_path
 
     assert "Install complete:" in output
     assert "Reports directory:" in output
+    assert "Installed launcher tools: SOC Dashboard, Reports, Install Folder, Uninstaller" in output
     assert "Desktop shortcuts:" in output
     assert "Uninstall executable:" in output
     assert "Cloudflare WARP: installed via winget (Cloudflare.WARP)" in output

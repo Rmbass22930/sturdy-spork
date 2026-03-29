@@ -170,7 +170,7 @@ class InstallerUI(InstallReporter):
         )
         ttk.Label(
             header,
-            text="Installs SecurityGateway, creates desktop shortcuts, and registers automation startup.",
+            text="Installs SecurityGateway, creates desktop shortcuts, registers automation startup, and includes the SOC Dashboard in the installed launcher.",
             wraplength=860,
             style="Installer.Subheader.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(6, 0))
@@ -267,6 +267,7 @@ class InstallerUI(InstallReporter):
                 summary: InstallSummary = item[1]
                 self._append_log(f"- Application: {summary.installed_path}")
                 self._append_log(f"- Reports directory: {summary.reports_dir}")
+                self._append_log("- Installed launcher tools: SOC Dashboard, Reports, Install Folder, Uninstaller")
                 self._append_log("- Desktop shortcuts:")
                 for shortcut_path in summary.shortcut_paths:
                     self._append_log(f"  - {shortcut_path}")
@@ -799,6 +800,7 @@ def print_install_summary(summary: InstallSummary) -> None:
     print("Install complete:")
     print(f"- Application: {summary.installed_path}")
     print(f"- Reports directory: {summary.reports_dir}")
+    print("- Installed launcher tools: SOC Dashboard, Reports, Install Folder, Uninstaller")
     print("- Desktop shortcuts:")
     for shortcut_path in summary.shortcut_paths:
         print(f"  - {shortcut_path}")
