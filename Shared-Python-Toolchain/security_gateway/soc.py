@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from ipaddress import ip_address
 from pathlib import Path
 from threading import Lock
 from uuid import uuid4
@@ -207,8 +209,19 @@ class SecurityOperationsManager:
 
     def create_case(self, payload: SocCaseCreate) -> SocCaseRecord:
         created_at = _utc_now()
+        enriched_payload = payload.model_copy(
+            update={
+                "observables": self._merge_observables(
+                    payload.observables,
+                    self._extract_observables_for_case(
+                        source_event_ids=payload.source_event_ids,
+                        linked_alert_ids=payload.linked_alert_ids,
+                    ),
+                )
+            }
+        )
         case = SocCaseRecord(
-            **payload.model_dump(),
+            **enriched_payload.model_dump(),
             case_id=f"case-{uuid4().hex[:12]}",
             created_at=created_at,
             updated_at=created_at,
@@ -254,6 +267,10 @@ class SecurityOperationsManager:
                 severity=payload.severity or existing_alert.severity,
                 source_event_ids=list(existing_alert.source_event_ids),
                 linked_alert_ids=[existing_alert.alert_id],
+                observables=self._extract_observables_for_case(
+                    source_event_ids=existing_alert.source_event_ids,
+                    linked_alert_ids=[existing_alert.alert_id],
+                ),
                 assignee=payload.assignee if payload.assignee is not None else existing_alert.assignee,
                 status=payload.case_status,
                 notes=[payload.note] if payload.note else [],
@@ -586,6 +603,79 @@ class SecurityOperationsManager:
                 if escalated_by is not None:
                     updates["escalated_by"] = escalated_by
             alerts[index] = existing.model_copy(update=updates)
+
+    def _extract_observables_for_case(
+        self,
+        *,
+        source_event_ids: list[str],
+        linked_alert_ids: list[str],
+    ) -> list[str]:
+        observables: list[str] = []
+        if source_event_ids:
+            events_by_id = {event.event_id: event for event in self.list_events(limit=500)}
+            for event_id in source_event_ids:
+                event = events_by_id.get(event_id)
+                if event is None:
+                    continue
+                observables.extend(self._extract_observables_from_mapping(event.details))
+                observables.extend(self._extract_observables_from_text(event.summary))
+                observables.extend(self._extract_observables_from_text(event.title))
+                observables.extend(event.artifacts)
+
+        if linked_alert_ids:
+            alerts_by_id = {alert.alert_id: alert for alert in self.list_alerts()}
+            for alert_id in linked_alert_ids:
+                alert = alerts_by_id.get(alert_id)
+                if alert is None:
+                    continue
+                observables.extend(self._extract_observables_from_text(alert.title))
+                observables.extend(self._extract_observables_from_text(alert.summary))
+
+        return self._merge_observables([], observables)
+
+    @staticmethod
+    def _merge_observables(existing: list[str], discovered: list[str]) -> list[str]:
+        merged: list[str] = []
+        seen: set[str] = set()
+        for item in [*existing, *discovered]:
+            candidate = item.strip()
+            if not candidate:
+                continue
+            normalized = candidate.casefold()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            merged.append(candidate)
+        return merged[:64]
+
+    @classmethod
+    def _extract_observables_from_mapping(cls, payload: dict[str, object]) -> list[str]:
+        observables: list[str] = []
+        for key, value in payload.items():
+            lowered = key.casefold()
+            if isinstance(value, str):
+                if lowered in {"hostname", "resource", "filename", "device_id", "url"}:
+                    observables.append(value)
+                observables.extend(cls._extract_observables_from_text(value))
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, str):
+                        observables.extend(cls._extract_observables_from_text(item))
+        return observables
+
+    @staticmethod
+    def _extract_observables_from_text(value: str) -> list[str]:
+        observables: list[str] = []
+        for token in re.findall(r"https?://[^\s,]+", value):
+            observables.append(token.rstrip(").,;]"))
+        for token in re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", value):
+            try:
+                observables.append(str(ip_address(token)))
+            except ValueError:
+                continue
+        for token in re.findall(r"\b[a-zA-Z0-9][a-zA-Z0-9._-]*\.[A-Za-z]{2,}\b", value):
+            observables.append(token.rstrip(").,;]"))
+        return observables
 
     @staticmethod
     def _sort_alerts(alerts: list[SocAlertRecord], sort: str) -> None:

@@ -334,9 +334,11 @@ def test_soc_case_lifecycle(monkeypatch, tmp_path):
     assert fetched_alert.status_code == 200
     assert updated.json()["status"] == "investigating"
     assert updated.json()["notes"] == ["Owner assigned and triage started."]
-    assert updated.json()["observables"] == ["203.0.113.55"]
+    assert "vpn-admin" in updated.json()["observables"]
+    assert "203.0.113.55" in updated.json()["observables"]
     assert fetched.json()["assignee"] == "tier2-analyst"
-    assert fetched.json()["observables"] == ["203.0.113.55"]
+    assert "vpn-admin" in fetched.json()["observables"]
+    assert "203.0.113.55" in fetched.json()["observables"]
     assert fetched_alert.json()["linked_case_id"] == case_id
 
 
@@ -377,6 +379,7 @@ def test_soc_alert_can_be_promoted_to_case(monkeypatch, tmp_path):
     assert payload["alert"]["escalated_by"] == "tier1-analyst"
     assert payload["case"]["status"] == "investigating"
     assert payload["case"]["linked_alert_ids"] == [alert_id]
+    assert "vpn-admin" in payload["case"]["observables"]
     assert payload["case"]["notes"] == ["Promoted directly from the triage queue."]
     assert refetch_alert.status_code == 200
     assert refetch_alert.json()["linked_case_id"] == payload["case"]["case_id"]
