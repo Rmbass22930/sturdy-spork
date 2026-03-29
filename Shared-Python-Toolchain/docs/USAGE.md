@@ -15,7 +15,7 @@ uvicorn security_gateway.service:app --reload
 - `POST /access/evaluate` – run zero-trust policy evaluation (include `dns_secure` if you just resolved via `/dns/resolve`).
 - `PUT /pam/secret`, `POST /pam/checkout`, `GET /pam/metrics` – manage privileged credentials + rotation insights.
 - `GET /dns/resolve` – DoH lookup that records DNSSEC status for downstream risk scoring.
-- `POST /tor/request` – send proxied HTTP requests.
+- `POST /tor/request` – operator-authenticated proxied HTTP requests.
 - `GET /proxy/health` – operator-authenticated Tor/WARP health view.
 - `GET /network/blocked-ips`, `POST /network/blocked-ips`, `DELETE /network/blocked-ips/{ip}`, `POST /network/blocked-ips/{ip}/promote` – review, block, unblock, and promote source IP blocks to permanent.
 - `POST /endpoint/telemetry`, `POST /endpoint/scan` – authenticated endpoint-agent ingestion for posture and malware scan uploads.
@@ -34,6 +34,7 @@ uvicorn security_gateway.service:app --reload
 - HTTP responses also default to `Cache-Control: no-store` and `Pragma: no-cache` so browsers and intermediaries do not retain security-sensitive API or report content by default.
 - Feed status, refresh/import, health, and report-list API responses no longer expose internal filesystem paths such as cache files or report directories.
 - `WS /ws` – operator-authenticated health-only channel (sends `{"type":"ready","mode":"health_only"}` on connect, `ping`/`health` -> `pong`, unsupported messages return a structured unsupported response).
+- WebSocket origin checks are based on `SECURITY_GATEWAY_WEBSOCKET_ALLOWED_ORIGINS` only; request `Host` headers are not treated as trusted origins.
 - Operator-managed routes now require operator authorization:
   - `PUT /pam/secret`, `POST /pam/checkout`, `GET /pam/metrics`
   - `GET /endpoint/telemetry/{device_id}`

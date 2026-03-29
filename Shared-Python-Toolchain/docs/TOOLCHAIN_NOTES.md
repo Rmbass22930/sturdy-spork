@@ -2,6 +2,10 @@
 
 Last verified: 2026-03-29
 
+## Release history
+- `shared-toolchain-stable-2026-03-29`
+  Merged baseline after the shared toolchain rename, history cleanup, Security Gateway typing/cache cleanup, proxy auth hardening, websocket origin hardening, and regression test expansion.
+
 ## Runtimes
 - Python `3.13`
 - Python `3.14`
