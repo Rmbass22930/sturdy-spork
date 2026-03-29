@@ -25,6 +25,7 @@ from fastapi import (
     status,
  )
 from pydantic import BaseModel, Field, field_validator
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .audit import AuditLogger
 from .alerts import alert_manager, AlertEvent, AlertLevel
@@ -147,6 +148,7 @@ app = FastAPI(
     redoc_url="/redoc" if settings.service_enable_api_docs else None,
     openapi_url="/openapi.json" if settings.service_enable_api_docs else None,
 )
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(settings.service_allowed_hosts))
 
 
 class PublicRouteRateLimiter:

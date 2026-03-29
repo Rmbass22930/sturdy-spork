@@ -76,6 +76,9 @@ class Settings(BaseSettings):
     operator_bearer_secret_name: Optional[str] = "operator-bearer-token"
     operator_allow_loopback_without_token: bool = True
     service_enable_api_docs: bool = False
+    service_allowed_hosts: List[str] = Field(
+        default_factory=lambda: ["localhost", "127.0.0.1", "[::1]", "testserver", "testclient"]
+    )
     websocket_allowed_origins: List[str] = Field(default_factory=list)
     websocket_max_messages_per_window: int = 30
     websocket_rate_window_seconds: float = 5.0
