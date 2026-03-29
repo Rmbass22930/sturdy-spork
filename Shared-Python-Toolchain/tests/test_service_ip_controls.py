@@ -369,6 +369,82 @@ def test_access_deny_is_mirrored_into_soc_events(monkeypatch, tmp_path):
     assert events.json()["events"][0]["severity"] == "critical"
 
 
+def test_soc_dashboard_reports_correlation_and_triage(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
+
+    with TestClient(service.app) as client:
+        for _ in range(3):
+            response = client.post(
+                "/soc/events",
+                json={
+                    "event_type": "privacy.tracker_block",
+                    "severity": "medium",
+                    "title": "Tracker domain blocked",
+                    "summary": "DNS resolution was denied because the hostname matched tracker intelligence.",
+                    "details": {"hostname": "metrics.example.com", "target_type": "dns"},
+                    "tags": ["privacy", "tracker"],
+                },
+                headers=headers,
+            )
+            assert response.status_code == 200
+
+        dashboard = client.get("/soc/dashboard", headers=headers)
+
+    assert dashboard.status_code == 200
+    payload = dashboard.json()
+    assert payload["summary"]["alerts_total"] >= 1
+    assert payload["alert_status"]["open"] >= 1
+    assert payload["triage"]["recent_correlations"]
+    assert payload["triage"]["recent_correlations"][0]["correlation_rule"] == "repeated_tracker_activity"
+    assert payload["triage"]["unassigned_alerts"]
+
+
+def test_soc_correlates_endpoint_posture_and_access_decision(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    operator_headers = _operator_headers(monkeypatch)
+    endpoint_headers = _endpoint_headers(monkeypatch)
+
+    telemetry_payload = {
+        "device_id": "device-corr-1",
+        "os": "Windows",
+        "os_version": "11",
+        "compliance": "compromised",
+        "is_encrypted": True,
+        "edr_active": False,
+    }
+    access_payload = {
+        "user": {
+            "user_id": "user-123",
+            "email": "user@example.com",
+            "groups": ["engineering"],
+            "geo_lat": 37.7749,
+            "geo_lon": -122.4194,
+            "last_login": datetime.now(timezone.utc).isoformat(),
+        },
+        "device": telemetry_payload,
+        "resource": "admin-portal",
+        "privilege_level": "privileged",
+        "source_ip": "203.0.113.46",
+        "dns_secure": False,
+        "threat_signals": {"credential_leak": 9.5},
+    }
+
+    with TestClient(service.app) as client:
+        telemetry = client.post("/endpoint/telemetry", json=telemetry_payload, headers=endpoint_headers)
+        decision = client.post("/access/evaluate", json=access_payload)
+        alerts = client.get("/soc/alerts", headers=operator_headers)
+        dashboard = client.get("/soc/dashboard", headers=operator_headers)
+
+    assert telemetry.status_code == 200
+    assert decision.status_code == 200
+    assert decision.json()["decision"] == "deny"
+    correlation_alerts = [item for item in alerts.json()["alerts"] if item["category"] == "correlation"]
+    assert correlation_alerts
+    assert any(item["correlation_rule"] == "endpoint_high_risk_device" for item in correlation_alerts)
+    assert dashboard.json()["triage"]["recent_correlations"]
+
+
 def test_rejects_untrusted_host_headers(monkeypatch, tmp_path):
     _install_test_managers(monkeypatch, tmp_path)
     monkeypatch.setattr(

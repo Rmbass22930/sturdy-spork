@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
 from uuid import uuid4
@@ -72,6 +73,7 @@ class SecurityOperationsManager:
                 alerts.append(alert_record)
                 self._write_records(self._alert_store_path, alerts)
             self._append_event(event)
+            self._apply_correlation_rules(event)
 
         self._audit.log(
             "soc.event.ingested",
@@ -234,6 +236,38 @@ class SecurityOperationsManager:
             "recent_events": [event.model_dump(mode="json") for event in events[:10]],
         }
 
+    def dashboard(self) -> dict[str, object]:
+        events = self.list_events(limit=500)
+        alerts = self.list_alerts()
+        cases = self.list_cases()
+        now = _utc_now()
+        alert_severity = Counter(item.severity.value for item in alerts)
+        alert_status = Counter(item.status.value for item in alerts)
+        case_status = Counter(item.status.value for item in cases)
+        event_types = Counter(item.event_type for item in events[:100])
+        correlation_alerts = [item for item in alerts if item.category == "correlation"]
+        stale_cutoff = now - timedelta(hours=24)
+
+        return {
+            "summary": self.overview(),
+            "alert_severity": dict(alert_severity),
+            "alert_status": dict(alert_status),
+            "case_status": dict(case_status),
+            "top_event_types": dict(event_types.most_common(10)),
+            "triage": {
+                "unassigned_alerts": [item.model_dump(mode="json") for item in alerts if not item.assignee][:10],
+                "stale_open_alerts": [
+                    item.model_dump(mode="json")
+                    for item in alerts
+                    if item.status is SocAlertStatus.open and item.updated_at < stale_cutoff
+                ][:10],
+                "recent_correlations": [item.model_dump(mode="json") for item in correlation_alerts[:10]],
+                "active_cases": [
+                    item.model_dump(mode="json") for item in cases if item.status is not SocCaseStatus.closed
+                ][:10],
+            },
+        }
+
     def _build_alert_for_event(
         self,
         payload: SocEventIngest,
@@ -246,10 +280,130 @@ class SecurityOperationsManager:
             title=payload.title,
             summary=payload.summary,
             severity=payload.severity,
+            category="event",
             status=SocAlertStatus.open,
             source_event_ids=[event_id],
             created_at=created_at,
             updated_at=created_at,
+        )
+
+    def _apply_correlation_rules(self, event: SocEventRecord) -> None:
+        self._correlate_endpoint_high_risk_device(event)
+        self._correlate_repeated_tracker_activity(event)
+
+    def _correlate_endpoint_high_risk_device(self, event: SocEventRecord) -> None:
+        device_id = event.details.get("device_id")
+        if not isinstance(device_id, str) or not device_id:
+            return
+        relevant_types = {"endpoint.telemetry_posture", "policy.access_decision"}
+        if event.event_type not in relevant_types:
+            return
+        window_start = event.created_at - timedelta(hours=24)
+        related_events = [
+            item
+            for item in self.list_events(limit=250)
+            if item.created_at >= window_start
+            and item.details.get("device_id") == device_id
+            and item.event_type in relevant_types
+        ]
+        event_types = {item.event_type for item in related_events}
+        if event_types != relevant_types:
+            return
+        self._upsert_correlation_alert(
+            rule="endpoint_high_risk_device",
+            key=device_id,
+            title=f"Correlated endpoint risk for {device_id}",
+            summary="The same endpoint reported posture issues and also triggered a risky access workflow.",
+            severity=SocSeverity.critical,
+            related_events=related_events,
+        )
+
+    def _correlate_repeated_tracker_activity(self, event: SocEventRecord) -> None:
+        if event.event_type != "privacy.tracker_block":
+            return
+        hostname = event.details.get("hostname")
+        if not isinstance(hostname, str) or not hostname:
+            return
+        window_start = event.created_at - timedelta(hours=1)
+        related_events = [
+            item
+            for item in self.list_events(limit=250)
+            if item.created_at >= window_start
+            and item.event_type == "privacy.tracker_block"
+            and item.details.get("hostname") == hostname
+        ]
+        if len(related_events) < 3:
+            return
+        self._upsert_correlation_alert(
+            rule="repeated_tracker_activity",
+            key=hostname,
+            title=f"Repeated tracker activity for {hostname}",
+            summary="Multiple tracker-block events hit the same hostname within one hour.",
+            severity=SocSeverity.high,
+            related_events=related_events,
+        )
+
+    def _upsert_correlation_alert(
+        self,
+        *,
+        rule: str,
+        key: str,
+        title: str,
+        summary: str,
+        severity: SocSeverity,
+        related_events: list[SocEventRecord],
+    ) -> None:
+        alerts = self._read_records(self._alert_store_path, SocAlertRecord)
+        for index, existing in enumerate(alerts):
+            if (
+                existing.category == "correlation"
+                and existing.correlation_rule == rule
+                and existing.correlation_key == key
+                and existing.status is not SocAlertStatus.closed
+            ):
+                updated = existing.model_copy(
+                    update={
+                        "summary": summary,
+                        "severity": severity,
+                        "source_event_ids": sorted({*existing.source_event_ids, *(item.event_id for item in related_events)}),
+                        "updated_at": _utc_now(),
+                    }
+                )
+                alerts[index] = updated
+                self._write_records(self._alert_store_path, alerts)
+                self._audit.log(
+                    "soc.alert.correlated",
+                    {"alert_id": updated.alert_id, "rule": rule, "key": key, "event_count": len(updated.source_event_ids)},
+                )
+                return
+
+        created_at = _utc_now()
+        alert = SocAlertRecord(
+            alert_id=f"alert-{uuid4().hex[:12]}",
+            title=title,
+            summary=summary,
+            severity=severity,
+            category="correlation",
+            status=SocAlertStatus.open,
+            source_event_ids=sorted({item.event_id for item in related_events}),
+            correlation_rule=rule,
+            correlation_key=key,
+            created_at=created_at,
+            updated_at=created_at,
+        )
+        alerts.append(alert)
+        self._write_records(self._alert_store_path, alerts)
+        self._audit.log(
+            "soc.alert.correlated",
+            {"alert_id": alert.alert_id, "rule": rule, "key": key, "event_count": len(alert.source_event_ids)},
+        )
+        self._alerts.emit(
+            AlertEvent(
+                level=_severity_to_alert_level(severity),
+                title=f"SOC correlation: {title}",
+                message=summary,
+                context={"alert_id": alert.alert_id, "rule": rule, "key": key},
+            )
         )
 
     def _append_event(self, event: SocEventRecord) -> None:

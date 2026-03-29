@@ -155,8 +155,11 @@ class SocAlertRecord(BaseModel):
     title: str = Field(min_length=1, max_length=160)
     summary: str = Field(min_length=1, max_length=2_000)
     severity: SocSeverity
+    category: str = Field(default="event", min_length=1, max_length=64)
     status: SocAlertStatus = SocAlertStatus.open
     source_event_ids: list[str] = Field(default_factory=list, max_length=64)
+    correlation_rule: Optional[str] = Field(default=None, max_length=128)
+    correlation_key: Optional[str] = Field(default=None, max_length=256)
     assignee: Optional[str] = Field(default=None, max_length=128)
     notes: list[str] = Field(default_factory=list, max_length=64)
     created_at: datetime

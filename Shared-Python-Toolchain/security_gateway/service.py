@@ -678,6 +678,7 @@ async def evaluate_access(access_request: AccessRequest, http_request: Request) 
             summary=f"User {access_request.user.user_id} received a {decision.decision.value} decision.",
             details={
                 "user_id": access_request.user.user_id,
+                "device_id": access_request.device.device_id,
                 "resource": access_request.resource,
                 "privilege_level": access_request.privilege_level,
                 "source_ip": access_request.source_ip,
@@ -1137,6 +1138,11 @@ async def automation_status(_: None = Depends(require_operator_access)) -> dict:
 @app.get("/soc/overview")
 async def soc_overview(_: None = Depends(require_operator_access)) -> dict:
     return soc_manager.overview()
+
+
+@app.get("/soc/dashboard")
+async def soc_dashboard(_: None = Depends(require_operator_access)) -> dict:
+    return soc_manager.dashboard()
 
 
 @app.post("/soc/events")

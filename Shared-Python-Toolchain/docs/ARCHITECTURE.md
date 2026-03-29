@@ -70,6 +70,8 @@
 11. **security_gateway/soc.py**
    - Provides a lightweight SOC layer with persisted security events, analyst alerts, and cases.
    - High and critical events automatically promote into analyst-facing alerts, while cases track triage, ownership, and containment workflow.
+   - Correlation rules now group related event patterns into higher-level analyst alerts, including repeated tracker activity and endpoints that combine posture drift/compromise with risky access outcomes.
+   - Dashboard summaries expose queue health, severity/status counts, recent correlations, and active case workload for analyst triage.
    - This is the first milestone toward a broader security-operations platform; it is intentionally lightweight and file-backed rather than a full SIEM/SOC stack.
 
 ## Data Flow
