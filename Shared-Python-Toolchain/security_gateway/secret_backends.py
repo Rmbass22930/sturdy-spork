@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from typing import Dict, Optional
+from urllib.parse import urlparse
 
 import requests
 
@@ -29,12 +30,25 @@ class LocalMemoryBackend(SecretBackend):
 
 
 class HashicorpVaultBackend(SecretBackend):
-    def __init__(self, url: str, token: str, mount: str = "secret", namespace: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        url: str,
+        token: str,
+        mount: str = "secret",
+        namespace: Optional[str] = None,
+        *,
+        timeout_seconds: float = 5.0,
+        verify_tls: bool = True,
+        session: requests.Session | None = None,
+    ) -> None:
+        self._validate_url(url)
         self._url = url.rstrip("/")
         self._token = token
         self._mount = mount.strip("/")
         self._namespace = namespace
-        self._session = requests.Session()
+        self._timeout_seconds = timeout_seconds
+        self._session = session or requests.Session()
+        self._session.verify = verify_tls
 
     def _headers(self) -> Dict[str, str]:
         headers = {"X-Vault-Token": self._token}
@@ -51,7 +65,7 @@ class HashicorpVaultBackend(SecretBackend):
             self._path(name, version),
             headers=self._headers(),
             json={"data": {"ciphertext": ciphertext}},
-            timeout=5,
+            timeout=self._timeout_seconds,
         )
         response.raise_for_status()
 
@@ -59,7 +73,7 @@ class HashicorpVaultBackend(SecretBackend):
         response = self._session.get(
             self._path(name, version),
             headers=self._headers(),
-            timeout=5,
+            timeout=self._timeout_seconds,
         )
         if response.status_code == 404:
             return None
@@ -67,3 +81,13 @@ class HashicorpVaultBackend(SecretBackend):
         body = response.json()
         data = body.get("data", {}).get("data", {})
         return data.get("ciphertext")
+
+    @staticmethod
+    def _validate_url(url: str) -> None:
+        parsed = urlparse(url)
+        if parsed.scheme.lower() != "https":
+            raise ValueError("HashiCorp Vault URL must use HTTPS.")
+        if parsed.username or parsed.password:
+            raise ValueError("HashiCorp Vault URL must not contain embedded credentials.")
+        if not parsed.hostname:
+            raise ValueError("HashiCorp Vault URL must include a hostname.")

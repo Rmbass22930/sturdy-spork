@@ -139,6 +139,8 @@ class VaultClient:
                 settings.hashicorp_vault_token,
                 settings.hashicorp_vault_mount,
                 settings.hashicorp_vault_namespace,
+                timeout_seconds=settings.hashicorp_vault_timeout_seconds,
+                verify_tls=settings.hashicorp_vault_verify_tls,
             )
         return LocalMemoryBackend()
 

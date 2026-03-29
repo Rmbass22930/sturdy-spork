@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     hashicorp_vault_token: Optional[str] = None
     hashicorp_vault_mount: str = "secret"
     hashicorp_vault_namespace: Optional[str] = None
+    hashicorp_vault_timeout_seconds: float = 5.0
+    hashicorp_vault_verify_tls: bool = True
     doh_providers: List[HttpUrl] = Field(
         default_factory=lambda: [
             "https://cloudflare-dns.com/dns-query",
