@@ -53,7 +53,7 @@ from .reports import (
 )
 from .state import dns_security_cache
 from .tracker_intel import TrackerIntel
-from .tor import OutboundProxy, ProxyRequestTimeoutError, ProxyResponseTooLargeError
+from .tor import ALLOWED_PROXY_METHODS, OutboundProxy, ProxyRequestTimeoutError, ProxyResponseTooLargeError
 from .threat_response import ThreatResponseCoordinator
 
 multipart_installed = importlib.util.find_spec("multipart") is not None
@@ -645,6 +645,14 @@ class ProxyPayload(BaseModel):
     method: str = "GET"
     via: str = "tor"
 
+    @field_validator("method")
+    @classmethod
+    def validate_method(cls, value: str) -> str:
+        candidate = value.strip().upper()
+        if candidate not in ALLOWED_PROXY_METHODS:
+            raise ValueError(f"method must be one of: {', '.join(sorted(ALLOWED_PROXY_METHODS))}")
+        return candidate
+
 
 class BlockIPPayload(BaseModel):
     ip: str
@@ -760,7 +768,7 @@ async def proxy_request(payload: ProxyPayload, request: Request) -> dict:
         )
         raise HTTPException(status_code=403, detail=f"Tracker destination blocked: {tracker_match.hostname}")
     try:
-        result = proxy.request(payload.method.upper(), payload.url, via=payload.via)
+        result = proxy.request(payload.method, payload.url, via=payload.via)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ProxyResponseTooLargeError as exc:

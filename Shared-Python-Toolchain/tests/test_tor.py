@@ -57,3 +57,10 @@ def test_send_request_maps_timeout(monkeypatch):
 
     with pytest.raises(ProxyRequestTimeoutError):
         proxy._send_request("GET", "https://example.com")
+
+
+def test_proxy_request_rejects_disallowed_methods():
+    proxy = OutboundProxy(timeout=1.0, max_response_bytes=1024)
+
+    with pytest.raises(ValueError, match="method must be one of"):
+        proxy.request("POST", "https://example.com", via="direct")

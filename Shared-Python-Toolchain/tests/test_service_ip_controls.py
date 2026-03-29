@@ -550,6 +550,19 @@ def test_proxy_request_rejects_private_destinations(monkeypatch, tmp_path):
     assert "not allowed" in response.json()["detail"].lower()
 
 
+def test_proxy_request_rejects_disallowed_methods(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+
+    with TestClient(service.app) as client:
+        response = client.post(
+            "/tor/request",
+            json={"url": "https://example.com/submit", "method": "POST", "via": "direct"},
+        )
+
+    assert response.status_code == 422
+    assert "method must be one of" in response.text
+
+
 def test_proxy_request_rate_limits_abusive_clients(monkeypatch, tmp_path):
     _install_test_managers(monkeypatch, tmp_path)
     monkeypatch.setattr(settings, "proxy_request_max_requests_per_window", 1)

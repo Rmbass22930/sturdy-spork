@@ -193,6 +193,7 @@ SECURITY_GATEWAY_WEBSOCKET_RATE_WINDOW_SECONDS=5
 - `POST /tor/request` and `security-gateway proxy-request` now reject unsafe proxy targets before issuing a request.
 - Allowed URL schemes are HTTP and HTTPS by default.
 - Localhost, private-network, link-local, reserved, multicast, unspecified, and metadata-style destinations are blocked by default.
+- The shared proxy route only allows `GET` and `HEAD` methods.
 - Upstream proxy requests time out after `SECURITY_GATEWAY_PROXY_TIMEOUT_SECONDS` and response bodies are capped by `SECURITY_GATEWAY_PROXY_MAX_RESPONSE_BYTES`.
 - Configure these controls with:
 ```

@@ -12,6 +12,8 @@ import httpx
 
 from .config import settings
 
+ALLOWED_PROXY_METHODS = frozenset({"GET", "HEAD"})
+
 
 @dataclass
 class ProxyResponse:
@@ -46,6 +48,9 @@ class OutboundProxy:
         self.blocked_hosts = {host.lower().rstrip(".") for host in settings.proxy_blocked_hosts}
 
     def request(self, method: str, url: str, via: str = "tor", **kwargs) -> ProxyResponse:
+        normalized_method = str(method).strip().upper()
+        if normalized_method not in ALLOWED_PROXY_METHODS:
+            raise ValueError(f"Proxy request method must be one of: {', '.join(sorted(ALLOWED_PROXY_METHODS))}")
         if via not in {"tor", "warp", "direct"}:
             raise ValueError("via must be 'tor', 'warp', or 'direct'")
         self._validate_target(url)
@@ -59,7 +64,7 @@ class OutboundProxy:
         elif via == "warp" and self.warp_endpoint:
             headers.setdefault("CF-Access-Client-Id", "demo")
             headers.setdefault("CF-Access-Client-Secret", "demo")
-        return self._send_request(method, url, proxies=proxies, headers=headers, **kwargs)
+        return self._send_request(normalized_method, url, proxies=proxies, headers=headers, **kwargs)
 
     def _send_request(self, method: str, url: str, *, proxies=None, headers=None, **kwargs) -> ProxyResponse:
         try:
