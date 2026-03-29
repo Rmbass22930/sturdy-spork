@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-  [string]$SourceProject = 'J:\gdrive\BallisticTarget\src\Shared-Python-Toolchain'
+  [string]$SourceProject = 'J:\_shared_toolchains\Shared-Python-Toolchain'
 )
 
 $ErrorActionPreference = 'Stop'

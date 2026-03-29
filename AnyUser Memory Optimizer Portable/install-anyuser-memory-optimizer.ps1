@@ -67,7 +67,7 @@ function Resolve-ProjectRoot([string]$ExplicitPath) {
   $candidates = @(
     (Join-Path $scriptRoot 'Shared-Python-Toolchain'),
     (Join-Path (Split-Path -Parent $scriptRoot) 'Shared-Python-Toolchain'),
-    'J:\gdrive\BallisticTarget\src\Shared-Python-Toolchain'
+    'J:\_shared_toolchains\Shared-Python-Toolchain'
   )
   foreach ($c in $candidates) {
     if (Test-Path -LiteralPath $c) { return (Resolve-Path -LiteralPath $c).Path }

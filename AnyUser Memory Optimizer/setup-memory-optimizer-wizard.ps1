@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-  [string]$ProjectRoot = 'J:\gdrive\BallisticTarget\src\Shared-Python-Toolchain',
+  [string]$ProjectRoot = 'J:\_shared_toolchains\Shared-Python-Toolchain',
   [string]$VMName,
   [string]$PythonPath,
   [switch]$SkipEnableHyperV,

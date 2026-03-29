@@ -4,7 +4,7 @@ The PyInstaller bootstrap (`installer/installer.py`) can now fetch external prog
 
 ## Build flow
 
-Use [scripts/build-security-gateway.ps1](/J:/sturdy-spork/Shared-Python-Toolchain/scripts/build-security-gateway.ps1) to build the app and installer together.
+Use [scripts/build-security-gateway.ps1](/J:/_shared_toolchains/Shared-Python-Toolchain/scripts/build-security-gateway.ps1) to build the app and installer together.
 
 - It builds `SecurityGateway.exe` first into a staged location.
 - It passes that exact staged payload into `SecurityGatewayInstaller.spec`.

@@ -436,7 +436,7 @@ SECURITY_GATEWAY_TRACEROUTE_SHOW_POPUP_RESULTS=true
 ```
 
 ## Reports
-- In development, reports default to [J:\sturdy-spork\Shared-Python-Toolchain\output\pdf](/J:/sturdy-spork/Shared-Python-Toolchain/output/pdf).
+- In development, reports default to [J:\_shared_toolchains\Shared-Python-Toolchain\output\pdf](/J:/_shared_toolchains/Shared-Python-Toolchain/output/pdf).
 - In the installed build, the default reports directory is `%LOCALAPPDATA%\SecurityGateway\reports`.
 - The installer now creates that reports directory as part of setup.
 - Use `security-gateway report-pdf` to generate a PDF, `security-gateway report-list` to see saved reports, and `security-gateway report-open [name]` to view the newest or named report.

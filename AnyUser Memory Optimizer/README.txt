@@ -15,4 +15,4 @@ What it configures
 - optional privacy gate (None, Malwarebytes, or custom commands)
 
 Default project source path
-- J:\gdrive\BallisticTarget\src\Shared-Python-Toolchain
+- J:\_shared_toolchains\Shared-Python-Toolchain
