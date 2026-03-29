@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from security_gateway.ip_controls import IPBlocklistManager
 from security_gateway.config import settings
 from security_gateway.reports import ReportFilters, SecurityReportBuilder
@@ -105,7 +107,7 @@ def test_collect_summary_respects_filters(tmp_path: Path) -> None:
     builder = SecurityReportBuilder(audit_log_path=audit_path, ip_blocklist_path=blocklist_path)
     summary = builder.collect_summary(
         filters=ReportFilters(
-            time_window_hours=100000.0,
+            time_window_hours=72.0,
             min_risk_score=85.0,
             include_blocked_ips=False,
             include_potential_blocked_ips=True,
@@ -140,3 +142,20 @@ def test_write_summary_pdf_and_list_saved_reports(tmp_path: Path, monkeypatch) -
     assert reports[0]["potential_blocked_ip_count"] == 2
     assert reports[0]["tracker_block_count"] == 1
     assert builder.resolve_saved_report() == report_path
+
+
+def test_report_filters_reject_pathological_values(tmp_path: Path) -> None:
+    audit_path = tmp_path / "audit.jsonl"
+    blocklist_path = tmp_path / "blocked-ips.json"
+    _write_audit_events(audit_path)
+
+    builder = SecurityReportBuilder(audit_log_path=audit_path, ip_blocklist_path=blocklist_path)
+
+    with pytest.raises(ValueError, match="max_events"):
+        builder.collect_summary(filters=ReportFilters(max_events=0))
+
+    with pytest.raises(ValueError, match="time_window_hours"):
+        builder.collect_summary(filters=ReportFilters(time_window_hours=100000.0))
+
+    with pytest.raises(ValueError, match="min_risk_score"):
+        builder.collect_summary(filters=ReportFilters(min_risk_score=200.0))

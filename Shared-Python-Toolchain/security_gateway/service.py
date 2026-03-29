@@ -17,6 +17,7 @@ from fastapi import (
     File,
     Header,
     HTTPException,
+    Query,
     UploadFile,
     Request,
     WebSocket,
@@ -42,6 +43,13 @@ from .pam import (
 )
 from .policy import PolicyEngine
 from .reports import SecurityReportBuilder
+from .reports import (
+    MAX_REPORT_MAX_EVENTS,
+    MAX_REPORT_MIN_RISK_SCORE,
+    MAX_REPORT_TIME_WINDOW_HOURS,
+    MIN_REPORT_MAX_EVENTS,
+    MIN_REPORT_MIN_RISK_SCORE,
+)
 from .state import dns_security_cache
 from .tracker_intel import TrackerIntel
 from .tor import OutboundProxy, ProxyRequestTimeoutError, ProxyResponseTooLargeError
@@ -643,7 +651,7 @@ async def proxy_health() -> dict:
 
 @app.get("/privacy/tracker-events")
 async def tracker_events(
-    max_events: int = 50,
+    max_events: int = Query(default=50, ge=1, le=MAX_REPORT_MAX_EVENTS),
     _: None = Depends(require_operator_access),
 ) -> dict:
     events: list[dict] = []
@@ -757,9 +765,13 @@ async def security_health() -> dict:
 
 @app.get("/reports/security-summary.pdf")
 async def security_summary_report(
-    max_events: int = 25,
-    time_window_hours: float | None = None,
-    min_risk_score: float = 0.0,
+    max_events: int = Query(default=25, ge=MIN_REPORT_MAX_EVENTS, le=MAX_REPORT_MAX_EVENTS),
+    time_window_hours: float | None = Query(default=None, gt=0, le=MAX_REPORT_TIME_WINDOW_HOURS),
+    min_risk_score: float = Query(
+        default=0.0,
+        ge=MIN_REPORT_MIN_RISK_SCORE,
+        le=MAX_REPORT_MIN_RISK_SCORE,
+    ),
     include_blocked_ips: bool = True,
     include_potential_blocked_ips: bool = True,
     include_recent_events: bool = True,

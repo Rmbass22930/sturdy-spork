@@ -316,6 +316,22 @@ def test_report_and_tracker_visibility_routes_require_operator_auth(monkeypatch,
     assert tracker_events.status_code == 401
 
 
+def test_report_and_tracker_routes_reject_pathological_query_values(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
+
+    with TestClient(service.app) as client:
+        report = client.get(
+            "/reports/security-summary.pdf",
+            params={"max_events": 10000, "time_window_hours": 100000.0, "min_risk_score": 200.0},
+            headers=headers,
+        )
+        tracker_events = client.get("/privacy/tracker-events", params={"max_events": 10000}, headers=headers)
+
+    assert report.status_code == 422
+    assert tracker_events.status_code == 422
+
+
 def test_dns_resolve_blocks_tracker_domains(monkeypatch, tmp_path):
     audit, _, _ = _install_test_managers(monkeypatch, tmp_path)
 

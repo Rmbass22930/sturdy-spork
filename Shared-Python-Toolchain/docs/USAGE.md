@@ -411,6 +411,10 @@ SECURITY_GATEWAY_TRACEROUTE_SHOW_POPUP_RESULTS=true
   - `GET /reports` lists saved PDFs
   - `GET /reports/security-summary.pdf` generates a current summary PDF and accepts the same filter query parameters
   - `GET /reports/{name}` fetches a saved PDF
+- Report and tracker-event query bounds:
+  - `max_events`: `1`-`500`
+  - `time_window_hours`: `>0` and `<=2160` (`90` days)
+  - `min_risk_score`: `0`-`100`
 
 ## Uninstall
 - After running the installer, an elevated script is dropped at `C:\Program Files\SecurityGateway\Uninstall-SecurityGateway.ps1`. Run it as Administrator to remove the binary, PATH entry, desktop shortcut, and any residual data under `%ProgramData%\SecurityGateway` and `%LOCALAPPDATA%\SecurityGateway`.

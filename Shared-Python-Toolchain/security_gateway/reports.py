@@ -15,6 +15,12 @@ from reportlab.pdfgen import canvas
 from .config import settings
 from .ip_controls import IPBlocklistManager
 
+MIN_REPORT_MAX_EVENTS = 1
+MAX_REPORT_MAX_EVENTS = 500
+MAX_REPORT_TIME_WINDOW_HOURS = 24.0 * 90
+MIN_REPORT_MIN_RISK_SCORE = 0.0
+MAX_REPORT_MIN_RISK_SCORE = 100.0
+
 
 @dataclass(frozen=True)
 class ReportFilters:
@@ -24,6 +30,21 @@ class ReportFilters:
     include_blocked_ips: bool = True
     include_potential_blocked_ips: bool = True
     include_recent_events: bool = True
+
+    def __post_init__(self) -> None:
+        if self.max_events < MIN_REPORT_MAX_EVENTS or self.max_events > MAX_REPORT_MAX_EVENTS:
+            raise ValueError(
+                f"max_events must be between {MIN_REPORT_MAX_EVENTS} and {MAX_REPORT_MAX_EVENTS}."
+            )
+        if self.time_window_hours is not None:
+            if self.time_window_hours <= 0 or self.time_window_hours > MAX_REPORT_TIME_WINDOW_HOURS:
+                raise ValueError(
+                    f"time_window_hours must be between 0 and {MAX_REPORT_TIME_WINDOW_HOURS} hours."
+                )
+        if self.min_risk_score < MIN_REPORT_MIN_RISK_SCORE or self.min_risk_score > MAX_REPORT_MIN_RISK_SCORE:
+            raise ValueError(
+                f"min_risk_score must be between {MIN_REPORT_MIN_RISK_SCORE} and {MAX_REPORT_MIN_RISK_SCORE}."
+            )
 
 
 class SecurityReportBuilder:
