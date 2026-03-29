@@ -46,6 +46,7 @@
     - FastAPI docs metadata endpoints are disabled by default so the deployed service does not advertise an OpenAPI surface unless an operator explicitly enables it for development.
     - Trusted host enforcement rejects unexpected `Host` headers before request handling so same-host origin logic and downstream routing do not trust arbitrary hostnames.
     - Response middleware adds baseline anti-sniffing, anti-framing, and privacy-oriented security headers across the HTTP surface by default.
+    - The same middleware applies no-store cache directives so secrets, reports, telemetry, and policy responses are not cached by browsers or intermediaries by default.
     - Non-multipart request bodies are bounded before model parsing so oversized JSON/control-plane payloads are rejected early instead of consuming arbitrary memory.
     - Repeated operator and endpoint bearer-token failures are rate-limited across HTTP and the operator WebSocket path to slow brute-force attempts.
     - Proxy and feed-refresh routes keep detailed backend exceptions in audit events while returning stable high-level API errors to clients.

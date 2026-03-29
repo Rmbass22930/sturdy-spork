@@ -173,6 +173,8 @@ def test_http_responses_include_security_headers(monkeypatch, tmp_path):
     assert response.headers["X-Frame-Options"] == "DENY"
     assert response.headers["Referrer-Policy"] == "no-referrer"
     assert response.headers["Permissions-Policy"] == "geolocation=(), camera=(), microphone=()"
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.headers["Pragma"] == "no-cache"
 
 
 def test_operator_auth_rate_limits_repeated_failures(monkeypatch, tmp_path):
