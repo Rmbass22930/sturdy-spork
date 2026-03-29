@@ -170,14 +170,24 @@ SECURITY_GATEWAY_WEBSOCKET_RATE_WINDOW_SECONDS=5
 - `POST /tor/request` and `security-gateway proxy-request` now reject unsafe proxy targets before issuing a request.
 - Allowed URL schemes are HTTP and HTTPS by default.
 - Localhost, private-network, link-local, reserved, multicast, unspecified, and metadata-style destinations are blocked by default.
+- Upstream proxy requests time out after `SECURITY_GATEWAY_PROXY_TIMEOUT_SECONDS` and response bodies are capped by `SECURITY_GATEWAY_PROXY_MAX_RESPONSE_BYTES`.
 - Configure these controls with:
 ```
 SECURITY_GATEWAY_PROXY_ALLOWED_URL_SCHEMES=["http","https"]
 SECURITY_GATEWAY_PROXY_ALLOWED_HOSTS=[]
 SECURITY_GATEWAY_PROXY_BLOCK_PRIVATE_DESTINATIONS=true
+SECURITY_GATEWAY_PROXY_TIMEOUT_SECONDS=10
+SECURITY_GATEWAY_PROXY_MAX_RESPONSE_BYTES=1048576
 SECURITY_GATEWAY_PROXY_BLOCKED_HOSTS=["169.254.169.254","metadata.google.internal","100.100.100.200"]
 ```
 - If you want to restrict proxying to a fixed host allowlist, populate `SECURITY_GATEWAY_PROXY_ALLOWED_HOSTS`.
+
+## Endpoint upload limits
+- `POST /endpoint/scan` reads uploads in bounded chunks and rejects files larger than `SECURITY_GATEWAY_ENDPOINT_SCAN_MAX_UPLOAD_BYTES`.
+- Configure the default limit with:
+```
+SECURITY_GATEWAY_ENDPOINT_SCAN_MAX_UPLOAD_BYTES=5242880
+```
 
 ## Malware feed refresh
 - Malware scanning can consume refreshable SHA-256 IOC/hash feeds in addition to the built-in heuristics.

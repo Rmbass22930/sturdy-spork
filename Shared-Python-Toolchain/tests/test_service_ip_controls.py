@@ -11,7 +11,7 @@ from security_gateway.models import DeviceCompliance
 from security_gateway.pam import VaultClient
 from security_gateway.policy import PolicyEngine
 from security_gateway.reports import SecurityReportBuilder
-from security_gateway.tor import ProxyResponse
+from security_gateway.tor import ProxyRequestTimeoutError, ProxyResponse, ProxyResponseTooLargeError
 
 
 class DummyAuditLogger:
@@ -363,6 +363,46 @@ def test_proxy_request_allows_public_http_targets(monkeypatch, tmp_path):
     assert response.json()["body"] == "ok"
 
 
+def test_proxy_request_maps_response_too_large(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        service.proxy,
+        "request",
+        lambda method, url, via="tor": (_ for _ in ()).throw(
+            ProxyResponseTooLargeError("Proxy response exceeds the configured limit of 1048576 bytes.")
+        ),
+    )
+
+    with TestClient(service.app) as client:
+        response = client.post(
+            "/tor/request",
+            json={"url": "https://example.com/large", "method": "GET", "via": "direct"},
+        )
+
+    assert response.status_code == 413
+    assert "configured limit" in response.json()["detail"]
+
+
+def test_proxy_request_maps_upstream_timeout(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        service.proxy,
+        "request",
+        lambda method, url, via="tor": (_ for _ in ()).throw(
+            ProxyRequestTimeoutError("Proxy request timed out after 10.0 seconds.")
+        ),
+    )
+
+    with TestClient(service.app) as client:
+        response = client.post(
+            "/tor/request",
+            json={"url": "https://example.com/slow", "method": "GET", "via": "direct"},
+        )
+
+    assert response.status_code == 504
+    assert "timed out" in response.json()["detail"]
+
+
 def test_tracker_feed_status_and_refresh_api(monkeypatch, tmp_path):
     _install_test_managers(monkeypatch, tmp_path)
     headers = _operator_headers(monkeypatch)
@@ -630,6 +670,25 @@ def test_endpoint_ingest_secret_auth_and_operator_guarded_reads(monkeypatch, tmp
     assert unauthenticated_fetch.json()["detail"] == "Operator authentication required."
     assert operator_fetch.status_code == 200
     assert operator_fetch.json()["device_id"] == "device-7"
+
+
+def test_endpoint_scan_rejects_oversized_upload(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    headers = _endpoint_headers(monkeypatch)
+    monkeypatch.setattr(settings, "endpoint_scan_max_upload_bytes", 4)
+
+    with TestClient(service.app) as client:
+        response = client.post(
+            "/endpoint/scan",
+            files={"file": ("sample.bin", b"hello-world", "application/octet-stream")},
+            headers=headers,
+        )
+
+    assert response.status_code in {413, 503}
+    if response.status_code == 413:
+        assert "configured limit" in response.json()["detail"]
+    else:
+        assert "python-multipart" in response.json()["detail"]
 
 
 def test_security_health_and_rule_feed_routes(monkeypatch, tmp_path):

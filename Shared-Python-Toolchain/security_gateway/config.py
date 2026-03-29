@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     proxy_allowed_url_schemes: List[str] = Field(default_factory=lambda: ["http", "https"])
     proxy_allowed_hosts: List[str] = Field(default_factory=list)
     proxy_block_private_destinations: bool = True
+    proxy_timeout_seconds: float = 10.0
+    proxy_max_response_bytes: int = 1_048_576
     proxy_blocked_hosts: List[str] = Field(
         default_factory=lambda: [
             "169.254.169.254",
@@ -60,6 +62,7 @@ class Settings(BaseSettings):
     endpoint_bearer_token: Optional[str] = None
     endpoint_bearer_secret_name: Optional[str] = "endpoint-ingest-token"
     endpoint_allow_loopback_without_token: bool = True
+    endpoint_scan_max_upload_bytes: int = 5_242_880
     operator_bearer_token: Optional[str] = None
     operator_bearer_secret_name: Optional[str] = "operator-bearer-token"
     operator_allow_loopback_without_token: bool = True

@@ -27,10 +27,12 @@
 
 5. **security_gateway/tor.py**
    - Provides pluggable outbound proxying via Tor or Cloudflare WARP. Enforces outbound URL validation for the shared proxy path so non-HTTP(S), localhost, private-network, link-local, and metadata-style targets are rejected before requests are sent.
+   - Streams upstream responses through explicit timeout and maximum-body guardrails so operator proxying cannot buffer arbitrarily large responses in memory.
 
 6. **security_gateway/endpoint.py**
    - `EndpointTelemetry` ingests device posture (disk encryption, EDR status) and signs it for tamper resistance.
    - `MalwareScanner` runs files through local heuristics plus refreshable malware hash feeds and simple string/rule feeds before the file is handed to a privileged workflow.
+   - Upload scanning is bounded by a configured maximum file size before payloads are materialized in memory.
    - Feed refreshes support explicit TLS verification controls, custom CA bundles, local-cache imports for airgapped environments, and health reporting for stale or failed detection content.
 
 7. **security_gateway/service.py**

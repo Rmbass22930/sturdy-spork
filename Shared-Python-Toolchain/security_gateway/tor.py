@@ -20,11 +20,26 @@ class ProxyResponse:
     body: str
 
 
+class ProxyRequestTimeoutError(RuntimeError):
+    """Raised when the upstream proxy request times out."""
+
+
+class ProxyResponseTooLargeError(RuntimeError):
+    """Raised when the upstream response body exceeds the configured limit."""
+
+
 class OutboundProxy:
-    def __init__(self, tor_proxy: Optional[str] = None, warp_endpoint: Optional[str] = None, timeout: float = 10.0):
+    def __init__(
+        self,
+        tor_proxy: Optional[str] = None,
+        warp_endpoint: Optional[str] = None,
+        timeout: float | None = None,
+        max_response_bytes: int | None = None,
+    ):
         self.tor_proxy = tor_proxy or settings.tor_socks_proxy
         self.warp_endpoint = warp_endpoint or settings.warp_endpoint
-        self.timeout = timeout
+        self.timeout = settings.proxy_timeout_seconds if timeout is None else timeout
+        self.max_response_bytes = settings.proxy_max_response_bytes if max_response_bytes is None else max_response_bytes
         self.allowed_schemes = {scheme.lower() for scheme in settings.proxy_allowed_url_schemes}
         self.allowed_hosts = {host.lower().rstrip(".") for host in settings.proxy_allowed_hosts}
         self.block_private_destinations = settings.proxy_block_private_destinations
@@ -47,14 +62,30 @@ class OutboundProxy:
         return self._send_request(method, url, proxies=proxies, headers=headers, **kwargs)
 
     def _send_request(self, method: str, url: str, *, proxies=None, headers=None, **kwargs) -> ProxyResponse:
-        with httpx.Client(timeout=self.timeout, proxies=proxies) as client:
-            response = client.request(method, url, headers=headers or {}, **kwargs)
-            response.raise_for_status()
-            return ProxyResponse(
-                status_code=response.status_code,
-                headers=dict(response.headers),
-                body=response.text,
-            )
+        try:
+            with httpx.Client(timeout=self.timeout, proxies=proxies) as client:
+                with client.stream(method, url, headers=headers or {}, **kwargs) as response:
+                    response.raise_for_status()
+                    content_length = response.headers.get("content-length")
+                    if content_length and int(content_length) > self.max_response_bytes:
+                        raise ProxyResponseTooLargeError(
+                            f"Proxy response exceeds the configured limit of {self.max_response_bytes} bytes."
+                        )
+                    body_bytes = bytearray()
+                    for chunk in response.iter_bytes():
+                        body_bytes.extend(chunk)
+                        if len(body_bytes) > self.max_response_bytes:
+                            raise ProxyResponseTooLargeError(
+                                f"Proxy response exceeds the configured limit of {self.max_response_bytes} bytes."
+                            )
+                    encoding = response.encoding or "utf-8"
+                    return ProxyResponse(
+                        status_code=response.status_code,
+                        headers=dict(response.headers),
+                        body=body_bytes.decode(encoding, errors="replace"),
+                    )
+        except httpx.TimeoutException as exc:
+            raise ProxyRequestTimeoutError(f"Proxy request timed out after {self.timeout} seconds.") from exc
 
     def _validate_target(self, url: str) -> None:
         parsed = urlparse(url)

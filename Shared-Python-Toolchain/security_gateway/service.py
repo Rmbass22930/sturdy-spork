@@ -38,7 +38,7 @@ from .policy import PolicyEngine
 from .reports import SecurityReportBuilder
 from .state import dns_security_cache
 from .tracker_intel import TrackerIntel
-from .tor import OutboundProxy
+from .tor import OutboundProxy, ProxyRequestTimeoutError, ProxyResponseTooLargeError
 from .threat_response import ThreatResponseCoordinator
 
 multipart_installed = importlib.util.find_spec("multipart") is not None
@@ -150,6 +150,21 @@ def _allowed_websocket_origins(websocket: WebSocket) -> set[str]:
         allowed.add(f"http://{host}".lower())
         allowed.add(f"https://{host}".lower())
     return allowed
+
+
+async def _read_upload_with_limit(file: UploadFile, max_bytes: int) -> bytes:
+    payload = bytearray()
+    while True:
+        chunk = await file.read(min(65_536, max_bytes + 1))
+        if not chunk:
+            break
+        payload.extend(chunk)
+        if len(payload) > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Uploaded file exceeds the configured limit of {max_bytes} bytes.",
+            )
+    return bytes(payload)
 
 
 def _resolve_bearer_token(secret_name: str | None, static_token: str | None) -> tuple[str | None, str | None]:
@@ -384,7 +399,7 @@ if multipart_installed:
         _: None = Depends(require_endpoint_access),
         file: UploadFile = File(...),
     ) -> dict:
-        data = await file.read()
+        data = await _read_upload_with_limit(file, settings.endpoint_scan_max_upload_bytes)
         malicious, verdict = scanner.scan_bytes(data)
         return {"malicious": malicious, "verdict": verdict}
 else:
@@ -514,6 +529,10 @@ async def proxy_request(payload: ProxyPayload) -> dict:
         result = proxy.request(payload.method.upper(), payload.url, via=payload.via)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ProxyResponseTooLargeError as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    except ProxyRequestTimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {
