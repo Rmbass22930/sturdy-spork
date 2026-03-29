@@ -124,6 +124,31 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="Security Gateway", version="0.1.0", lifespan=lifespan)
 
 
+class PublicRouteRateLimiter:
+    def __init__(self) -> None:
+        self._windows: dict[tuple[str, str], tuple[float, int]] = {}
+
+    def clear(self) -> None:
+        self._windows.clear()
+
+    def check(self, scope: str, client_id: str, max_requests: int, window_seconds: float) -> float | None:
+        now = monotonic()
+        key = (scope, client_id)
+        started_at, count = self._windows.get(key, (now, 0))
+        if now - started_at >= window_seconds:
+            started_at = now
+            count = 0
+        count += 1
+        self._windows[key] = (started_at, count)
+        if count <= max_requests:
+            return None
+        retry_after = max(1, int(window_seconds - (now - started_at)) + 1)
+        return float(retry_after)
+
+
+public_rate_limiter = PublicRouteRateLimiter()
+
+
 def _is_loopback_client(host: str | None) -> bool:
     if not host:
         return False
@@ -165,6 +190,27 @@ async def _read_upload_with_limit(file: UploadFile, max_bytes: int) -> bytes:
                 detail=f"Uploaded file exceeds the configured limit of {max_bytes} bytes.",
             )
     return bytes(payload)
+
+
+def _enforce_public_rate_limit(request: Request, scope: str, max_requests: int) -> None:
+    client_host = request.client.host if request.client else "unknown"
+    retry_after = public_rate_limiter.check(
+        scope=scope,
+        client_id=client_host,
+        max_requests=max_requests,
+        window_seconds=settings.public_rate_limit_window_seconds,
+    )
+    if retry_after is None:
+        return
+    audit_logger.log(
+        "public.rate_limit.exceeded",
+        {"path": request.url.path, "source_ip": client_host, "scope": scope, "retry_after_seconds": retry_after},
+    )
+    raise HTTPException(
+        status_code=429,
+        detail="Too many requests; retry later.",
+        headers={"Retry-After": str(int(retry_after))},
+    )
 
 
 def _resolve_bearer_token(secret_name: str | None, static_token: str | None) -> tuple[str | None, str | None]:
@@ -293,6 +339,11 @@ async def require_operator_websocket_access(websocket: WebSocket) -> bool:
 
 @app.post("/access/evaluate", response_model=AccessDecision)
 async def evaluate_access(access_request: AccessRequest, http_request: Request) -> AccessDecision:
+    _enforce_public_rate_limit(
+        http_request,
+        scope="access.evaluate",
+        max_requests=settings.access_evaluate_max_requests_per_window,
+    )
     if not access_request.source_ip and http_request.client:
         access_request.source_ip = http_request.client.host
     decision = policy_engine.evaluate(access_request)
@@ -349,7 +400,12 @@ async def pam_metrics(_: None = Depends(require_operator_access)) -> dict:
 
 
 @app.get("/dns/resolve")
-async def resolve_dns(hostname: str, record_type: str = "A") -> dict:
+async def resolve_dns(request: Request, hostname: str, record_type: str = "A") -> dict:
+    _enforce_public_rate_limit(
+        request,
+        scope="dns.resolve",
+        max_requests=settings.dns_resolve_max_requests_per_window,
+    )
     tracker_match = tracker_intel.is_tracker_hostname(hostname) if settings.tracker_block_enabled else None
     if tracker_match:
         audit_logger.log(
@@ -508,7 +564,12 @@ async def malware_rule_feed_import(
 
 
 @app.post("/tor/request")
-async def proxy_request(payload: ProxyPayload) -> dict:
+async def proxy_request(payload: ProxyPayload, request: Request) -> dict:
+    _enforce_public_rate_limit(
+        request,
+        scope="proxy.request",
+        max_requests=settings.proxy_request_max_requests_per_window,
+    )
     tracker_match = tracker_intel.is_tracker_url(payload.url) if settings.tracker_block_enabled else None
     if tracker_match:
         audit_logger.log(

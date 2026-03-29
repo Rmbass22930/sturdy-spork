@@ -59,6 +59,10 @@ class Settings(BaseSettings):
     automation_malware_feed_refresh_every_ticks: int = 12
     automation_malware_rule_feed_refresh_enabled: bool = False
     automation_malware_rule_feed_refresh_every_ticks: int = 12
+    public_rate_limit_window_seconds: float = 10.0
+    access_evaluate_max_requests_per_window: int = 30
+    dns_resolve_max_requests_per_window: int = 60
+    proxy_request_max_requests_per_window: int = 20
     endpoint_bearer_token: Optional[str] = None
     endpoint_bearer_secret_name: Optional[str] = "endpoint-ingest-token"
     endpoint_allow_loopback_without_token: bool = True

@@ -39,6 +39,7 @@
     - FastAPI service that exposes: `/access/evaluate`, `/pam/checkout`, `/dns/resolve`, `/endpoint/scan`, `/endpoint/malware-feeds/*`, `/endpoint/malware-rule-feeds/*`, `/privacy/tracker-feeds/*`, `/health/security`, `/tor/request`.
     - PAM operations, IP block management, automation status, detection-content refresh/import routes, tracker-event views, and report endpoints require operator authorization via a bearer token, preferring a PAM/Vault-backed operator secret and falling back to a static bootstrap token only when needed.
     - Endpoint ingestion (`POST /endpoint/telemetry`, `POST /endpoint/scan`) uses a separate endpoint-agent bearer credential, while telemetry reads stay on the operator control plane.
+    - Public-facing HTTP routes apply lightweight per-client rate limits so policy evaluation, DNS lookups, and proxying cannot be spammed indefinitely from one source.
     - The WebSocket channel is also operator-gated, origin-aware for browser clients, rate-limited per connection, and limited to health-style control messages instead of arbitrary echo traffic.
    - Emits audit events to stdout + JSONL for SIEM ingestion.
 

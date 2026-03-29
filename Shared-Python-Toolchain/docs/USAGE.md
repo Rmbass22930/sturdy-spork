@@ -189,6 +189,16 @@ SECURITY_GATEWAY_PROXY_BLOCKED_HOSTS=["169.254.169.254","metadata.google.interna
 SECURITY_GATEWAY_ENDPOINT_SCAN_MAX_UPLOAD_BYTES=5242880
 ```
 
+## Public route rate limits
+- `POST /access/evaluate`, `GET /dns/resolve`, and `POST /tor/request` apply per-client request budgets and return `429 Too Many Requests` with `Retry-After` when exceeded.
+- Configure the shared window and per-route budgets with:
+```
+SECURITY_GATEWAY_PUBLIC_RATE_LIMIT_WINDOW_SECONDS=10
+SECURITY_GATEWAY_ACCESS_EVALUATE_MAX_REQUESTS_PER_WINDOW=30
+SECURITY_GATEWAY_DNS_RESOLVE_MAX_REQUESTS_PER_WINDOW=60
+SECURITY_GATEWAY_PROXY_REQUEST_MAX_REQUESTS_PER_WINDOW=20
+```
+
 ## Malware feed refresh
 - Malware scanning can consume refreshable SHA-256 IOC/hash feeds in addition to the built-in heuristics.
 - Refresh feeds with:

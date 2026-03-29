@@ -90,6 +90,7 @@ def _install_test_managers(monkeypatch, tmp_path):
     monkeypatch.setattr(service.automation, "start", lambda: None)
     monkeypatch.setattr(service.automation, "stop", lambda: None)
     monkeypatch.setattr(service.resolver, "close", lambda: None)
+    service.public_rate_limiter.clear()
     return audit, blocklist, traceroute
 
 
@@ -237,6 +238,41 @@ def test_access_evaluate_denies_already_blocked_ip(monkeypatch, tmp_path):
     assert any(event == "access.evaluate" for event, _ in audit.events)
 
 
+def test_access_evaluate_rate_limits_abusive_clients(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "access_evaluate_max_requests_per_window", 1)
+
+    payload = {
+        "user": {
+            "user_id": "user-123",
+            "email": "user@example.com",
+            "groups": ["engineering"],
+            "geo_lat": 37.7749,
+            "geo_lon": -122.4194,
+            "last_login": (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat(),
+        },
+        "device": {
+            "device_id": "device-1",
+            "os": "macOS",
+            "os_version": "15.0",
+            "compliance": DeviceCompliance.compliant.value,
+            "is_encrypted": True,
+            "edr_active": True,
+        },
+        "resource": "git",
+        "privilege_level": "standard",
+        "source_ip": "203.0.113.10",
+    }
+
+    with TestClient(service.app) as client:
+        first = client.post("/access/evaluate", json=payload)
+        second = client.post("/access/evaluate", json=payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 429
+    assert second.headers["retry-after"]
+
+
 def test_reports_endpoints_list_and_fetch_saved_pdf(monkeypatch, tmp_path):
     _install_test_managers(monkeypatch, tmp_path)
     headers = _operator_headers(monkeypatch)
@@ -291,6 +327,25 @@ def test_dns_resolve_blocks_tracker_domains(monkeypatch, tmp_path):
     assert any(event == "privacy.tracker_block" for event, _ in audit.events)
 
 
+def test_dns_resolve_rate_limits_abusive_clients(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "dns_resolve_max_requests_per_window", 1)
+
+    class DummyResult:
+        secure = True
+        records = []
+
+    monkeypatch.setattr(service.resolver, "resolve", lambda hostname, record_type: DummyResult())
+
+    with TestClient(service.app) as client:
+        first = client.get("/dns/resolve", params={"hostname": "example.com", "record_type": "A"})
+        second = client.get("/dns/resolve", params={"hostname": "example.com", "record_type": "A"})
+
+    assert first.status_code == 200
+    assert second.status_code == 429
+    assert second.headers["retry-after"]
+
+
 def test_proxy_request_blocks_tracker_like_urls(monkeypatch, tmp_path):
     audit, _, _ = _install_test_managers(monkeypatch, tmp_path)
     headers = _operator_headers(monkeypatch)
@@ -331,6 +386,40 @@ def test_proxy_request_rejects_private_destinations(monkeypatch, tmp_path):
 
     assert response.status_code == 400
     assert "not allowed" in response.json()["detail"].lower()
+
+
+def test_proxy_request_rate_limits_abusive_clients(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "proxy_request_max_requests_per_window", 1)
+    monkeypatch.setattr(
+        service.proxy,
+        "_send_request",
+        lambda method, url, **kwargs: ProxyResponse(
+            status_code=200,
+            headers={"content-type": "text/plain"},
+            body="ok",
+        ),
+    )
+    monkeypatch.setattr(
+        "security_gateway.tor.socket.getaddrinfo",
+        lambda host, port, type=0: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))
+        ],
+    )
+
+    with TestClient(service.app) as client:
+        first = client.post(
+            "/tor/request",
+            json={"url": "https://example.com/health", "method": "GET", "via": "direct"},
+        )
+        second = client.post(
+            "/tor/request",
+            json={"url": "https://example.com/health", "method": "GET", "via": "direct"},
+        )
+
+    assert first.status_code == 200
+    assert second.status_code == 429
+    assert second.headers["retry-after"]
 
 
 def test_proxy_request_allows_public_http_targets(monkeypatch, tmp_path):
