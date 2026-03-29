@@ -1,3 +1,4 @@
+import json
 import socket
 from datetime import datetime, timedelta, timezone
 
@@ -238,27 +239,45 @@ def test_access_evaluate_denies_already_blocked_ip(monkeypatch, tmp_path):
 
 def test_reports_endpoints_list_and_fetch_saved_pdf(monkeypatch, tmp_path):
     _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
 
     with TestClient(service.app) as client:
         generated = client.get(
             "/reports/security-summary.pdf",
             params={"time_window_hours": 24, "min_risk_score": 50, "include_recent_events": False},
+            headers=headers,
         )
         assert generated.status_code == 200
         assert generated.headers["content-type"] == "application/pdf"
         assert generated.content.startswith(b"%PDF")
 
         saved_path = service.report_builder.write_summary_pdf(max_events=5)
-        listing = client.get("/reports")
+        listing = client.get("/reports", headers=headers)
         assert listing.status_code == 200
         payload = listing.json()
         assert payload["reports"]
         assert payload["reports"][0]["name"] == saved_path.name
 
-        fetched = client.get(f"/reports/{saved_path.name}")
+        fetched = client.get(f"/reports/{saved_path.name}", headers=headers)
         assert fetched.status_code == 200
         assert fetched.headers["content-type"] == "application/pdf"
         assert fetched.content.startswith(b"%PDF")
+
+
+def test_report_and_tracker_visibility_routes_require_operator_auth(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "operator_bearer_token", "expected-token")
+    monkeypatch.setattr(settings, "operator_bearer_secret_name", None)
+    monkeypatch.setattr(settings, "operator_allow_loopback_without_token", False)
+
+    with TestClient(service.app) as client:
+        report = client.get("/reports/security-summary.pdf")
+        listing = client.get("/reports")
+        tracker_events = client.get("/privacy/tracker-events")
+
+    assert report.status_code == 401
+    assert listing.status_code == 401
+    assert tracker_events.status_code == 401
 
 
 def test_dns_resolve_blocks_tracker_domains(monkeypatch, tmp_path):
@@ -274,6 +293,9 @@ def test_dns_resolve_blocks_tracker_domains(monkeypatch, tmp_path):
 
 def test_proxy_request_blocks_tracker_like_urls(monkeypatch, tmp_path):
     audit, _, _ = _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
+    audit_path = tmp_path / "audit.jsonl"
+    monkeypatch.setattr(settings, "audit_log_path", str(audit_path))
 
     with TestClient(service.app) as client:
         response = client.post(
@@ -286,6 +308,16 @@ def test_proxy_request_blocks_tracker_like_urls(monkeypatch, tmp_path):
     tracker_events = [data for event, data in audit.events if event == "privacy.tracker_block"]
     assert tracker_events
     assert tracker_events[0]["source"] == "heuristic"
+    audit_path.write_text(
+        json.dumps({"type": "privacy.tracker_block", "source": "heuristic", "hostname": "metrics.example.com"}) + "\n",
+        encoding="utf-8",
+    )
+
+    with TestClient(service.app) as client:
+        tracker_event_view = client.get("/privacy/tracker-events", headers=headers)
+
+    assert tracker_event_view.status_code == 200
+    assert tracker_event_view.json()["events"]
 
 
 def test_proxy_request_rejects_private_destinations(monkeypatch, tmp_path):

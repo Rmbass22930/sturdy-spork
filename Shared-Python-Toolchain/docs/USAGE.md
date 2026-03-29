@@ -22,11 +22,14 @@ uvicorn security_gateway.service:app --reload
 - `GET /endpoint/malware-feeds/status`, `POST /endpoint/malware-feeds/refresh` – inspect and refresh malware IOC/hash feeds for the scanner.
 - `GET /endpoint/malware-rule-feeds/status`, `POST /endpoint/malware-rule-feeds/refresh` – inspect and refresh malware rule/string feeds for the scanner.
 - `POST /privacy/tracker-feeds/import`, `POST /endpoint/malware-feeds/import`, `POST /endpoint/malware-rule-feeds/import` – seed local caches from offline files.
+- `GET /privacy/tracker-events`, `GET /reports`, `GET /reports/{report_name}`, `GET /reports/security-summary.pdf` – operator-authenticated audit/report visibility.
 - `GET /health/security` – consolidated detection/feed health summary for tracker intel, malware feeds, and automation state.
 - `WS /ws` – operator-authenticated health-only channel (sends `{"type":"ready","mode":"health_only"}` on connect, `ping`/`health` -> `pong`, unsupported messages return a structured unsupported response).
 - Operator-managed routes now require operator authorization:
   - `PUT /pam/secret`, `POST /pam/checkout`, `GET /pam/metrics`
   - `GET /endpoint/telemetry/{device_id}`
+  - `GET /privacy/tracker-events`
+  - `GET /reports*`
   - `GET|POST|DELETE /network/blocked-ips*`
   - `GET /automation/status`
   - `WS /ws`

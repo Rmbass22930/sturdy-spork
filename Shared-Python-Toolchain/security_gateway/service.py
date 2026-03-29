@@ -529,7 +529,10 @@ async def proxy_health() -> dict:
 
 
 @app.get("/privacy/tracker-events")
-async def tracker_events(max_events: int = 50) -> dict:
+async def tracker_events(
+    max_events: int = 50,
+    _: None = Depends(require_operator_access),
+) -> dict:
     events: list[dict] = []
     audit_path = Path(settings.audit_log_path)
     if audit_path.exists():
@@ -647,6 +650,7 @@ async def security_summary_report(
     include_blocked_ips: bool = True,
     include_potential_blocked_ips: bool = True,
     include_recent_events: bool = True,
+    _: None = Depends(require_operator_access),
 ) -> Response:
     pdf_bytes = report_builder.build_summary_pdf(
         max_events=max_events,
@@ -661,12 +665,15 @@ async def security_summary_report(
 
 
 @app.get("/reports")
-async def list_reports() -> dict:
+async def list_reports(_: None = Depends(require_operator_access)) -> dict:
     return {"reports": report_builder.list_saved_reports(), "report_output_dir": str(report_builder.get_output_dir())}
 
 
 @app.get("/reports/{report_name}")
-async def fetch_report(report_name: str) -> FileResponse:
+async def fetch_report(
+    report_name: str,
+    _: None = Depends(require_operator_access),
+) -> FileResponse:
     try:
         target = report_builder.resolve_saved_report(report_name)
     except FileNotFoundError as exc:
