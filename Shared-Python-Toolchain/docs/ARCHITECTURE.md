@@ -53,6 +53,10 @@
 9. **security_gateway/cli.py**
    - Typer-powered CLI for quick demos (policy evaluation, DNS lookup, Tor fetch, scanning files, automation control).
 
+10. **security_gateway/alerts.py**
+   - Delivers alerts to optional webhooks or local toast notifications.
+   - Webhook delivery validates HTTPS-only public destinations and fails closed when the configured endpoint is unsafe.
+
 ## Data Flow
 1. A client invokes `/access/evaluate` with user/device/app context.
 2. PolicyEngine pulls the latest telemetry, verifies MFA, and can request PAM credentials if the resource is privileged.

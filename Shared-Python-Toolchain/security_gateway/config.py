@@ -77,6 +77,8 @@ class Settings(BaseSettings):
     websocket_max_messages_per_window: int = 30
     websocket_rate_window_seconds: float = 5.0
     alert_webhook_url: Optional[str] = None
+    alert_webhook_timeout_seconds: float = 4.0
+    alert_webhook_verify_tls: bool = True
     alert_enable_toast: bool = False
     threat_rotation_enabled: bool = True
     threat_rotation_signal_threshold: float = 8.0

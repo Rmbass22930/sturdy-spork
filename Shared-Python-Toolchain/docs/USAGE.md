@@ -144,6 +144,13 @@ SECURITY_GATEWAY_ENDPOINT_TELEMETRY_MAX_RECORDS=10000
 SECURITY_GATEWAY_ENDPOINT_TELEMETRY_RETENTION_HOURS=168
 ```
 - If `SECURITY_GATEWAY_ENDPOINT_TELEMETRY_SIGNING_KEY` is unset, telemetry signing falls back to `SECURITY_GATEWAY_PAM_MASTER_KEY` so signatures stay stable across restarts when the PAM master key is stable.
+- Alert webhooks are constrained to HTTPS public destinations and can be tuned with:
+```
+SECURITY_GATEWAY_ALERT_WEBHOOK_URL=https://alerts.example.com/hook
+SECURITY_GATEWAY_ALERT_WEBHOOK_TIMEOUT_SECONDS=4
+SECURITY_GATEWAY_ALERT_WEBHOOK_VERIFY_TLS=true
+```
+- Webhook URLs with plain HTTP, embedded credentials, localhost, or private/link-local/reserved destinations are rejected and fail closed.
 - Example:
 ```bash
 curl -X POST http://127.0.0.1:8000/privacy/tracker-feeds/refresh \
