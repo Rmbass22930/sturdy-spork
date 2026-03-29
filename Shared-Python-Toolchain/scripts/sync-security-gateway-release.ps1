@@ -2,9 +2,8 @@
 param(
     [string]$OutputRoot = "F:\created software",
     [string]$InstallRoot = "C:\Program Files\SecurityGateway",
-    [string]$PortableRoot = "G:\",
     [switch]$SkipInstalled,
-    [switch]$SkipPortable
+    [string]$PortableRoot
 )
 
 Set-StrictMode -Version Latest
@@ -12,7 +11,7 @@ $ErrorActionPreference = "Stop"
 
 $outputRoot = [System.IO.Path]::GetFullPath($OutputRoot)
 $installRoot = [System.IO.Path]::GetFullPath($InstallRoot)
-$portableRoot = [System.IO.Path]::GetFullPath($PortableRoot)
+$portableRoot = if ([string]::IsNullOrWhiteSpace($PortableRoot)) { $null } else { [System.IO.Path]::GetFullPath($PortableRoot) }
 
 $manifestPath = Join-Path $outputRoot "SecurityGateway-build-manifest.json"
 $bundleUnpackPath = Join-Path $outputRoot "SecurityGateway-build-unpack.cmd"
@@ -72,7 +71,7 @@ $summary = [ordered]@{
     git_commit = $manifest.git_commit
     built_at_utc = $manifest.built_at_utc
     installed_sync = if ($SkipInstalled) { "skipped" } else { "pending" }
-    portable_sync = if ($SkipPortable) { "skipped" } else { "pending" }
+    portable_sync = if ($null -eq $portableRoot) { "skipped" } else { "pending" }
 }
 
 if (-not $SkipInstalled) {
@@ -88,7 +87,7 @@ if (-not $SkipInstalled) {
     $summary.installed_sync = "ok"
 }
 
-if (-not $SkipPortable) {
+if ($null -ne $portableRoot) {
     New-Item -ItemType Directory -Force -Path $portableRoot | Out-Null
     Copy-Item -LiteralPath (Join-Path $outputRoot "SecurityGatewayInstaller.exe") -Destination (Join-Path $portableRoot "SecurityGatewayInstaller.exe") -Force
     Copy-Item -LiteralPath (Join-Path $outputRoot "SecurityGateway-build.zip") -Destination (Join-Path $portableRoot "SecurityGateway-build.zip") -Force

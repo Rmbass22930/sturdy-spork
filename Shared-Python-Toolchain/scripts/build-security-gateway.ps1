@@ -2,7 +2,8 @@
 param(
     [string]$Python = "py",
     [string[]]$PythonArgs = @("-3.13"),
-    [string]$OutputRoot = "$PSScriptRoot\..\dist"
+    [string]$OutputRoot = "$PSScriptRoot\..\dist",
+    [switch]$PublishFullBundle
 )
 
 Set-StrictMode -Version Latest
@@ -83,19 +84,21 @@ try {
         throw "Expected SecurityGateway installer was not created: $installerPath"
     }
 
-    Copy-Item -Force $payloadPath $finalApp
-    Copy-Item -Force $uninstallerPath $finalUninstaller
     Copy-Item -Force $installerPath $finalInstaller
 
-    if (Test-Path -LiteralPath $finalBundle) {
-        Remove-Item -LiteralPath $finalBundle -Force
-    }
-    tar -a -c -f $finalBundle -C $outputRoot "SecurityGateway.exe" "SecurityGateway-Uninstall.exe" "SecurityGatewayInstaller.exe"
-    if ($LASTEXITCODE -ne 0) {
-        throw "SecurityGateway bundle creation failed with exit code $LASTEXITCODE"
-    }
+    if ($PublishFullBundle) {
+        Copy-Item -Force $payloadPath $finalApp
+        Copy-Item -Force $uninstallerPath $finalUninstaller
 
-    @"
+        if (Test-Path -LiteralPath $finalBundle) {
+            Remove-Item -LiteralPath $finalBundle -Force
+        }
+        tar -a -c -f $finalBundle -C $outputRoot "SecurityGateway.exe" "SecurityGateway-Uninstall.exe" "SecurityGatewayInstaller.exe"
+        if ($LASTEXITCODE -ne 0) {
+            throw "SecurityGateway bundle creation failed with exit code $LASTEXITCODE"
+        }
+
+        @"
 @echo off
 setlocal
 set "SCRIPT_DIR=%~dp0"
@@ -117,36 +120,37 @@ start "" "%TARGET_DIR%"
 exit /b 0
 "@ | Set-Content -LiteralPath $finalBundleUnpack -Encoding ASCII
 
-    $gitCommit = $null
-    try {
-        $gitCommit = (git -C $projectRoot rev-parse HEAD 2>$null).Trim()
-        if ([string]::IsNullOrWhiteSpace($gitCommit)) {
+        $gitCommit = $null
+        try {
+            $gitCommit = (git -C $projectRoot rev-parse HEAD 2>$null).Trim()
+            if ([string]::IsNullOrWhiteSpace($gitCommit)) {
+                $gitCommit = $null
+            }
+        } catch {
             $gitCommit = $null
         }
-    } catch {
-        $gitCommit = $null
-    }
 
-    $files = @($finalApp, $finalUninstaller, $finalInstaller, $finalBundle)
-    $manifest = [ordered]@{
-        build_name = "SecurityGateway"
-        built_at_utc = (Get-Date).ToUniversalTime().ToString("o")
-        source_root = $projectRoot
-        git_commit = $gitCommit
-        files = @()
-    }
-    foreach ($file in $files) {
-        $item = Get-Item -LiteralPath $file
-        $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash
-        $manifest.files += [ordered]@{
-            name = $item.Name
-            path = $item.FullName
-            size = $item.Length
-            sha256 = $hash
-            last_write_time_utc = $item.LastWriteTimeUtc.ToString("o")
+        $files = @($finalApp, $finalUninstaller, $finalInstaller, $finalBundle)
+        $manifest = [ordered]@{
+            build_name = "SecurityGateway"
+            built_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+            source_root = $projectRoot
+            git_commit = $gitCommit
+            files = @()
         }
+        foreach ($file in $files) {
+            $item = Get-Item -LiteralPath $file
+            $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash
+            $manifest.files += [ordered]@{
+                name = $item.Name
+                path = $item.FullName
+                size = $item.Length
+                sha256 = $hash
+                last_write_time_utc = $item.LastWriteTimeUtc.ToString("o")
+            }
+        }
+        $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $finalManifest -Encoding UTF8
     }
-    $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $finalManifest -Encoding UTF8
 }
 finally {
     Remove-Item Env:\SECURITY_GATEWAY_PAYLOAD_PATH -ErrorAction SilentlyContinue
@@ -161,4 +165,8 @@ finally {
 
 Write-Host ""
 Write-Host "Build complete:" -ForegroundColor Green
-Get-Item $finalApp, $finalUninstaller, $finalInstaller, $finalBundle, $finalManifest | Select-Object FullName, Length, LastWriteTime
+if ($PublishFullBundle) {
+    Get-Item $finalApp, $finalUninstaller, $finalInstaller, $finalBundle, $finalManifest | Select-Object FullName, Length, LastWriteTime
+} else {
+    Get-Item $finalInstaller, $payloadPath, $uninstallerPath | Select-Object FullName, Length, LastWriteTime
+}
