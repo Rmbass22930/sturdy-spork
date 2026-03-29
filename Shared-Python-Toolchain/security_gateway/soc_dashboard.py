@@ -16,7 +16,14 @@ except Exception:  # pragma: no cover
 from .alerts import alert_manager
 from .audit import AuditLogger
 from .config import settings
-from .models import SocAlertPromoteCaseRequest, SocAlertStatus, SocCaseStatus, SocCaseUpdate, SocSeverity
+from .models import (
+    SocAlertPromoteCaseRequest,
+    SocAlertStatus,
+    SocAlertUpdate,
+    SocCaseStatus,
+    SocCaseUpdate,
+    SocSeverity,
+)
 from .soc import SecurityOperationsManager
 
 
@@ -49,6 +56,8 @@ class SocDashboard:
         self.alert_sort_var = tk.StringVar(value="severity_desc")
         self.case_status_var = tk.StringVar(value="all")
         self.case_sort_var = tk.StringVar(value="updated_desc")
+        self.analyst_identity_var = tk.StringVar(value="local-analyst")
+        self.alert_rows_by_id: dict[str, dict[str, Any]] = {}
         self.case_rows_by_id: dict[str, dict[str, Any]] = {}
         self._build_ui()
         self.refresh()
@@ -79,7 +88,11 @@ class SocDashboard:
         ttk.Label(header, text="Security Gateway SOC Dashboard", style="SOC.Header.TLabel").grid(row=0, column=0, sticky="w")
         self.status_var = tk.StringVar(value="Loading SOC data...")
         ttk.Label(header, textvariable=self.status_var, style="SOC.Sub.TLabel").grid(row=1, column=0, sticky="w", pady=(6, 0))
-        ttk.Button(header, text="Refresh", command=self.refresh).grid(row=0, column=1, rowspan=2, sticky="e")
+        identity_controls = ttk.Frame(header, style="SOC.TFrame")
+        identity_controls.grid(row=0, column=1, rowspan=2, sticky="e")
+        ttk.Label(identity_controls, text="Analyst", style="SOC.TLabel").grid(row=0, column=0, sticky="e", padx=(0, 6))
+        ttk.Entry(identity_controls, textvariable=self.analyst_identity_var, width=18).grid(row=0, column=1, sticky="e", padx=(0, 12))
+        ttk.Button(identity_controls, text="Refresh", command=self.refresh).grid(row=0, column=2, sticky="e")
 
         summary = ttk.Frame(self.root, padding=(18, 0, 18, 12), style="SOC.TFrame")
         summary.grid(row=1, column=0, sticky="ew")
@@ -117,11 +130,12 @@ class SocDashboard:
             body,
             row=0,
             column=0,
-            title="Unassigned Alerts",
+            title="Alert Queue",
             columns=("severity", "title", "updated"),
             headings={"severity": "Severity", "title": "Title", "updated": "Updated"},
             controls=self._build_alert_controls,
         )
+        self.alert_tree.bind("<<TreeviewSelect>>", lambda _event: self._refresh_alert_detail())
         self.case_tree = self._build_tree(
             body,
             row=0,
@@ -148,8 +162,32 @@ class SocDashboard:
             columns=("type", "severity", "title", "created"),
             headings={"type": "Type", "severity": "Severity", "title": "Title", "created": "Created"},
         )
-        detail_frame = ttk.LabelFrame(body, text="Case Details", padding=(10, 10), style="SOC.TLabelframe")
-        detail_frame.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(8, 0))
+        detail_row = ttk.Frame(body, style="SOC.TFrame")
+        detail_row.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(8, 0))
+        detail_row.columnconfigure(0, weight=1)
+        detail_row.columnconfigure(1, weight=1)
+        detail_row.rowconfigure(0, weight=1)
+
+        alert_detail_frame = ttk.LabelFrame(detail_row, text="Alert Details", padding=(10, 10), style="SOC.TLabelframe")
+        alert_detail_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        alert_detail_frame.columnconfigure(0, weight=1)
+        alert_detail_frame.rowconfigure(0, weight=1)
+        self.alert_detail_text = tk.Text(
+            alert_detail_frame,
+            height=10,
+            wrap="word",
+            bg="#fff8f3",
+            fg="#24364a",
+            font=("Consolas", 10),
+            relief="flat",
+            padx=10,
+            pady=10,
+        )
+        self.alert_detail_text.grid(row=0, column=0, sticky="nsew")
+        self.alert_detail_text.configure(state="disabled")
+
+        detail_frame = ttk.LabelFrame(detail_row, text="Case Details", padding=(10, 10), style="SOC.TLabelframe")
+        detail_frame.grid(row=0, column=1, sticky="nsew")
         detail_frame.columnconfigure(0, weight=1)
         detail_frame.rowconfigure(0, weight=1)
         self.case_detail_text = tk.Text(
@@ -221,9 +259,17 @@ class SocDashboard:
             width=14,
         ).grid(row=0, column=5, sticky="w", padx=(0, 12))
         ttk.Button(controls, text="Apply", command=self.refresh).grid(row=0, column=6, sticky="w")
+        ttk.Button(controls, text="Assign", command=self.assign_selected_alert).grid(row=0, column=7, sticky="w", padx=(12, 0))
+        ttk.Button(controls, text="Acknowledge", command=self.acknowledge_selected_alert).grid(
+            row=0,
+            column=8,
+            sticky="w",
+            padx=(8, 0),
+        )
+        ttk.Button(controls, text="Close", command=self.close_selected_alert).grid(row=0, column=9, sticky="w", padx=(8, 0))
         ttk.Button(controls, text="Promote To Case", command=self.promote_selected_alert).grid(
             row=0,
-            column=7,
+            column=10,
             sticky="w",
             padx=(12, 0),
         )
@@ -271,6 +317,7 @@ class SocDashboard:
             lambda item: (item["severity"], item["title"], item["updated_at"]),
             item_id_key="alert_id",
         )
+        self.alert_rows_by_id = {item.alert_id: item.model_dump(mode="json") for item in alert_rows}
         self._populate_tree(
             self.case_tree,
             [item.model_dump(mode="json") for item in case_rows],
@@ -278,6 +325,7 @@ class SocDashboard:
             item_id_key="case_id",
         )
         self.case_rows_by_id = {item.case_id: item.model_dump(mode="json") for item in case_rows}
+        self._refresh_alert_detail()
         self._refresh_case_detail()
         self._populate_tree(
             self.correlation_tree,
@@ -316,9 +364,10 @@ class SocDashboard:
             return
 
         alert = self.manager.get_alert(alert_id)
+        actor = self._current_analyst_identity()
         _, case = self.manager.promote_alert_to_case(
             alert_id,
-            payload=self._build_promote_payload(alert),
+            payload=self._build_promote_payload(alert, acted_by=actor),
         )
         if messagebox is not None:
             messagebox.showinfo(
@@ -326,6 +375,29 @@ class SocDashboard:
                 f"Promoted alert {alert_id} into case {case.case_id}.",
             )
         self.refresh()
+
+    def assign_selected_alert(self) -> None:
+        alert_id = self._selected_tree_item_id(self.alert_tree)
+        if alert_id is None:
+            if messagebox is not None:
+                messagebox.showwarning("No Alert Selected", "Select an alert before assigning it.")
+            return
+        if simpledialog is None:
+            return
+        assignee = simpledialog.askstring("Assign Alert", "Enter the analyst or queue for the selected alert:", parent=self.root)
+        if assignee is None or not assignee.strip():
+            return
+        payload = self._build_alert_update_payload(field="assignee", value=assignee.strip(), acted_by=self._current_analyst_identity())
+        self.manager.update_alert(alert_id, payload)
+        self.refresh()
+        self.alert_tree.selection_set(alert_id)
+        self._refresh_alert_detail()
+
+    def acknowledge_selected_alert(self) -> None:
+        self._apply_alert_status("acknowledged", "Alert Acknowledged")
+
+    def close_selected_alert(self) -> None:
+        self._apply_alert_status("closed", "Alert Closed")
 
     def add_case_note(self) -> None:
         self._prompt_case_update(
@@ -340,6 +412,23 @@ class SocDashboard:
             title="Add Case Observable",
             prompt="Enter an observable for the selected case:",
         )
+
+    def _apply_alert_status(self, status_value: str, title: str) -> None:
+        alert_id = self._selected_tree_item_id(self.alert_tree)
+        if alert_id is None:
+            if messagebox is not None:
+                messagebox.showwarning("No Alert Selected", "Select an alert before applying a status update.")
+            return
+        payload = self._build_alert_update_payload(
+            field="status",
+            value=status_value,
+            acted_by=self._current_analyst_identity(),
+        )
+        self.manager.update_alert(alert_id, payload)
+        if messagebox is not None:
+            messagebox.showinfo(title, f"Updated alert {alert_id} to {status_value}.")
+        self.refresh()
+        self._refresh_alert_detail()
 
     def _alert_query_kwargs(self) -> dict[str, Any]:
         severity = self._parse_severity(self.alert_severity_var.get())
@@ -387,7 +476,7 @@ class SocDashboard:
         self._refresh_case_detail()
 
     @staticmethod
-    def _build_promote_payload(alert: Any) -> SocAlertPromoteCaseRequest:
+    def _build_promote_payload(alert: Any, *, acted_by: str | None = None) -> SocAlertPromoteCaseRequest:
         assignee = getattr(alert, "assignee", None)
         payload: dict[str, Any] = {
             "title": f"Investigate {alert.title}",
@@ -398,6 +487,8 @@ class SocDashboard:
         }
         if assignee:
             payload["assignee"] = assignee
+        if acted_by:
+            payload["acted_by"] = acted_by
         return SocAlertPromoteCaseRequest.model_validate(payload)
 
     @staticmethod
@@ -407,6 +498,25 @@ class SocDashboard:
         if field == "observable":
             return SocCaseUpdate(observable=value)
         raise ValueError(f"Unsupported case update field: {field}")
+
+    @staticmethod
+    def _build_alert_update_payload(*, field: str, value: str, acted_by: str | None = None) -> SocAlertUpdate:
+        payload: dict[str, Any] = {}
+        if field == "status":
+            payload["status"] = value
+        elif field == "assignee":
+            payload["assignee"] = value
+        elif field == "note":
+            payload["note"] = value
+        else:
+            raise ValueError(f"Unsupported alert update field: {field}")
+        if acted_by:
+            payload["acted_by"] = acted_by
+        return SocAlertUpdate.model_validate(payload)
+
+    def _current_analyst_identity(self) -> str | None:
+        value = self.analyst_identity_var.get().strip()
+        return value or None
 
     @staticmethod
     def _parse_severity(value: str) -> SocSeverity | None:
@@ -433,6 +543,17 @@ class SocDashboard:
             f"Top event types: {most_common}"
         )
 
+    def _refresh_alert_detail(self) -> None:
+        alert_id = self._selected_tree_item_id(self.alert_tree)
+        if alert_id is None:
+            self._set_alert_detail_text("Select an alert to view triage details and analyst actions.")
+            return
+        alert_payload = self.alert_rows_by_id.get(alert_id)
+        if alert_payload is None:
+            self._set_alert_detail_text("Selected alert is no longer available in the current filtered view.")
+            return
+        self._set_alert_detail_text(self._format_alert_detail(alert_payload))
+
     def _refresh_case_detail(self) -> None:
         case_id = self._selected_tree_item_id(self.case_tree)
         if case_id is None:
@@ -444,11 +565,34 @@ class SocDashboard:
             return
         self._set_case_detail_text(self._format_case_detail(case_payload))
 
+    def _set_alert_detail_text(self, text: str) -> None:
+        self.alert_detail_text.configure(state="normal")
+        self.alert_detail_text.delete("1.0", "end")
+        self.alert_detail_text.insert("1.0", text)
+        self.alert_detail_text.configure(state="disabled")
+
     def _set_case_detail_text(self, text: str) -> None:
         self.case_detail_text.configure(state="normal")
         self.case_detail_text.delete("1.0", "end")
         self.case_detail_text.insert("1.0", text)
         self.case_detail_text.configure(state="disabled")
+
+    @staticmethod
+    def _format_alert_detail(alert_payload: dict[str, Any]) -> str:
+        notes = alert_payload.get("notes") or []
+        note_lines = "\n".join(f"- {item}" for item in notes) if notes else "- none"
+        return (
+            f"Alert: {alert_payload.get('alert_id', '-')}\n"
+            f"Title: {alert_payload.get('title', '-')}\n"
+            f"Status: {alert_payload.get('status', '-')}\n"
+            f"Severity: {alert_payload.get('severity', '-')}\n"
+            f"Assignee: {alert_payload.get('assignee') or '-'}\n"
+            f"Linked Case: {alert_payload.get('linked_case_id') or '-'}\n"
+            f"Acknowledged By: {alert_payload.get('acknowledged_by') or '-'}\n"
+            f"Escalated By: {alert_payload.get('escalated_by') or '-'}\n\n"
+            f"Summary:\n{alert_payload.get('summary', '-')}\n\n"
+            f"Notes:\n{note_lines}"
+        )
 
     @staticmethod
     def _format_case_detail(case_payload: dict[str, Any]) -> str:

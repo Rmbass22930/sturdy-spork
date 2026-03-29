@@ -81,7 +81,7 @@ def test_build_promote_payload_uses_alert_defaults() -> None:
         },
     )()
 
-    payload = SocDashboard._build_promote_payload(alert)
+    payload = SocDashboard._build_promote_payload(alert, acted_by="tier1-analyst")
 
     assert payload.title == "Investigate Privileged access denied"
     assert payload.summary == "Analyst review needed."
@@ -89,6 +89,19 @@ def test_build_promote_payload_uses_alert_defaults() -> None:
     assert payload.case_status is SocCaseStatus.investigating
     assert payload.alert_status is SocAlertStatus.acknowledged
     assert payload.assignee == "tier1-analyst"
+    assert payload.acted_by == "tier1-analyst"
+
+
+def test_build_alert_update_payload_for_status_and_actor() -> None:
+    payload = SocDashboard._build_alert_update_payload(field="status", value="acknowledged", acted_by="tier2-analyst")
+    assert payload.status is SocAlertStatus.acknowledged
+    assert payload.acted_by == "tier2-analyst"
+
+
+def test_build_alert_update_payload_for_assignee() -> None:
+    payload = SocDashboard._build_alert_update_payload(field="assignee", value="queue-a")
+    assert payload.assignee == "queue-a"
+    assert payload.status is None
 
 
 def test_build_case_update_payload_for_note() -> None:
@@ -120,6 +133,29 @@ def test_format_case_detail_includes_notes_and_observables() -> None:
     assert "- 203.0.113.55" in text
     assert "- vpn-admin" in text
     assert "- Owner assigned." in text
+
+
+def test_format_alert_detail_includes_assignment_and_actor_fields() -> None:
+    text = SocDashboard._format_alert_detail(
+        {
+            "alert_id": "alert-123",
+            "title": "Repeated tracker activity",
+            "status": "acknowledged",
+            "severity": "high",
+            "assignee": "tier1-analyst",
+            "linked_case_id": "case-999",
+            "acknowledged_by": "tier1-analyst",
+            "escalated_by": "tier2-analyst",
+            "summary": "Correlation threshold exceeded.",
+            "notes": ["Initial triage complete."],
+        }
+    )
+    assert "Alert: alert-123" in text
+    assert "Assignee: tier1-analyst" in text
+    assert "Linked Case: case-999" in text
+    assert "Acknowledged By: tier1-analyst" in text
+    assert "Escalated By: tier2-analyst" in text
+    assert "- Initial triage complete." in text
 
 
 def test_format_case_detail_handles_empty_lists() -> None:
