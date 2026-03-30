@@ -1069,7 +1069,18 @@ class SocDashboard:
 
     def _show_events_summary_drilldown(self) -> None:
         events = [item.model_dump(mode="json") for item in self.manager.list_events(limit=50)]
-        self._show_info_dialog("Events", self._format_summary_records("event", events, limit=30))
+        selected = self._select_summary_record("event", events, title="Events")
+        if selected is None:
+            return
+        related_alerts = self._resolve_event_alerts(selected)
+        related_cases = self._resolve_event_cases(selected)
+        choice = self._choose_event_pivot(selected, related_alerts=related_alerts, related_cases=related_cases)
+        if choice == "alerts":
+            self._show_info_dialog("Related Alerts", self._format_summary_records("alert", related_alerts, limit=30))
+        elif choice == "cases":
+            self._show_info_dialog("Related Cases", self._format_summary_records("case", related_cases, limit=30))
+        else:
+            self._show_info_dialog("Event Details", self._format_summary_records("event", [selected], limit=1))
 
     def _show_all_alerts_summary_drilldown(self) -> None:
         self._navigate_summary_view(
@@ -1121,6 +1132,159 @@ class SocDashboard:
     def _show_info_dialog(self, title: str, body: str) -> None:
         if messagebox is not None:
             messagebox.showinfo(title, body)
+
+    def _select_summary_record(
+        self,
+        kind: str,
+        rows: Sequence[dict[str, Any]],
+        *,
+        title: str,
+    ) -> dict[str, Any] | None:
+        if not rows:
+            self._show_info_dialog(title, f"No {kind} records are available.")
+            return None
+        if tk is None or not hasattr(self, "root"):
+            return dict(rows[0])
+        if len(rows) == 1:
+            return dict(rows[0])
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title(title)
+        dialog.configure(bg="#eef4ff")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        _center_window(dialog, 920, 560)
+        dialog.minsize(800, 460)
+        dialog.columnconfigure(0, weight=1)
+        dialog.rowconfigure(1, weight=1)
+
+        tk.Label(
+            dialog,
+            text=f"Select {kind.title()} Record",
+            bg="#eef4ff",
+            fg="#0f2f57",
+            font=("Segoe UI", 14, "bold"),
+            anchor="w",
+            padx=16,
+            pady=12,
+        ).grid(row=0, column=0, sticky="ew")
+
+        list_frame = tk.Frame(dialog, bg="#eef4ff", padx=16, pady=4)
+        list_frame.grid(row=1, column=0, sticky="nsew")
+        list_frame.columnconfigure(0, weight=1)
+        list_frame.rowconfigure(0, weight=1)
+
+        listbox = tk.Listbox(
+            list_frame,
+            selectmode=tk.SINGLE,
+            activestyle="none",
+            bg="#ffffff",
+            fg="#24364a",
+            font=("Consolas", 10),
+            relief="flat",
+            highlightthickness=1,
+        )
+        listbox.grid(row=0, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=listbox.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        listbox.configure(yscrollcommand=scrollbar.set)
+
+        for row in rows:
+            listbox.insert("end", self._format_summary_selection_label(kind, row))
+        listbox.selection_set(0)
+
+        selected_index = 0
+
+        def use_selected() -> None:
+            nonlocal selected_index
+            selection = listbox.curselection()
+            if selection:
+                selected_index = int(selection[0])
+            dialog.destroy()
+
+        def cancel_selection() -> None:
+            nonlocal selected_index
+            selected_index = -1
+            dialog.destroy()
+
+        controls = tk.Frame(dialog, bg="#eef4ff", padx=16, pady=12)
+        controls.grid(row=2, column=0, sticky="ew")
+        tk.Button(controls, text="Cancel", command=cancel_selection, width=12).pack(side="right")
+        tk.Button(controls, text="Open", command=use_selected, width=12).pack(side="right", padx=(0, 8))
+        dialog.bind("<Escape>", lambda _event: cancel_selection())
+        dialog.bind("<Return>", lambda _event: use_selected())
+        self.root.wait_window(dialog)
+        if not (0 <= selected_index < len(rows)):
+            return None
+        return dict(rows[selected_index])
+
+    def _choose_event_pivot(
+        self,
+        event_payload: dict[str, Any],
+        *,
+        related_alerts: Sequence[dict[str, Any]],
+        related_cases: Sequence[dict[str, Any]],
+    ) -> str:
+        if not related_alerts and not related_cases:
+            return "details"
+        if tk is None or not hasattr(self, "root"):
+            return "alerts" if related_alerts else "cases"
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Event Actions")
+        dialog.configure(bg="#eef4ff")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        _center_window(dialog, 620, 260)
+        dialog.minsize(540, 220)
+        choice = "details"
+        event_id = str(event_payload.get("event_id") or "-")
+        title = str(event_payload.get("title") or "-")
+        summary = (
+            f"Event: {event_id}\n"
+            f"Title: {title}\n\n"
+            f"Related alerts: {len(related_alerts)}\n"
+            f"Related cases: {len(related_cases)}"
+        )
+        tk.Label(dialog, text=summary, bg="#eef4ff", fg="#24364a", justify="left", anchor="w", padx=16, pady=16).pack(fill="both", expand=True)
+
+        controls = tk.Frame(dialog, bg="#eef4ff", padx=16, pady=12)
+        controls.pack(fill="x")
+
+        def set_choice(value: str) -> None:
+            nonlocal choice
+            choice = value
+            dialog.destroy()
+
+        if related_alerts:
+            tk.Button(controls, text="Open Related Alerts", command=lambda: set_choice("alerts"), width=18).pack(side="left")
+        if related_cases:
+            tk.Button(controls, text="Open Related Cases", command=lambda: set_choice("cases"), width=18).pack(side="left", padx=(8, 0))
+        tk.Button(controls, text="Event Details", command=lambda: set_choice("details"), width=14).pack(side="right")
+        dialog.bind("<Escape>", lambda _event: set_choice("details"))
+        self.root.wait_window(dialog)
+        return choice
+
+    def _resolve_event_alerts(self, event_payload: dict[str, Any]) -> list[dict[str, Any]]:
+        event_id = str(event_payload.get("event_id") or "")
+        if not event_id:
+            return []
+        return [
+            alert
+            for alert in self.all_alert_rows_by_id.values()
+            if event_id in cast(list[str], alert.get("source_event_ids") or [])
+        ]
+
+    def _resolve_event_cases(self, event_payload: dict[str, Any]) -> list[dict[str, Any]]:
+        event_id = str(event_payload.get("event_id") or "")
+        if not event_id:
+            return []
+        all_cases = [item.model_dump(mode="json") for item in self.manager.list_cases()]
+        return [
+            case
+            for case in all_cases
+            if event_id in cast(list[str], case.get("source_event_ids") or [])
+        ]
 
     def _navigate_summary_view(
         self,
@@ -1434,6 +1598,22 @@ class SocDashboard:
             lines.append("")
             lines.append(f"...and {remaining} more")
         return "\n".join(lines)
+
+    @staticmethod
+    def _format_summary_selection_label(kind: str, row: dict[str, Any]) -> str:
+        labels: dict[str, tuple[str, str, str, str]] = {
+            "event": ("event_id", "event_type", "severity", "title"),
+            "alert": ("alert_id", "status", "severity", "title"),
+            "case": ("case_id", "status", "severity", "title"),
+            "host": ("key", "severity", "title", "summary"),
+        }
+        id_key, first_key, second_key, title_key = labels.get(kind, ("id", "type", "severity", "title"))
+        return (
+            f"{row.get(id_key, '-')} | "
+            f"{row.get(first_key, '-')} | "
+            f"{row.get(second_key, '-')} | "
+            f"{row.get(title_key, '-')}"
+        )
 
     @classmethod
     def _preset_values(cls, preset_name: str) -> dict[str, str]:

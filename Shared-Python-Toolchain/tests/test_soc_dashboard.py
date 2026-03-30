@@ -1003,6 +1003,44 @@ def test_format_source_events_handles_missing_rows() -> None:
     assert "No source events were found for this alert." in text
 
 
+def test_resolve_event_alerts_returns_linked_alerts() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.all_alert_rows_by_id = {
+        "alert-1": {"alert_id": "alert-1", "source_event_ids": ["evt-1", "evt-2"], "title": "One"},
+        "alert-2": {"alert_id": "alert-2", "source_event_ids": ["evt-3"], "title": "Two"},
+    }
+
+    rows = dashboard._resolve_event_alerts({"event_id": "evt-1"})
+
+    assert [row["alert_id"] for row in rows] == ["alert-1"]
+
+
+def test_resolve_event_cases_returns_linked_cases() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_cases": lambda self: [
+                type("Case", (), {"model_dump": lambda self, mode="json": {"case_id": "case-1", "source_event_ids": ["evt-1"]}})(),
+                type("Case", (), {"model_dump": lambda self, mode="json": {"case_id": "case-2", "source_event_ids": ["evt-4"]}})(),
+            ]
+        },
+    )()
+
+    rows = dashboard._resolve_event_cases({"event_id": "evt-1"})
+
+    assert [row["case_id"] for row in rows] == ["case-1"]
+
+
+def test_choose_event_pivot_defaults_to_details_without_links() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+
+    choice = dashboard._choose_event_pivot({"event_id": "evt-1"}, related_alerts=[], related_cases=[])
+
+    assert choice == "details"
+
+
 def test_format_case_linked_activity_includes_alerts_and_events() -> None:
     text = SocDashboard._format_case_linked_activity(
         {"case_id": "case-123", "title": "Investigate repeated tracker activity"},
