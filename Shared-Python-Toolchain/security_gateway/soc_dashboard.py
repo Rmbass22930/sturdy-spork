@@ -268,11 +268,17 @@ class SocDashboard:
         )
         ttk.Button(controls, text="Close", command=self.close_selected_alert).grid(row=0, column=9, sticky="w", padx=(8, 0))
         ttk.Button(controls, text="Add Note", command=self.add_alert_note).grid(row=0, column=10, sticky="w", padx=(8, 0))
-        ttk.Button(controls, text="Promote To Case", command=self.promote_selected_alert).grid(
+        ttk.Button(controls, text="Link To Selected Case", command=self.link_alert_to_selected_case).grid(
             row=0,
             column=11,
             sticky="w",
             padx=(12, 0),
+        )
+        ttk.Button(controls, text="Promote To New Case", command=self.promote_selected_alert).grid(
+            row=0,
+            column=12,
+            sticky="w",
+            padx=(8, 0),
         )
 
     def _build_case_controls(self, parent: Any) -> None:
@@ -385,6 +391,35 @@ class SocDashboard:
                 f"Promoted alert {alert_id} into case {case.case_id}.",
             )
         self.refresh()
+
+    def link_alert_to_selected_case(self) -> None:
+        alert_id = self._selected_tree_item_id(self.alert_tree)
+        case_id = self._selected_tree_item_id(self.case_tree)
+        if alert_id is None:
+            if messagebox is not None:
+                messagebox.showwarning("No Alert Selected", "Select an alert before linking it to a case.")
+            return
+        if case_id is None:
+            if messagebox is not None:
+                messagebox.showwarning("No Case Selected", "Select a case before linking an alert into it.")
+            return
+        alert = self.manager.get_alert(alert_id)
+        _, case = self.manager.promote_alert_to_case(
+            alert_id,
+            payload=self._build_promote_payload(
+                alert,
+                acted_by=self._current_analyst_identity(),
+                existing_case_id=case_id,
+            ),
+        )
+        if messagebox is not None:
+            messagebox.showinfo(
+                "Alert Linked",
+                f"Linked alert {alert_id} into case {case.case_id}.",
+            )
+        self.refresh()
+        self.case_tree.selection_set(case.case_id)
+        self._refresh_case_detail()
 
     def assign_selected_alert(self) -> None:
         alert_id = self._selected_tree_item_id(self.alert_tree)
@@ -554,7 +589,12 @@ class SocDashboard:
         self._refresh_case_detail()
 
     @staticmethod
-    def _build_promote_payload(alert: Any, *, acted_by: str | None = None) -> SocAlertPromoteCaseRequest:
+    def _build_promote_payload(
+        alert: Any,
+        *,
+        acted_by: str | None = None,
+        existing_case_id: str | None = None,
+    ) -> SocAlertPromoteCaseRequest:
         assignee = getattr(alert, "assignee", None)
         payload: dict[str, Any] = {
             "title": f"Investigate {alert.title}",
@@ -567,6 +607,8 @@ class SocDashboard:
             payload["assignee"] = assignee
         if acted_by:
             payload["acted_by"] = acted_by
+        if existing_case_id:
+            payload["existing_case_id"] = existing_case_id
         return SocAlertPromoteCaseRequest.model_validate(payload)
 
     @staticmethod

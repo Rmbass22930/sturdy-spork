@@ -388,6 +388,70 @@ def test_soc_alert_can_be_promoted_to_case(monkeypatch, tmp_path):
     assert dashboard.json()["triage"]["unassigned_alerts"] == []
 
 
+def test_soc_alert_can_be_linked_to_existing_case(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
+
+    with TestClient(service.app) as client:
+        first_event = client.post(
+            "/soc/events",
+            json={
+                "event_type": "policy.access_decision",
+                "severity": "high",
+                "title": "First privileged access denial",
+                "summary": "Initial escalation target.",
+                "details": {"resource": "vpn-admin"},
+            },
+            headers=headers,
+        )
+        first_alert_id = first_event.json()["alert"]["alert_id"]
+        created_case = client.post(
+            f"/soc/alerts/{first_alert_id}/case",
+            json={"assignee": "tier1-analyst", "acted_by": "tier1-analyst"},
+            headers=headers,
+        )
+        case_id = created_case.json()["case"]["case_id"]
+
+        second_event = client.post(
+            "/soc/events",
+            json={
+                "event_type": "policy.access_decision",
+                "severity": "high",
+                "title": "Second privileged access denial",
+                "summary": "Follow-on escalation into the same case.",
+                "details": {"resource": "db-admin", "hostname": "db-admin-01"},
+            },
+            headers=headers,
+        )
+        second_alert_id = second_event.json()["alert"]["alert_id"]
+        promoted = client.post(
+            f"/soc/alerts/{second_alert_id}/case",
+            json={
+                "existing_case_id": case_id,
+                "note": "Linked into the existing investigation.",
+                "acted_by": "tier2-analyst",
+                "case_status": "investigating",
+            },
+            headers=headers,
+        )
+        fetched_case = client.get(f"/soc/cases/{case_id}", headers=headers)
+        fetched_alert = client.get(f"/soc/alerts/{second_alert_id}", headers=headers)
+
+    assert promoted.status_code == 200
+    payload = promoted.json()
+    assert payload["case"]["case_id"] == case_id
+    assert first_alert_id in payload["case"]["linked_alert_ids"]
+    assert second_alert_id in payload["case"]["linked_alert_ids"]
+    assert "db-admin" in payload["case"]["observables"]
+    assert "db-admin-01" in payload["case"]["observables"]
+    assert payload["case"]["notes"][-1] == "Linked into the existing investigation."
+    assert fetched_case.status_code == 200
+    assert second_alert_id in fetched_case.json()["linked_alert_ids"]
+    assert fetched_alert.status_code == 200
+    assert fetched_alert.json()["linked_case_id"] == case_id
+    assert fetched_alert.json()["escalated_by"] == "tier2-analyst"
+
+
 def test_soc_alert_acknowledge_records_actor(monkeypatch, tmp_path):
     _install_test_managers(monkeypatch, tmp_path)
     headers = _operator_headers(monkeypatch)

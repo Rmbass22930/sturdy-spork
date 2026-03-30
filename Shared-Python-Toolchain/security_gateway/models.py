@@ -188,6 +188,7 @@ class SocAlertPromoteCaseRequest(BaseModel):
     title: Optional[str] = Field(default=None, min_length=1, max_length=160)
     summary: Optional[str] = Field(default=None, min_length=1, max_length=2_000)
     severity: Optional[SocSeverity] = None
+    existing_case_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
     assignee: Optional[str] = Field(default=None, max_length=128)
     note: Optional[str] = Field(default=None, max_length=512)
     acted_by: Optional[str] = Field(default=None, max_length=128)

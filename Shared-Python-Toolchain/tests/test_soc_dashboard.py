@@ -90,6 +90,25 @@ def test_build_promote_payload_uses_alert_defaults() -> None:
     assert payload.alert_status is SocAlertStatus.acknowledged
     assert payload.assignee == "tier1-analyst"
     assert payload.acted_by == "tier1-analyst"
+    assert payload.existing_case_id is None
+
+
+def test_build_promote_payload_can_target_existing_case() -> None:
+    alert = type(
+        "Alert",
+        (),
+        {
+            "title": "Repeated tracker activity",
+            "summary": "Link into active incident.",
+            "severity": SocSeverity.medium,
+            "assignee": None,
+        },
+    )()
+
+    payload = SocDashboard._build_promote_payload(alert, existing_case_id="case-123")
+
+    assert payload.existing_case_id == "case-123"
+    assert payload.title == "Investigate Repeated tracker activity"
 
 
 def test_build_alert_update_payload_for_status_and_actor() -> None:

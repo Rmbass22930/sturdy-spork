@@ -259,26 +259,61 @@ class SecurityOperationsManager:
             if existing_alert.linked_case_id:
                 raise ValueError(f"Alert already linked to case: {existing_alert.linked_case_id}")
 
-            created_at = _utc_now()
-            case = SocCaseRecord(
-                case_id=f"case-{uuid4().hex[:12]}",
-                title=payload.title or existing_alert.title,
-                summary=payload.summary or existing_alert.summary,
-                severity=payload.severity or existing_alert.severity,
-                source_event_ids=list(existing_alert.source_event_ids),
-                linked_alert_ids=[existing_alert.alert_id],
-                observables=self._extract_observables_for_case(
-                    source_event_ids=existing_alert.source_event_ids,
-                    linked_alert_ids=[existing_alert.alert_id],
-                ),
-                assignee=payload.assignee if payload.assignee is not None else existing_alert.assignee,
-                status=payload.case_status,
-                notes=[payload.note] if payload.note else [],
-                created_at=created_at,
-                updated_at=created_at,
-            )
             cases = self._read_records(self._case_store_path, SocCaseRecord)
-            cases.append(case)
+            if payload.existing_case_id:
+                case_index = next((index for index, item in enumerate(cases) if item.case_id == payload.existing_case_id), None)
+                if case_index is None:
+                    raise KeyError(f"Case not found: {payload.existing_case_id}")
+                existing_case = cases[case_index]
+                linked_alert_ids = list(existing_case.linked_alert_ids)
+                if existing_alert.alert_id not in linked_alert_ids:
+                    linked_alert_ids.append(existing_alert.alert_id)
+                source_event_ids = list(existing_case.source_event_ids)
+                for event_id in existing_alert.source_event_ids:
+                    if event_id not in source_event_ids:
+                        source_event_ids.append(event_id)
+                notes = list(existing_case.notes)
+                if payload.note:
+                    notes.append(payload.note)
+                observables = self._merge_observables(
+                    existing_case.observables,
+                    self._extract_observables_for_case(
+                        source_event_ids=existing_alert.source_event_ids,
+                        linked_alert_ids=[existing_alert.alert_id],
+                    ),
+                )
+                case = existing_case.model_copy(
+                    update={
+                        "source_event_ids": source_event_ids,
+                        "linked_alert_ids": linked_alert_ids,
+                        "observables": observables,
+                        "assignee": payload.assignee if payload.assignee is not None else existing_case.assignee,
+                        "status": payload.case_status,
+                        "notes": notes,
+                        "updated_at": _utc_now(),
+                    }
+                )
+                cases[case_index] = case
+            else:
+                created_at = _utc_now()
+                case = SocCaseRecord(
+                    case_id=f"case-{uuid4().hex[:12]}",
+                    title=payload.title or existing_alert.title,
+                    summary=payload.summary or existing_alert.summary,
+                    severity=payload.severity or existing_alert.severity,
+                    source_event_ids=list(existing_alert.source_event_ids),
+                    linked_alert_ids=[existing_alert.alert_id],
+                    observables=self._extract_observables_for_case(
+                        source_event_ids=existing_alert.source_event_ids,
+                        linked_alert_ids=[existing_alert.alert_id],
+                    ),
+                    assignee=payload.assignee if payload.assignee is not None else existing_alert.assignee,
+                    status=payload.case_status,
+                    notes=[payload.note] if payload.note else [],
+                    created_at=created_at,
+                    updated_at=created_at,
+                )
+                cases.append(case)
             self._link_case_alerts(
                 alerts,
                 case,
