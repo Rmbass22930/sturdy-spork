@@ -1072,42 +1072,97 @@ class SocDashboard:
         self._show_info_dialog("Events", self._format_summary_records("event", events, limit=30))
 
     def _show_all_alerts_summary_drilldown(self) -> None:
-        alerts = [item.model_dump(mode="json") for item in self.manager.list_alerts()]
-        self._show_info_dialog("Alerts", self._format_summary_records("alert", alerts, limit=30))
+        self._navigate_summary_view(
+            preset_name="custom",
+            focus_target="alerts",
+            alert_severity="all",
+            alert_link_state="all",
+            alert_sort="updated_desc",
+        )
 
     def _show_open_alerts_summary_drilldown(self) -> None:
-        alerts = [item.model_dump(mode="json") for item in self.manager.query_alerts(status=SocAlertStatus.open, limit=50)]
-        self._show_info_dialog("Open Alerts", self._format_summary_records("alert", alerts, limit=30))
+        self._navigate_summary_view(
+            preset_name="custom",
+            focus_target="alerts",
+            alert_severity="all",
+            alert_link_state="all",
+            alert_sort="updated_desc",
+        )
 
     def _show_all_cases_summary_drilldown(self) -> None:
-        cases = [item.model_dump(mode="json") for item in self.manager.list_cases()]
-        self._show_info_dialog("Cases", self._format_summary_records("case", cases, limit=30))
+        self._navigate_summary_view(
+            preset_name="custom",
+            focus_target="cases",
+            case_status="all",
+            case_sort="updated_desc",
+        )
 
     def _show_open_cases_summary_drilldown(self) -> None:
-        cases = [
-            item.model_dump(mode="json")
-            for item in self.manager.query_cases(status=SocCaseStatus.open, limit=50)
-        ]
-        self._show_info_dialog("Open Cases", self._format_summary_records("case", cases, limit=30))
+        self._navigate_summary_view(
+            preset_name="custom",
+            focus_target="cases",
+            case_status="open",
+            case_sort="updated_desc",
+        )
 
     def _show_host_findings_summary_drilldown(self) -> None:
-        host_state = self._load_host_monitor_state()
-        findings = cast(list[dict[str, Any]], host_state.get("active_findings") or [])
-        self._show_info_dialog("Host Findings", self._format_summary_records("host", findings, limit=30))
+        self.refresh()
+        self._focus_tree_widget(self.host_tree)
+        if not self.host_tree.selection() and self.host_tree.get_children():
+            self.host_tree.selection_set(self.host_tree.get_children()[0])
+            self._refresh_host_detail()
 
     def _show_stale_alerts_summary_drilldown(self) -> None:
-        triage = cast(dict[str, list[dict[str, Any]]], self._latest_dashboard.get("triage") or {})
-        rows = cast(list[dict[str, Any]], triage.get("assigned_stale_alerts") or [])
-        self._show_info_dialog("Stale Assigned Alerts", self._format_summary_records("alert", rows, limit=30))
+        self._navigate_summary_view(preset_name="handoff", focus_target="alerts")
 
     def _show_stale_cases_summary_drilldown(self) -> None:
-        triage = cast(dict[str, list[dict[str, Any]]], self._latest_dashboard.get("triage") or {})
-        rows = cast(list[dict[str, Any]], triage.get("stale_active_cases") or [])
-        self._show_info_dialog("Stale Active Cases", self._format_summary_records("case", rows, limit=30))
+        self._navigate_summary_view(preset_name="handoff", focus_target="cases")
 
     def _show_info_dialog(self, title: str, body: str) -> None:
         if messagebox is not None:
             messagebox.showinfo(title, body)
+
+    def _navigate_summary_view(
+        self,
+        *,
+        preset_name: str,
+        focus_target: str,
+        alert_severity: str | None = None,
+        alert_link_state: str | None = None,
+        alert_sort: str | None = None,
+        case_status: str | None = None,
+        case_sort: str | None = None,
+    ) -> None:
+        self.queue_preset_var.set(preset_name)
+        if alert_severity is not None:
+            self.alert_severity_var.set(alert_severity)
+        if alert_link_state is not None:
+            self.alert_link_state_var.set(alert_link_state)
+        if alert_sort is not None:
+            self.alert_sort_var.set(alert_sort)
+        if case_status is not None:
+            self.case_status_var.set(case_status)
+        if case_sort is not None:
+            self.case_sort_var.set(case_sort)
+        self.refresh()
+        if focus_target == "alerts":
+            self._focus_tree_widget(self.alert_tree)
+        elif focus_target == "cases":
+            self._focus_tree_widget(self.case_tree)
+        elif focus_target == "host":
+            self._focus_tree_widget(self.host_tree)
+
+    @staticmethod
+    def _focus_tree_widget(tree: Any) -> None:
+        focus_method = getattr(tree, "focus_set", None)
+        if callable(focus_method):
+            focus_method()
+        children_method = getattr(tree, "get_children", None)
+        selection_method = getattr(tree, "selection_set", None)
+        if callable(children_method) and callable(selection_method):
+            children = list(children_method())
+            if children:
+                selection_method(children[0])
 
     @staticmethod
     def _build_promote_payload(

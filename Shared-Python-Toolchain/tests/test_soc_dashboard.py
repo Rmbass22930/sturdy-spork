@@ -90,46 +90,65 @@ def test_open_summary_drilldown_routes_to_expected_handler() -> None:
     assert called == ["events", "stale_cases"]
 
 
-def test_show_open_alerts_summary_drilldown_uses_open_query() -> None:
+def test_show_open_alerts_summary_drilldown_navigates_to_alert_queue() -> None:
+    class Var:
+        def __init__(self, value: str):
+            self.value = value
+
+        def get(self) -> str:
+            return self.value
+
+        def set(self, value: str) -> None:
+            self.value = value
+
     dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
-    captured: list[tuple[str, str]] = []
-    dashboard.manager = type(
-        "Manager",
-        (),
-        {
-            "query_alerts": lambda self, **kwargs: [
-                type("Alert", (), {"model_dump": lambda self, mode="json": {"alert_id": "alert-1", "status": "open", "severity": "high", "title": "Open alert"}})()
-            ]
-            if kwargs.get("status") is SocAlertStatus.open
-            else []
-        },
-    )()
-    dashboard._show_info_dialog = lambda title, body: captured.append((title, body))
+    dashboard.queue_preset_var = Var("tier1-triage")
+    dashboard.alert_severity_var = Var("high")
+    dashboard.alert_link_state_var = Var("unlinked")
+    dashboard.alert_sort_var = Var("severity_desc")
+    dashboard.case_status_var = Var("all")
+    dashboard.case_sort_var = Var("updated_desc")
+    dashboard.alert_tree = type("Tree", (), {"focus_set": lambda self: None, "get_children": lambda self: ("alert-1",), "selection_set": lambda self, value: setattr(self, "selected", value)})()
+    refresh_calls: list[str] = []
+    dashboard.refresh = lambda: refresh_calls.append("refresh")
 
     dashboard._show_open_alerts_summary_drilldown()
 
-    assert captured
-    assert captured[0][0] == "Open Alerts"
-    assert "alert-1" in captured[0][1]
+    assert dashboard.queue_preset_var.get() == "custom"
+    assert dashboard.alert_severity_var.get() == "all"
+    assert dashboard.alert_link_state_var.get() == "all"
+    assert dashboard.alert_sort_var.get() == "updated_desc"
+    assert refresh_calls == ["refresh"]
+    assert getattr(dashboard.alert_tree, "selected") == "alert-1"
 
 
-def test_show_stale_cases_summary_drilldown_reads_latest_dashboard() -> None:
+def test_show_stale_cases_summary_drilldown_navigates_to_handoff_cases() -> None:
+    class Var:
+        def __init__(self, value: str):
+            self.value = value
+
+        def get(self) -> str:
+            return self.value
+
+        def set(self, value: str) -> None:
+            self.value = value
+
     dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
-    dashboard._latest_dashboard = {
-        "triage": {
-            "stale_active_cases": [
-                {"case_id": "case-1", "status": "investigating", "severity": "high", "title": "Stale case"}
-            ]
-        }
-    }
-    captured: list[tuple[str, str]] = []
-    dashboard._show_info_dialog = lambda title, body: captured.append((title, body))
+    dashboard.queue_preset_var = Var("tier1-triage")
+    dashboard.alert_severity_var = Var("all")
+    dashboard.alert_link_state_var = Var("all")
+    dashboard.alert_sort_var = Var("updated_desc")
+    dashboard.case_status_var = Var("all")
+    dashboard.case_sort_var = Var("updated_desc")
+    dashboard.case_tree = type("Tree", (), {"focus_set": lambda self: None, "get_children": lambda self: ("case-1",), "selection_set": lambda self, value: setattr(self, "selected", value)})()
+    refresh_calls: list[str] = []
+    dashboard.refresh = lambda: refresh_calls.append("refresh")
 
     dashboard._show_stale_cases_summary_drilldown()
 
-    assert captured
-    assert captured[0][0] == "Stale Active Cases"
-    assert "case-1" in captured[0][1]
+    assert dashboard.queue_preset_var.get() == "handoff"
+    assert refresh_calls == ["refresh"]
+    assert getattr(dashboard.case_tree, "selected") == "case-1"
 
 
 def test_stale_id_helpers_read_latest_dashboard_triage() -> None:
