@@ -11,11 +11,13 @@ from .alerts import AlertEvent, AlertLevel, AlertManager
 from .audit import AuditLogger
 from .endpoint import MalwareScanner
 from .host_monitor import HostMonitor
+from .ip_controls import IPBlocklistManager
 from .network_monitor import NetworkMonitor
 from .packet_monitor import PacketMonitor
 from .pam import VaultClient
 from .tracker_intel import TrackerIntel
 from .tor import OutboundProxy
+from .config import settings
 
 
 class AutomationSupervisor:
@@ -25,6 +27,7 @@ class AutomationSupervisor:
         proxy: OutboundProxy,
         audit_logger: AuditLogger,
         alert_manager: AlertManager,
+        ip_blocklist: IPBlocklistManager | None = None,
         tracker_intel: TrackerIntel | None = None,
         malware_scanner: MalwareScanner | None = None,
         interval_seconds: float = 300.0,
@@ -51,6 +54,7 @@ class AutomationSupervisor:
         self._proxy = proxy
         self._audit = audit_logger
         self._alerts = alert_manager
+        self._ip_blocklist = ip_blocklist
         self._tracker_intel = tracker_intel
         self._malware_scanner = malware_scanner
         self._interval = interval_seconds
@@ -331,6 +335,7 @@ class AutomationSupervisor:
             return {"enabled": True, "result": "failed", "error": str(exc)}
 
     def _emit_network_monitor_finding(self, finding: dict[str, Any]) -> None:
+        self._maybe_auto_block_network_finding(finding)
         severity = str(finding.get("severity", "medium")).casefold()
         resolved = bool(finding.get("resolved"))
         if resolved:
@@ -351,6 +356,35 @@ class AutomationSupervisor:
         )
         if self._network_monitor_callback is not None:
             self._network_monitor_callback(finding)
+
+    def _maybe_auto_block_network_finding(self, finding: dict[str, Any]) -> None:
+        if self._ip_blocklist is None or not settings.auto_block_enabled or bool(finding.get("resolved")):
+            return
+        details = finding.get("details")
+        if not isinstance(details, dict):
+            return
+        if str(details.get("finding_type")) != "dos_candidate":
+            return
+        remote_ip = details.get("remote_ip")
+        if not isinstance(remote_ip, str) or not remote_ip:
+            return
+        if self._ip_blocklist.is_blocked(remote_ip):
+            details["block_status"] = "already_blocked"
+            return
+        hit_count = int(details.get("hit_count") or 0)
+        local_ports = details.get("local_ports")
+        blocked_entry = self._ip_blocklist.block(
+            remote_ip,
+            reason=(
+                "Automatic block after abnormal inbound connection burst "
+                f"({hit_count} hits against local ports {local_ports or []})."
+            ),
+            blocked_by="network_monitor",
+            duration_minutes=settings.auto_block_duration_minutes,
+        )
+        details["block_status"] = "blocked"
+        details["block_reason"] = blocked_entry.reason
+        details["block_expires_at"] = blocked_entry.expires_at
 
     def _maybe_run_packet_monitor(self) -> dict[str, Any]:
         if not self._packet_monitor_enabled:

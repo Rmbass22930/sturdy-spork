@@ -99,6 +99,40 @@ def test_evaluate_snapshot_emits_high_for_repeated_non_sensitive_public_ip(tmp_p
     assert len(findings) == 1
     assert findings[0].severity == "high"
     assert findings[0].details["hit_count"] == 3
+    assert findings[0].details["finding_type"] == "suspicious_remote_ip"
+
+
+def test_evaluate_snapshot_emits_critical_dos_candidate_for_abnormal_burst(tmp_path: Path) -> None:
+    monitor = NetworkMonitor(
+        state_path=tmp_path / "network_state.json",
+        suspicious_repeat_threshold=3,
+        dos_hit_threshold=12,
+        dos_syn_threshold=6,
+        dos_port_span_threshold=3,
+        sensitive_ports=[3389],
+    )
+
+    findings = monitor.evaluate_snapshot(
+        {
+            "suspicious_observations": [
+                {
+                    "remote_ip": "198.51.100.80",
+                    "states": ["ESTABLISHED", "SYN_RECEIVED"],
+                    "state_counts": {"ESTABLISHED": 5, "SYN_RECEIVED": 7},
+                    "local_ports": [80, 443, 3389],
+                    "remote_ports": [50000, 50001, 50002, 50003],
+                    "hit_count": 12,
+                    "sensitive_ports": [3389],
+                }
+            ]
+        }
+    )
+
+    assert len(findings) == 1
+    assert findings[0].severity == "critical"
+    assert findings[0].details["finding_type"] == "dos_candidate"
+    assert findings[0].details["remote_ip"] == "198.51.100.80"
+    assert findings[0].details["syn_received_count"] == 7
 
 
 def test_run_check_tracks_resolution(tmp_path: Path) -> None:

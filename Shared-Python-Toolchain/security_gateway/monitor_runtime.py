@@ -9,6 +9,7 @@ from .automation import AutomationSupervisor, run_forever
 from .config import settings
 from .endpoint import MalwareScanner
 from .host_monitor import HostMonitor
+from .ip_controls import IPBlocklistManager
 from .network_monitor import NetworkMonitor
 from .packet_monitor import PacketMonitor
 from .pam import VaultClient
@@ -30,6 +31,7 @@ def _seed_offline_feeds(tracker_intel: TrackerIntel, scanner: MalwareScanner) ->
 def build_runtime_supervisor() -> AutomationSupervisor:
     audit_logger = AuditLogger(settings.audit_log_path)
     vault = VaultClient(audit_logger=audit_logger)
+    ip_blocklist = IPBlocklistManager(path=settings.ip_blocklist_path, audit_logger=audit_logger)
     proxy = OutboundProxy()
     tracker_intel = TrackerIntel(
         extra_domains_path=settings.tracker_domain_list_path,
@@ -78,6 +80,9 @@ def build_runtime_supervisor() -> AutomationSupervisor:
     network_monitor = NetworkMonitor(
         state_path=settings.network_monitor_state_path,
         suspicious_repeat_threshold=settings.network_monitor_repeat_threshold,
+        dos_hit_threshold=settings.network_monitor_dos_hit_threshold,
+        dos_syn_threshold=settings.network_monitor_dos_syn_threshold,
+        dos_port_span_threshold=settings.network_monitor_dos_port_span_threshold,
         sensitive_ports=settings.network_monitor_sensitive_ports,
     )
     packet_monitor = PacketMonitor(
@@ -156,6 +161,7 @@ def build_runtime_supervisor() -> AutomationSupervisor:
         proxy=proxy,
         audit_logger=audit_logger,
         alert_manager=alert_manager,
+        ip_blocklist=ip_blocklist,
         tracker_intel=tracker_intel,
         malware_scanner=scanner,
         interval_seconds=settings.automation_interval_seconds,

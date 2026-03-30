@@ -1507,6 +1507,61 @@ def test_operator_route_does_not_fall_back_to_static_token_when_pam_lookup_fails
     assert response.json()["detail"] == "Operator bearer token backend is unavailable."
 
 
+def test_network_monitor_auto_blocks_dos_candidate(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "auto_block_enabled", True)
+    monkeypatch.setattr(settings, "auto_block_duration_minutes", 45)
+    service.automation._ip_blocklist = service.ip_blocklist
+
+    finding = {
+        "key": "dos-candidate:198.51.100.80",
+        "severity": "critical",
+        "title": "Potential denial-of-service source observed: 198.51.100.80",
+        "summary": "A public remote IP exceeded the abnormal inbound connection threshold.",
+        "details": {
+            "remote_ip": "198.51.100.80",
+            "local_ports": [80, 443, 3389],
+            "remote_ports": [50000, 50001, 50002],
+            "hit_count": 14,
+            "syn_received_count": 9,
+            "finding_type": "dos_candidate",
+        },
+        "tags": ["network", "dos"],
+    }
+
+    service.automation._emit_network_monitor_finding(finding)
+
+    assert service.ip_blocklist.is_blocked("198.51.100.80") is True
+    assert finding["details"]["block_status"] == "blocked"
+    events = service.soc_manager.list_events(limit=5)
+    assert events[0].details["details"]["block_status"] == "blocked"
+
+
+def test_network_monitor_does_not_auto_block_generic_suspicious_ip(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "auto_block_enabled", True)
+    service.automation._ip_blocklist = service.ip_blocklist
+
+    finding = {
+        "key": "suspicious-remote-ip:198.51.100.81",
+        "severity": "high",
+        "title": "Suspicious remote IP observed: 198.51.100.81",
+        "summary": "A public remote IP repeatedly appeared against local listening ports.",
+        "details": {
+            "remote_ip": "198.51.100.81",
+            "local_ports": [8443],
+            "remote_ports": [51000, 51001, 51002],
+            "hit_count": 3,
+            "finding_type": "suspicious_remote_ip",
+        },
+        "tags": ["network"],
+    }
+
+    service.automation._emit_network_monitor_finding(finding)
+
+    assert service.ip_blocklist.is_blocked("198.51.100.81") is False
+
+
 def test_endpoint_ingest_secret_auth_and_operator_guarded_reads(monkeypatch, tmp_path):
     _install_test_managers(monkeypatch, tmp_path)
     endpoint_headers = _endpoint_secret_headers(monkeypatch, token="vault-endpoint-token")

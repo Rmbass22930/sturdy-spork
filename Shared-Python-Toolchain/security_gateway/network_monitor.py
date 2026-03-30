@@ -31,11 +31,17 @@ class NetworkMonitor:
         *,
         state_path: str | Path,
         suspicious_repeat_threshold: int = 3,
+        dos_hit_threshold: int = 12,
+        dos_syn_threshold: int = 6,
+        dos_port_span_threshold: int = 3,
         sensitive_ports: list[int] | None = None,
         runner: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None,
     ) -> None:
         self._state_path = Path(state_path)
         self._suspicious_repeat_threshold = max(1, suspicious_repeat_threshold)
+        self._dos_hit_threshold = max(2, dos_hit_threshold)
+        self._dos_syn_threshold = max(1, dos_syn_threshold)
+        self._dos_port_span_threshold = max(1, dos_port_span_threshold)
         self._sensitive_ports = set(sensitive_ports or [22, 23, 135, 139, 445, 3389, 5900, 5985, 5986])
         self._runner = runner or self._run_command
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -118,6 +124,7 @@ class NetworkMonitor:
                 {
                     "remote_ip": remote_ip,
                     "states": set(),
+                    "state_counts": {},
                     "local_ports": set(),
                     "remote_ports": set(),
                     "hit_count": 0,
@@ -125,6 +132,10 @@ class NetworkMonitor:
                 },
             )
             record["states"].add(str(item["state"]))
+            state_name = str(item["state"])
+            state_counts = record["state_counts"]
+            if isinstance(state_counts, dict):
+                state_counts[state_name] = int(state_counts.get(state_name, 0)) + 1
             record["local_ports"].add(int(item["local_port"]))
             record["remote_ports"].add(int(item["remote_port"]))
             record["hit_count"] += 1
@@ -137,6 +148,10 @@ class NetworkMonitor:
                 {
                     "remote_ip": value["remote_ip"],
                     "states": sorted(value["states"]),
+                    "state_counts": {
+                        str(key): int(count)
+                        for key, count in sorted(value["state_counts"].items())
+                    },
                     "local_ports": sorted(value["local_ports"]),
                     "remote_ports": sorted(value["remote_ports"]),
                     "hit_count": value["hit_count"],
@@ -149,6 +164,9 @@ class NetworkMonitor:
             "listening_ports": sorted(listening_ports),
             "suspicious_observations": observations,
             "repeat_threshold": self._suspicious_repeat_threshold,
+            "dos_hit_threshold": self._dos_hit_threshold,
+            "dos_syn_threshold": self._dos_syn_threshold,
+            "dos_port_span_threshold": self._dos_port_span_threshold,
             "sensitive_ports": sorted(self._sensitive_ports),
         }
 
@@ -160,9 +178,55 @@ class NetworkMonitor:
                 continue
             hit_count = int(item.get("hit_count") or 0)
             sensitive_ports = [int(value) for value in item.get("sensitive_ports") or []]
+            raw_state_counts = item.get("state_counts")
+            state_counts: dict[str, int]
+            if isinstance(raw_state_counts, dict):
+                state_counts = {str(key): int(value) for key, value in raw_state_counts.items()}
+            else:
+                state_counts = {}
+            syn_received_count = int(state_counts.get("SYN_RECEIVED", 0))
+            local_ports = [int(value) for value in item.get("local_ports") or []]
+            remote_ports = [int(value) for value in item.get("remote_ports") or []]
+            dos_candidate = (
+                hit_count >= self._dos_hit_threshold
+                and (
+                    syn_received_count >= self._dos_syn_threshold
+                    or len(local_ports) >= self._dos_port_span_threshold
+                    or len(remote_ports) >= self._dos_port_span_threshold
+                )
+            )
+            remote_ip = str(item.get("remote_ip") or "unknown")
+            if dos_candidate:
+                findings.append(
+                    NetworkMonitorFinding(
+                        key=f"dos-candidate:{remote_ip}",
+                        severity="critical",
+                        title=f"Potential denial-of-service source observed: {remote_ip}",
+                        summary=(
+                            "A public remote IP exceeded the abnormal inbound connection threshold and matched "
+                            "denial-of-service indicators against local listening services."
+                        ),
+                        details={
+                            "remote_ip": remote_ip,
+                            "states": item.get("states") or [],
+                            "state_counts": state_counts,
+                            "local_ports": local_ports,
+                            "remote_ports": remote_ports,
+                            "hit_count": hit_count,
+                            "sensitive_ports": sensitive_ports,
+                            "syn_received_count": syn_received_count,
+                            "finding_type": "dos_candidate",
+                            "repeat_threshold": self._suspicious_repeat_threshold,
+                            "dos_hit_threshold": self._dos_hit_threshold,
+                            "dos_syn_threshold": self._dos_syn_threshold,
+                            "dos_port_span_threshold": self._dos_port_span_threshold,
+                        },
+                        tags=["network", "ip", "intrusion", "dos"],
+                    )
+                )
+                continue
             if hit_count < self._suspicious_repeat_threshold and not sensitive_ports:
                 continue
-            remote_ip = str(item.get("remote_ip") or "unknown")
             key = f"suspicious-remote-ip:{remote_ip}"
             severity = "critical" if sensitive_ports else "high"
             title = f"Suspicious remote IP observed: {remote_ip}"
@@ -183,10 +247,13 @@ class NetworkMonitor:
                     details={
                         "remote_ip": remote_ip,
                         "states": item.get("states") or [],
-                        "local_ports": item.get("local_ports") or [],
-                        "remote_ports": item.get("remote_ports") or [],
+                        "state_counts": state_counts,
+                        "local_ports": local_ports,
+                        "remote_ports": remote_ports,
                         "hit_count": hit_count,
                         "sensitive_ports": sensitive_ports,
+                        "syn_received_count": syn_received_count,
+                        "finding_type": "suspicious_remote_ip",
                         "repeat_threshold": self._suspicious_repeat_threshold,
                     },
                     tags=["network", "ip", "intrusion"],

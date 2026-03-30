@@ -92,6 +92,9 @@ class Settings(BaseSettings):
     network_monitor_every_ticks: int = 1
     network_monitor_state_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "network_monitor_state.json"))
     network_monitor_repeat_threshold: int = 3
+    network_monitor_dos_hit_threshold: int = 12
+    network_monitor_dos_syn_threshold: int = 6
+    network_monitor_dos_port_span_threshold: int = 3
     network_monitor_sensitive_ports: List[int] = Field(default_factory=lambda: [22, 23, 135, 139, 445, 3389, 5900, 5985, 5986])
     packet_monitor_enabled: bool = True
     packet_monitor_every_ticks: int = 2

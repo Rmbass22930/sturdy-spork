@@ -138,6 +138,9 @@ host_monitor = HostMonitor(
 network_monitor = NetworkMonitor(
     state_path=settings.network_monitor_state_path,
     suspicious_repeat_threshold=settings.network_monitor_repeat_threshold,
+    dos_hit_threshold=settings.network_monitor_dos_hit_threshold,
+    dos_syn_threshold=settings.network_monitor_dos_syn_threshold,
+    dos_port_span_threshold=settings.network_monitor_dos_port_span_threshold,
     sensitive_ports=settings.network_monitor_sensitive_ports,
 )
 packet_monitor = PacketMonitor(
@@ -332,6 +335,7 @@ automation = AutomationSupervisor(
     proxy=proxy,
     audit_logger=audit_logger,
     alert_manager=alert_manager,
+    ip_blocklist=ip_blocklist,
     tracker_intel=tracker_intel,
     malware_scanner=scanner,
     interval_seconds=settings.automation_interval_seconds,
