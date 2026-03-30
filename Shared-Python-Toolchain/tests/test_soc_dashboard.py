@@ -8,6 +8,7 @@ def test_format_status_line_includes_open_workloads_and_top_events() -> None:
     dashboard = {
         "summary": {"open_alerts": 3, "open_cases": 2},
         "workload": {"stale_assigned_alerts": 1, "stale_active_cases": 4},
+        "assignee_workload": [{"assignee": "tier1", "open_alerts": 2, "active_cases": 1}],
         "top_event_types": {"policy.access_decision": 4, "privacy.tracker_block": 3},
     }
 
@@ -18,6 +19,7 @@ def test_format_status_line_includes_open_workloads_and_top_events() -> None:
     assert "Host findings: 2" in line
     assert "Stale assigned alerts: 1" in line
     assert "Stale active cases: 4" in line
+    assert "Loaded assignees: 1" in line
     assert "policy.access_decision: 4" in line
     assert "privacy.tracker_block: 3" in line
 
@@ -26,12 +28,35 @@ def test_format_status_line_handles_empty_event_types() -> None:
     dashboard = {
         "summary": {"open_alerts": 0, "open_cases": 0},
         "workload": {},
+        "assignee_workload": [],
         "top_event_types": {},
     }
 
     line = SocDashboard._format_status_line(dashboard)
 
     assert line.endswith("Top event types: none")
+
+
+def test_format_workload_detail_includes_assignees_and_aging() -> None:
+    dashboard = {
+        "assignee_workload": [
+            {"assignee": "tier1", "open_alerts": 3, "active_cases": 1, "stale_alerts": 1, "stale_cases": 0},
+            {"assignee": "unassigned", "open_alerts": 2, "active_cases": 0, "stale_alerts": 0, "stale_cases": 0},
+        ],
+        "aging_buckets": {
+            "alerts": {"0-4h": 1, "4-24h": 2, "24-72h": 3, "72h+": 4},
+            "cases": {"0-4h": 5, "4-24h": 6, "24-72h": 7, "72h+": 8},
+        },
+    }
+
+    text = SocDashboard._format_workload_detail(dashboard)
+
+    assert "tier1: alerts=3, cases=1, stale alerts=1, stale cases=0" in text
+    assert "unassigned: alerts=2, cases=0, stale alerts=0, stale cases=0" in text
+    assert "Alert Aging:" in text
+    assert "- 72h+: 4" in text
+    assert "Case Aging:" in text
+    assert "- 24-72h: 7" in text
 
 
 def test_alert_query_kwargs_use_unassigned_open_alert_defaults() -> None:

@@ -53,6 +53,13 @@ class Settings(BaseSettings):
     soc_event_log_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "soc_events.jsonl"))
     soc_alert_store_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "soc_alerts.json"))
     soc_case_store_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "soc_cases.json"))
+    soc_notification_state_path: str = Field(
+        default_factory=lambda: _default_runtime_path("logs", "soc_operational_notifications.json")
+    )
+    soc_operational_notifications_enabled: bool = True
+    soc_stale_after_hours: float = 24.0
+    soc_assignee_open_alert_threshold: int = 5
+    soc_assignee_active_case_threshold: int = 3
     ip_blocklist_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "blocked_ips.json"))
     report_output_dir: str = Field(default_factory=_default_report_output_dir)
     hashicorp_vault_url: Optional[str] = None

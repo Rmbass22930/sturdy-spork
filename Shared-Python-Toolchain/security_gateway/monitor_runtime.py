@@ -220,6 +220,9 @@ def build_runtime_supervisor() -> AutomationSupervisor:
         stream_monitor_enabled=settings.stream_monitor_enabled,
         stream_monitor_every_ticks=settings.stream_monitor_every_ticks,
         stream_monitor_callback=_record_stream_finding,
+        operational_callback=lambda: soc_manager.emit_operational_notifications(
+            state_path=settings.soc_notification_state_path
+        ),
     )
 
 

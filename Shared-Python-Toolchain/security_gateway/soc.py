@@ -9,10 +9,12 @@ from datetime import UTC, datetime, timedelta
 from ipaddress import ip_address
 from pathlib import Path
 from threading import Lock
+from typing import cast
 from uuid import uuid4
 
 from .alerts import AlertEvent, AlertLevel, AlertManager
 from .audit import AuditLogger
+from .config import settings
 from .models import (
     SocAlertRecord,
     SocAlertPromoteCaseRequest,
@@ -436,7 +438,8 @@ class SecurityOperationsManager:
         case_status = Counter(item.status.value for item in cases)
         event_types = Counter(item.event_type for item in events[:100])
         correlation_alerts = [item for item in alerts if item.category == "correlation"]
-        stale_cutoff = now - timedelta(hours=24)
+        stale_cutoff = now - timedelta(hours=settings.soc_stale_after_hours)
+        assignee_workload = self._build_assignee_workload(alerts, cases, stale_cutoff=stale_cutoff)
 
         return {
             "summary": self.overview(),
@@ -454,6 +457,15 @@ class SecurityOperationsManager:
                     1
                     for item in cases
                     if item.status is not SocCaseStatus.closed and item.updated_at < stale_cutoff
+                ),
+            },
+            "assignee_workload": assignee_workload[:10],
+            "aging_buckets": {
+                "alerts": self._build_aging_buckets(
+                    [item for item in alerts if item.status is SocAlertStatus.open]
+                ),
+                "cases": self._build_aging_buckets(
+                    [item for item in cases if item.status is not SocCaseStatus.closed]
                 ),
             },
             "triage": {
@@ -488,6 +500,52 @@ class SecurityOperationsManager:
                 ][:10],
             },
         }
+
+    def emit_operational_notifications(self, *, state_path: str | Path | None = None) -> dict[str, object]:
+        dashboard = self.dashboard()
+        routes = self._build_operational_routes(dashboard)
+        path = Path(state_path or settings.soc_notification_state_path)
+        previous = self._read_notification_state(path)
+        current: dict[str, dict[str, object]] = {}
+        emitted = 0
+
+        for route in routes:
+            route_id = str(route["route_id"])
+            fingerprint = str(route["fingerprint"])
+            current[route_id] = {"active": True, "fingerprint": fingerprint}
+            prior = previous.get(route_id, {})
+            if prior.get("active") and prior.get("fingerprint") == fingerprint:
+                continue
+            self._alerts.emit(
+                AlertEvent(
+                    level=cast(AlertLevel, route["level"]),
+                    title=str(route["title"]),
+                    message=str(route["message"]),
+                    context=cast(dict[str, object], route["context"]),
+                )
+            )
+            self._audit.log(
+                "soc.operational.notification",
+                {"route_id": route_id, "fingerprint": fingerprint, "context": route["context"]},
+            )
+            emitted += 1
+
+        for route_id, prior in previous.items():
+            if not prior.get("active") or route_id in current:
+                continue
+            self._alerts.emit(
+                AlertEvent(
+                    level=AlertLevel.info,
+                    title=f"Operational pressure resolved: {route_id}",
+                    message="The previously escalated SOC workload condition has cleared.",
+                    context={"route_id": route_id},
+                )
+            )
+            self._audit.log("soc.operational.notification.resolved", {"route_id": route_id})
+            current[route_id] = {"active": False, "fingerprint": str(prior.get("fingerprint", ""))}
+
+        self._write_notification_state(path, current)
+        return {"enabled": True, "routes": len(routes), "emitted": emitted}
 
     def _build_alert_for_event(
         self,
@@ -707,6 +765,157 @@ class SecurityOperationsManager:
             seen.add(normalized)
             merged.append(candidate)
         return merged[:64]
+
+    @staticmethod
+    def _build_aging_buckets(records: list[SocAlertRecord] | list[SocCaseRecord]) -> dict[str, int]:
+        now = _utc_now()
+        buckets = {"0-4h": 0, "4-24h": 0, "24-72h": 0, "72h+": 0}
+        for record in records:
+            age = now - record.updated_at
+            if age < timedelta(hours=4):
+                buckets["0-4h"] += 1
+            elif age < timedelta(hours=24):
+                buckets["4-24h"] += 1
+            elif age < timedelta(hours=72):
+                buckets["24-72h"] += 1
+            else:
+                buckets["72h+"] += 1
+        return buckets
+
+    @staticmethod
+    def _build_assignee_workload(
+        alerts: list[SocAlertRecord],
+        cases: list[SocCaseRecord],
+        *,
+        stale_cutoff: datetime,
+    ) -> list[dict[str, object]]:
+        assignee_names = {
+            (item.assignee or "unassigned")
+            for item in alerts
+            if item.status is SocAlertStatus.open
+        } | {
+            (item.assignee or "unassigned")
+            for item in cases
+            if item.status is not SocCaseStatus.closed
+        }
+        rows: list[dict[str, object]] = []
+        for assignee in assignee_names:
+            open_alerts = [
+                item for item in alerts if item.status is SocAlertStatus.open and (item.assignee or "unassigned") == assignee
+            ]
+            active_cases = [
+                item
+                for item in cases
+                if item.status is not SocCaseStatus.closed and (item.assignee or "unassigned") == assignee
+            ]
+            rows.append(
+                {
+                    "assignee": assignee,
+                    "open_alerts": len(open_alerts),
+                    "active_cases": len(active_cases),
+                    "stale_alerts": sum(1 for item in open_alerts if item.updated_at < stale_cutoff),
+                    "stale_cases": sum(1 for item in active_cases if item.updated_at < stale_cutoff),
+                }
+            )
+        rows.sort(
+            key=lambda item: (
+                SecurityOperationsManager._coerce_int(item["stale_alerts"])
+                + SecurityOperationsManager._coerce_int(item["stale_cases"]),
+                SecurityOperationsManager._coerce_int(item["open_alerts"])
+                + SecurityOperationsManager._coerce_int(item["active_cases"]),
+                str(item["assignee"]) != "unassigned",
+                str(item["assignee"]),
+            ),
+            reverse=True,
+        )
+        return rows
+
+    def _build_operational_routes(self, dashboard: dict[str, object]) -> list[dict[str, object]]:
+        workload = cast(dict[str, object], dashboard.get("workload") or {})
+        assignee_workload = cast(list[dict[str, object]], dashboard.get("assignee_workload") or [])
+        routes: list[dict[str, object]] = []
+        stale_assigned = self._coerce_int(workload.get("stale_assigned_alerts", 0))
+        stale_cases = self._coerce_int(workload.get("stale_active_cases", 0))
+        top_stale_assignees = [
+            str(item["assignee"])
+            for item in assignee_workload
+            if self._coerce_int(item.get("stale_alerts", 0)) > 0 or self._coerce_int(item.get("stale_cases", 0)) > 0
+        ][:3]
+        if stale_assigned > 0:
+            routes.append(
+                {
+                    "route_id": "handoff-stale-alerts",
+                    "fingerprint": f"{stale_assigned}|{'/'.join(top_stale_assignees)}",
+                    "level": AlertLevel.warning,
+                    "title": "SOC handoff required",
+                    "message": f"{stale_assigned} assigned alerts are stale and need analyst handoff.",
+                    "context": {"count": stale_assigned, "assignees": top_stale_assignees},
+                }
+            )
+        if stale_cases > 0:
+            routes.append(
+                {
+                    "route_id": "stale-active-cases",
+                    "fingerprint": f"{stale_cases}|{'/'.join(top_stale_assignees)}",
+                    "level": AlertLevel.warning,
+                    "title": "SOC case escalation needed",
+                    "message": f"{stale_cases} active cases are stale and require escalation review.",
+                    "context": {"count": stale_cases, "assignees": top_stale_assignees},
+                }
+            )
+        for item in assignee_workload:
+            assignee = str(item["assignee"])
+            if assignee == "unassigned":
+                continue
+            open_alerts = self._coerce_int(item.get("open_alerts", 0))
+            active_cases = self._coerce_int(item.get("active_cases", 0))
+            if (
+                open_alerts < settings.soc_assignee_open_alert_threshold
+                and active_cases < settings.soc_assignee_active_case_threshold
+            ):
+                continue
+            routes.append(
+                {
+                    "route_id": f"assignee-pressure:{assignee}",
+                    "fingerprint": (
+                        f"{open_alerts}|{active_cases}|"
+                        f"{self._coerce_int(item.get('stale_alerts', 0))}|{self._coerce_int(item.get('stale_cases', 0))}"
+                    ),
+                    "level": AlertLevel.info,
+                    "title": f"SOC workload pressure: {assignee}",
+                    "message": f"{assignee} is carrying {open_alerts} open alerts and {active_cases} active cases.",
+                    "context": item,
+                }
+            )
+        return routes
+
+    @staticmethod
+    def _read_notification_state(path: Path) -> dict[str, dict[str, object]]:
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    @staticmethod
+    def _write_notification_state(path: Path, payload: dict[str, dict[str, object]]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+    @staticmethod
+    def _coerce_int(value: object) -> int:
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            try:
+                return int(value)
+            except ValueError:
+                return 0
+        return 0
 
     @classmethod
     def _extract_observables_from_mapping(cls, payload: dict[str, object]) -> list[str]:

@@ -255,6 +255,23 @@ class SocDashboard:
             columns=("type", "severity", "title", "created"),
             headings={"type": "Type", "severity": "Severity", "title": "Title", "created": "Created"},
         )
+        ops_frame = ttk.LabelFrame(body, text="Ownership And Aging", padding=(10, 10), style="SOC.TLabelframe")
+        ops_frame.grid(row=1, column=2, sticky="nsew", padx=(8, 0), pady=(8, 0))
+        ops_frame.columnconfigure(0, weight=1)
+        ops_frame.rowconfigure(0, weight=1)
+        self.ops_detail_text = tk.Text(
+            ops_frame,
+            height=14,
+            wrap="word",
+            bg="#f5f8ff",
+            fg="#24364a",
+            font=("Consolas", 10),
+            relief="flat",
+            padx=10,
+            pady=10,
+        )
+        self.ops_detail_text.grid(row=0, column=0, sticky="nsew")
+        self.ops_detail_text.configure(state="disabled")
         detail_row = ttk.Frame(body, style="SOC.TFrame")
         detail_row.grid(row=2, column=0, columnspan=3, sticky="nsew", pady=(8, 0))
         detail_row.columnconfigure(0, weight=1)
@@ -525,6 +542,7 @@ class SocDashboard:
             cast(list[dict[str, Any]], summary["recent_events"]),
             lambda item: (item["event_type"], item["severity"], item["title"], item["created_at"]),
         )
+        self._set_ops_detail_text(self._format_workload_detail(dashboard))
 
     def _populate_tree(
         self,
@@ -903,16 +921,60 @@ class SocDashboard:
     def _format_status_line(dashboard: dict[str, Any], *, host_findings_count: int = 0) -> str:
         summary = dashboard["summary"]
         workload = cast(dict[str, Any], dashboard.get("workload") or {})
+        assignee_workload = cast(list[dict[str, Any]], dashboard.get("assignee_workload") or [])
         top_event_types = dashboard.get("top_event_types") or {}
         most_common = ", ".join(f"{name}: {count}" for name, count in list(top_event_types.items())[:3]) or "none"
+        loaded_assignees = sum(
+            1
+            for item in assignee_workload
+            if int(item.get("open_alerts", 0)) > 0 or int(item.get("active_cases", 0)) > 0
+        )
         return (
             f"Open alerts: {summary['open_alerts']} | "
             f"Open cases: {summary['open_cases']} | "
             f"Host findings: {host_findings_count} | "
             f"Stale assigned alerts: {workload.get('stale_assigned_alerts', 0)} | "
             f"Stale active cases: {workload.get('stale_active_cases', 0)} | "
+            f"Loaded assignees: {loaded_assignees} | "
             f"Top event types: {most_common}"
         )
+
+    @staticmethod
+    def _format_workload_detail(dashboard: dict[str, Any]) -> str:
+        assignee_workload = cast(list[dict[str, Any]], dashboard.get("assignee_workload") or [])
+        aging = cast(dict[str, dict[str, int]], dashboard.get("aging_buckets") or {})
+        alert_aging = aging.get("alerts") or {}
+        case_aging = aging.get("cases") or {}
+        lines = ["Assignee Summary:"]
+        if assignee_workload:
+            for item in assignee_workload[:8]:
+                lines.append(
+                    "- "
+                    f"{item.get('assignee', 'unassigned')}: "
+                    f"alerts={item.get('open_alerts', 0)}, "
+                    f"cases={item.get('active_cases', 0)}, "
+                    f"stale alerts={item.get('stale_alerts', 0)}, "
+                    f"stale cases={item.get('stale_cases', 0)}"
+                )
+        else:
+            lines.append("- no active assignee workload")
+        lines.extend(
+            [
+                "",
+                "Alert Aging:",
+                f"- 0-4h: {alert_aging.get('0-4h', 0)}",
+                f"- 4-24h: {alert_aging.get('4-24h', 0)}",
+                f"- 24-72h: {alert_aging.get('24-72h', 0)}",
+                f"- 72h+: {alert_aging.get('72h+', 0)}",
+                "",
+                "Case Aging:",
+                f"- 0-4h: {case_aging.get('0-4h', 0)}",
+                f"- 4-24h: {case_aging.get('4-24h', 0)}",
+                f"- 24-72h: {case_aging.get('24-72h', 0)}",
+                f"- 72h+: {case_aging.get('72h+', 0)}",
+            ]
+        )
+        return "\n".join(lines)
 
     def _refresh_alert_detail(self) -> None:
         alert_id = self._selected_tree_item_id(self.alert_tree)
@@ -991,6 +1053,12 @@ class SocDashboard:
         self.host_detail_text.delete("1.0", "end")
         self.host_detail_text.insert("1.0", text)
         self.host_detail_text.configure(state="disabled")
+
+    def _set_ops_detail_text(self, text: str) -> None:
+        self.ops_detail_text.configure(state="normal")
+        self.ops_detail_text.delete("1.0", "end")
+        self.ops_detail_text.insert("1.0", text)
+        self.ops_detail_text.configure(state="disabled")
 
     @staticmethod
     def _format_alert_detail(alert_payload: dict[str, Any]) -> str:

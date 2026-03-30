@@ -54,6 +54,7 @@ class AutomationSupervisor:
         stream_monitor_enabled: bool = False,
         stream_monitor_every_ticks: int = 1,
         stream_monitor_callback: Callable[[dict[str, Any]], None] | None = None,
+        operational_callback: Callable[[], dict[str, Any]] | None = None,
     ):
         self._vault = vault
         self._proxy = proxy
@@ -85,6 +86,7 @@ class AutomationSupervisor:
         self._stream_monitor_enabled = stream_monitor_enabled
         self._stream_monitor_every_ticks = max(1, stream_monitor_every_ticks)
         self._stream_monitor_callback = stream_monitor_callback
+        self._operational_callback = operational_callback
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._last_run: Optional[datetime] = None
@@ -144,6 +146,7 @@ class AutomationSupervisor:
             network_monitor = self._maybe_run_network_monitor()
             packet_monitor = self._maybe_run_packet_monitor()
             stream_monitor = self._maybe_run_stream_monitor()
+            operational = self._maybe_emit_operational_notifications()
             self._audit.log(
                 "automation.tick",
                 {
@@ -156,6 +159,7 @@ class AutomationSupervisor:
                     "network_monitor": network_monitor,
                     "packet_monitor": packet_monitor,
                     "stream_monitor": stream_monitor,
+                    "operational": operational,
                 },
             )
             self._last_run = datetime.now(UTC)
@@ -496,6 +500,15 @@ class AutomationSupervisor:
             self._stream_monitor_last_result = "failed"
             self._stream_monitor_last_error = str(exc)
             self._audit.log("automation.stream_monitor_error", {"error": str(exc)})
+            return {"enabled": True, "result": "failed", "error": str(exc)}
+
+    def _maybe_emit_operational_notifications(self) -> dict[str, Any]:
+        if self._operational_callback is None or not settings.soc_operational_notifications_enabled:
+            return {"enabled": False}
+        try:
+            return self._operational_callback()
+        except Exception as exc:  # noqa: BLE001
+            self._audit.log("automation.operational_notification_error", {"error": str(exc)})
             return {"enabled": True, "result": "failed", "error": str(exc)}
 
     def _emit_stream_monitor_finding(self, finding: dict[str, Any]) -> None:
