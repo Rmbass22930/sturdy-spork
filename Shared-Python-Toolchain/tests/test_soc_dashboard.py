@@ -1041,6 +1041,64 @@ def test_choose_event_pivot_defaults_to_details_without_links() -> None:
     assert choice == "details"
 
 
+def test_choose_case_activity_pivot_defaults_to_details_without_links() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+
+    choice = dashboard._choose_case_activity_pivot({"case_id": "case-1"}, linked_alerts=[], source_events=[])
+
+    assert choice == "details"
+
+
+def test_pivot_from_event_opens_alert_detail_for_selected_related_alert() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard._resolve_event_alerts = lambda payload: [{"alert_id": "alert-1", "status": "open", "severity": "high", "title": "Alert one", "category": "test", "summary": "Summary", "source_event_ids": []}]
+    dashboard._resolve_event_cases = lambda payload: []
+    dashboard._choose_event_pivot = lambda payload, related_alerts, related_cases: "alerts"
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    captured: list[tuple[str, str]] = []
+    dashboard._show_info_dialog = lambda title, body: captured.append((title, body))
+
+    dashboard._pivot_from_event({"event_id": "evt-1", "title": "Event one"})
+
+    assert captured
+    assert captured[0][0] == "Alert Details"
+    assert "Alert: alert-1" in captured[0][1]
+
+
+def test_view_alert_source_events_pivots_from_selected_event() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.alert_tree = type("Tree", (), {"selection": lambda self: ("alert-1",)})()
+    dashboard.alert_rows_by_id = {"alert-1": {"alert_id": "alert-1", "title": "Alert one", "source_event_ids": ["evt-1"]}}
+    selected_events: list[dict[str, Any]] = []
+    dashboard._resolve_source_events = lambda payload: [{"event_id": "evt-1", "event_type": "x", "severity": "high", "title": "Event one"}]
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._pivot_from_event = lambda event_payload: selected_events.append(event_payload)
+    dashboard._show_info_dialog = lambda title, body: None
+
+    dashboard.view_alert_source_events()
+
+    assert selected_events
+    assert selected_events[0]["event_id"] == "evt-1"
+
+
+def test_view_case_linked_activity_opens_selected_alert_detail() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_tree = type("Tree", (), {"selection": lambda self: ("case-1",)})()
+    dashboard.case_rows_by_id = {"case-1": {"case_id": "case-1", "title": "Case one"}}
+    dashboard._resolve_linked_alerts = lambda payload: [{"alert_id": "alert-7", "status": "open", "severity": "high", "title": "Alert seven", "category": "test", "summary": "Summary", "source_event_ids": []}]
+    dashboard._resolve_case_source_events = lambda payload: [{"event_id": "evt-7", "event_type": "x", "severity": "high", "title": "Event seven"}]
+    dashboard._choose_case_activity_pivot = lambda case_payload, linked_alerts, source_events: "alerts"
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    captured: list[tuple[str, str]] = []
+    dashboard._show_info_dialog = lambda title, body: captured.append((title, body))
+
+    dashboard.view_case_linked_activity()
+
+    assert captured
+    assert captured[0][0] == "Alert Details"
+    assert "Alert: alert-7" in captured[0][1]
+
+
 def test_format_case_linked_activity_includes_alerts_and_events() -> None:
     text = SocDashboard._format_case_linked_activity(
         {"case_id": "case-123", "title": "Investigate repeated tracker activity"},

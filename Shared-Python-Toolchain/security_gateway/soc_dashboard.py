@@ -725,11 +725,11 @@ class SocDashboard:
                 messagebox.showwarning("Alert Unavailable", "The selected alert is no longer available in the current view.")
             return
         source_events = self._resolve_source_events(alert_payload)
-        if messagebox is not None:
-            messagebox.showinfo(
-                "Source Events",
-                self._format_source_events(alert_payload, source_events),
-            )
+        selected = self._select_summary_record("event", source_events, title="Source Events")
+        if selected is None:
+            self._show_info_dialog("Source Events", self._format_source_events(alert_payload, source_events))
+            return
+        self._pivot_from_event(selected)
 
     def add_case_note(self) -> None:
         self._prompt_case_update(
@@ -911,11 +911,22 @@ class SocDashboard:
             return
         linked_alerts = self._resolve_linked_alerts(case_payload)
         source_events = self._resolve_case_source_events(case_payload)
-        if messagebox is not None:
-            messagebox.showinfo(
-                "Case Linked Activity",
-                self._format_case_linked_activity(case_payload, linked_alerts, source_events),
-            )
+        choice = self._choose_case_activity_pivot(case_payload, linked_alerts=linked_alerts, source_events=source_events)
+        if choice == "alerts":
+            selected_alert = self._select_summary_record("alert", linked_alerts, title="Linked Alerts")
+            if selected_alert is None:
+                self._show_info_dialog("Case Linked Activity", self._format_case_linked_activity(case_payload, linked_alerts, source_events))
+                return
+            self._show_info_dialog("Alert Details", self._format_alert_detail(selected_alert))
+            return
+        if choice == "events":
+            selected_event = self._select_summary_record("event", source_events, title="Source Events")
+            if selected_event is None:
+                self._show_info_dialog("Case Linked Activity", self._format_case_linked_activity(case_payload, linked_alerts, source_events))
+                return
+            self._pivot_from_event(selected_event)
+            return
+        self._show_info_dialog("Case Linked Activity", self._format_case_linked_activity(case_payload, linked_alerts, source_events))
 
     def assign_selected_case(self) -> None:
         case_id = self._selected_tree_item_id(self.case_tree)
@@ -1072,15 +1083,26 @@ class SocDashboard:
         selected = self._select_summary_record("event", events, title="Events")
         if selected is None:
             return
-        related_alerts = self._resolve_event_alerts(selected)
-        related_cases = self._resolve_event_cases(selected)
-        choice = self._choose_event_pivot(selected, related_alerts=related_alerts, related_cases=related_cases)
+        self._pivot_from_event(selected)
+
+    def _pivot_from_event(self, event_payload: dict[str, Any]) -> None:
+        related_alerts = self._resolve_event_alerts(event_payload)
+        related_cases = self._resolve_event_cases(event_payload)
+        choice = self._choose_event_pivot(event_payload, related_alerts=related_alerts, related_cases=related_cases)
         if choice == "alerts":
-            self._show_info_dialog("Related Alerts", self._format_summary_records("alert", related_alerts, limit=30))
+            selected_alert = self._select_summary_record("alert", related_alerts, title="Related Alerts")
+            if selected_alert is None:
+                self._show_info_dialog("Related Alerts", self._format_summary_records("alert", related_alerts, limit=30))
+                return
+            self._show_info_dialog("Alert Details", self._format_alert_detail(selected_alert))
         elif choice == "cases":
-            self._show_info_dialog("Related Cases", self._format_summary_records("case", related_cases, limit=30))
+            selected_case = self._select_summary_record("case", related_cases, title="Related Cases")
+            if selected_case is None:
+                self._show_info_dialog("Related Cases", self._format_summary_records("case", related_cases, limit=30))
+                return
+            self._show_info_dialog("Case Details", self._format_case_detail(selected_case))
         else:
-            self._show_info_dialog("Event Details", self._format_summary_records("event", [selected], limit=1))
+            self._show_info_dialog("Event Details", self._format_summary_records("event", [event_payload], limit=1))
 
     def _show_all_alerts_summary_drilldown(self) -> None:
         self._navigate_summary_view(
@@ -1261,6 +1283,53 @@ class SocDashboard:
         if related_cases:
             tk.Button(controls, text="Open Related Cases", command=lambda: set_choice("cases"), width=18).pack(side="left", padx=(8, 0))
         tk.Button(controls, text="Event Details", command=lambda: set_choice("details"), width=14).pack(side="right")
+        dialog.bind("<Escape>", lambda _event: set_choice("details"))
+        self.root.wait_window(dialog)
+        return choice
+
+    def _choose_case_activity_pivot(
+        self,
+        case_payload: dict[str, Any],
+        *,
+        linked_alerts: Sequence[dict[str, Any]],
+        source_events: Sequence[dict[str, Any]],
+    ) -> str:
+        if not linked_alerts and not source_events:
+            return "details"
+        if tk is None or not hasattr(self, "root"):
+            return "alerts" if linked_alerts else "events"
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Case Activity")
+        dialog.configure(bg="#eef4ff")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        _center_window(dialog, 620, 260)
+        dialog.minsize(540, 220)
+        choice = "details"
+        case_id = str(case_payload.get("case_id") or "-")
+        title = str(case_payload.get("title") or "-")
+        summary = (
+            f"Case: {case_id}\n"
+            f"Title: {title}\n\n"
+            f"Linked alerts: {len(linked_alerts)}\n"
+            f"Source events: {len(source_events)}"
+        )
+        tk.Label(dialog, text=summary, bg="#eef4ff", fg="#24364a", justify="left", anchor="w", padx=16, pady=16).pack(fill="both", expand=True)
+
+        controls = tk.Frame(dialog, bg="#eef4ff", padx=16, pady=12)
+        controls.pack(fill="x")
+
+        def set_choice(value: str) -> None:
+            nonlocal choice
+            choice = value
+            dialog.destroy()
+
+        if linked_alerts:
+            tk.Button(controls, text="Open Linked Alerts", command=lambda: set_choice("alerts"), width=18).pack(side="left")
+        if source_events:
+            tk.Button(controls, text="Open Source Events", command=lambda: set_choice("events"), width=18).pack(side="left", padx=(8, 0))
+        tk.Button(controls, text="Activity Details", command=lambda: set_choice("details"), width=14).pack(side="right")
         dialog.bind("<Escape>", lambda _event: set_choice("details"))
         self.root.wait_window(dialog)
         return choice
