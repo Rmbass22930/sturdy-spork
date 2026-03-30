@@ -127,6 +127,7 @@ class SocDashboard:
         self.alert_rows_by_id: dict[str, dict[str, Any]] = {}
         self.case_rows_by_id: dict[str, dict[str, Any]] = {}
         self.event_rows_by_id: dict[str, dict[str, Any]] = {}
+        self.correlation_rows_by_id: dict[str, dict[str, Any]] = {}
         self.all_alert_rows_by_id: dict[str, dict[str, Any]] = {}
         self.host_rows_by_key: dict[str, dict[str, Any]] = {}
         self._latest_dashboard: dict[str, Any] = {}
@@ -249,6 +250,7 @@ class SocDashboard:
             columns=("rule", "severity", "title", "events"),
             headings={"rule": "Rule", "severity": "Severity", "title": "Title", "events": "Events"},
         )
+        self.correlation_tree.bind("<<TreeviewSelect>>", lambda _event: self._open_selected_correlation())
         self.event_tree = self._build_tree(
             body,
             row=1,
@@ -257,6 +259,7 @@ class SocDashboard:
             columns=("type", "severity", "title", "created"),
             headings={"type": "Type", "severity": "Severity", "title": "Title", "created": "Created"},
         )
+        self.event_tree.bind("<<TreeviewSelect>>", lambda _event: self._open_selected_recent_event())
         ops_frame = ttk.LabelFrame(body, text="Ownership And Aging", padding=(10, 10), style="SOC.TLabelframe")
         ops_frame.grid(row=1, column=2, sticky="nsew", padx=(8, 0), pady=(8, 0))
         ops_frame.columnconfigure(0, weight=1)
@@ -612,11 +615,16 @@ class SocDashboard:
                 item["title"],
                 str(len(item.get("source_event_ids") or [])),
             ),
+            item_id_key="alert_id",
         )
+        self.correlation_rows_by_id = {
+            str(item["alert_id"]): item for item in triage["recent_correlations"] if item.get("alert_id")
+        }
         self._populate_tree(
             self.event_tree,
             cast(list[dict[str, Any]], summary["recent_events"]),
             lambda item: (item["event_type"], item["severity"], item["title"], item["created_at"]),
+            item_id_key="event_id",
         )
         self._refresh_workload_assignee_options(dashboard)
         self._set_ops_detail_text(self._format_workload_detail(dashboard))
@@ -1181,6 +1189,24 @@ class SocDashboard:
         if not self.host_tree.selection() and self.host_tree.get_children():
             self.host_tree.selection_set(self.host_tree.get_children()[0])
             self._refresh_host_detail()
+
+    def _open_selected_correlation(self) -> None:
+        alert_id = self._selected_tree_item_id(self.correlation_tree)
+        if alert_id is None:
+            return
+        alert_payload = self.correlation_rows_by_id.get(alert_id)
+        if alert_payload is None:
+            return
+        self._pivot_from_alert(alert_payload)
+
+    def _open_selected_recent_event(self) -> None:
+        event_id = self._selected_tree_item_id(self.event_tree)
+        if event_id is None:
+            return
+        event_payload = self.event_rows_by_id.get(event_id)
+        if event_payload is None:
+            return
+        self._pivot_from_event(event_payload)
 
     def _show_stale_alerts_summary_drilldown(self) -> None:
         self._navigate_summary_view(preset_name="handoff", focus_target="alerts")
