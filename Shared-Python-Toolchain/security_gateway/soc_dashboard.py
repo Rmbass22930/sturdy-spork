@@ -327,6 +327,9 @@ class SocDashboard:
         ttk.Button(ops_controls, text="Assign Case Bucket", command=self.assign_case_age_bucket).grid(
             row=0, column=13, sticky="w", padx=(8, 0)
         )
+        ttk.Button(ops_controls, text="Export Current View", command=self.export_current_dashboard_view).grid(
+            row=0, column=14, sticky="w", padx=(12, 0)
+        )
         ttk.Button(ops_controls, text="Open Selected Correlation", command=self.open_selected_correlation_action).grid(
             row=1, column=0, columnspan=3, sticky="w", pady=(8, 0)
         )
@@ -365,8 +368,11 @@ class SocDashboard:
         ttk.Button(alert_detail_controls, text="Copy Alert Detail", command=self.copy_selected_alert_detail).grid(
             row=0, column=0, sticky="w"
         )
-        ttk.Button(alert_detail_controls, text="Open Linked Case", command=self.open_linked_case_from_alert_detail).grid(
+        ttk.Button(alert_detail_controls, text="Save Alert Detail", command=self.save_selected_alert_detail).grid(
             row=0, column=1, sticky="w", padx=(8, 0)
+        )
+        ttk.Button(alert_detail_controls, text="Open Linked Case", command=self.open_linked_case_from_alert_detail).grid(
+            row=0, column=2, sticky="w", padx=(8, 0)
         )
         self.alert_detail_text = tk.Text(
             alert_detail_frame,
@@ -391,6 +397,9 @@ class SocDashboard:
         ttk.Button(case_detail_controls, text="Copy Case Detail", command=self.copy_selected_case_detail).grid(
             row=0, column=0, sticky="w"
         )
+        ttk.Button(case_detail_controls, text="Save Case Detail", command=self.save_selected_case_detail).grid(
+            row=0, column=1, sticky="w", padx=(8, 0)
+        )
         self.case_detail_text = tk.Text(
             detail_frame,
             height=10,
@@ -414,8 +423,11 @@ class SocDashboard:
         ttk.Button(host_detail_controls, text="Copy Host Detail", command=self.copy_selected_host_detail).grid(
             row=0, column=0, sticky="w"
         )
-        ttk.Button(host_detail_controls, text="View Related Activity", command=self.view_host_related_activity).grid(
+        ttk.Button(host_detail_controls, text="Save Host Detail", command=self.save_selected_host_detail).grid(
             row=0, column=1, sticky="w", padx=(8, 0)
+        )
+        ttk.Button(host_detail_controls, text="View Related Activity", command=self.view_host_related_activity).grid(
+            row=0, column=2, sticky="w", padx=(8, 0)
         )
         self.host_detail_text = tk.Text(
             host_detail_frame,
@@ -2183,6 +2195,14 @@ class SocDashboard:
         if messagebox is not None:
             messagebox.showinfo(title, "Copied to clipboard.")
 
+    def _write_dashboard_export(self, *, prefix: str, content: str) -> Path:
+        export_dir = Path(settings.report_output_dir)
+        export_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        target = export_dir / f"{prefix}-{timestamp}.txt"
+        target.write_text(content, encoding="utf-8")
+        return target
+
     def copy_selected_alert_detail(self) -> None:
         alert_id = self._selected_tree_item_id(self.alert_tree)
         if alert_id is None:
@@ -2194,6 +2214,21 @@ class SocDashboard:
             title="Copy Alert Detail",
             empty_message="The selected alert is no longer available.",
         )
+
+    def save_selected_alert_detail(self) -> None:
+        alert_id = self._selected_tree_item_id(self.alert_tree)
+        if alert_id is None:
+            if messagebox is not None:
+                messagebox.showwarning("Save Alert Detail", "Select an alert before saving its detail.")
+            return
+        alert_payload = self.alert_rows_by_id.get(alert_id)
+        if alert_payload is None:
+            if messagebox is not None:
+                messagebox.showwarning("Save Alert Detail", "The selected alert is no longer available.")
+            return
+        target = self._write_dashboard_export(prefix=f"alert-{alert_id}", content=self._format_alert_detail(alert_payload))
+        if messagebox is not None:
+            messagebox.showinfo("Save Alert Detail", f"Saved alert detail to {target}.")
 
     def copy_selected_case_detail(self) -> None:
         case_id = self._selected_tree_item_id(self.case_tree)
@@ -2207,6 +2242,21 @@ class SocDashboard:
             empty_message="The selected case is no longer available.",
         )
 
+    def save_selected_case_detail(self) -> None:
+        case_id = self._selected_tree_item_id(self.case_tree)
+        if case_id is None:
+            if messagebox is not None:
+                messagebox.showwarning("Save Case Detail", "Select a case before saving its detail.")
+            return
+        case_payload = self.case_rows_by_id.get(case_id)
+        if case_payload is None:
+            if messagebox is not None:
+                messagebox.showwarning("Save Case Detail", "The selected case is no longer available.")
+            return
+        target = self._write_dashboard_export(prefix=f"case-{case_id}", content=self._format_case_detail(case_payload))
+        if messagebox is not None:
+            messagebox.showinfo("Save Case Detail", f"Saved case detail to {target}.")
+
     def copy_selected_host_detail(self) -> None:
         finding_key = self._selected_tree_item_id(self.host_tree)
         if finding_key is None:
@@ -2218,6 +2268,21 @@ class SocDashboard:
             title="Copy Host Detail",
             empty_message="The selected host finding is no longer available.",
         )
+
+    def save_selected_host_detail(self) -> None:
+        finding_key = self._selected_tree_item_id(self.host_tree)
+        if finding_key is None:
+            if messagebox is not None:
+                messagebox.showwarning("Save Host Detail", "Select a host finding before saving its detail.")
+            return
+        finding_payload = self.host_rows_by_key.get(finding_key)
+        if finding_payload is None:
+            if messagebox is not None:
+                messagebox.showwarning("Save Host Detail", "The selected host finding is no longer available.")
+            return
+        target = self._write_dashboard_export(prefix=f"host-{finding_key}", content=self._format_host_detail(finding_payload))
+        if messagebox is not None:
+            messagebox.showinfo("Save Host Detail", f"Saved host detail to {target}.")
 
     def open_linked_case_from_alert_detail(self) -> None:
         alert_id = self._selected_tree_item_id(self.alert_tree)
@@ -2241,6 +2306,26 @@ class SocDashboard:
                 messagebox.showwarning("Open Linked Case", "The linked case is not available in the current view.")
             return
         self._pivot_from_case(linked_case)
+
+    def export_current_dashboard_view(self) -> None:
+        dashboard = getattr(self, "_latest_dashboard", {}) or {}
+        alert_rows = [item.model_dump(mode="json") for item in self._alert_rows_for_view(dashboard)] if dashboard else []
+        case_rows = [item.model_dump(mode="json") for item in self._case_rows_for_view(dashboard)] if dashboard else []
+        preset = self._selected_preset_name()
+        content = "\n\n".join(
+            [
+                f"Security Gateway Dashboard Export\nPreset: {preset}\nGenerated: {datetime.now().isoformat()}",
+                self._format_status_line(dashboard) if dashboard else "No dashboard state loaded.",
+                self._format_workload_detail(dashboard) if dashboard else "No workload data loaded.",
+                self._format_summary_records("alert", alert_rows, limit=50),
+                self._format_summary_records("case", case_rows, limit=50),
+                self._format_summary_records("event", cast(list[dict[str, Any]], cast(dict[str, Any], dashboard.get('summary') or {}).get('recent_events') or []), limit=25),
+                self._format_summary_records("alert", cast(list[dict[str, Any]], cast(dict[str, Any], dashboard.get('triage') or {}).get('recent_correlations') or []), limit=25),
+            ]
+        )
+        target = self._write_dashboard_export(prefix=f"dashboard-{preset}", content=content)
+        if messagebox is not None:
+            messagebox.showinfo("Export Current View", f"Saved dashboard export to {target}.")
 
     @staticmethod
     def _format_correlation_detail(correlation_payload: dict[str, Any]) -> str:

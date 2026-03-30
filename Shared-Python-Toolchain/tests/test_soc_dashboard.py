@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, cast
 
 from security_gateway.soc_dashboard import SocDashboard
@@ -499,6 +500,85 @@ def test_copy_selected_host_detail_uses_clipboard_helper() -> None:
     assert copied
     assert "Finding: firewall-disabled" in copied[0][0]
     assert copied[0][1] == "Copy Host Detail"
+
+
+def test_save_selected_alert_detail_writes_report() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.alert_tree = type("Tree", (), {"selection": lambda self: ("alert-1",)})()
+    dashboard.alert_rows_by_id = {
+        "alert-1": {
+            "alert_id": "alert-1",
+            "title": "Alert one",
+            "status": "open",
+            "severity": "high",
+            "category": "test",
+            "summary": "Summary",
+            "source_event_ids": [],
+        }
+    }
+    written: list[tuple[str, str]] = []
+
+    def fake_write(prefix: str, content: str) -> Path:
+        written.append((prefix, content))
+        return Path("out.txt")
+
+    dashboard._write_dashboard_export = fake_write
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        dashboard.save_selected_alert_detail()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert written
+    assert written[0][0] == "alert-alert-1"
+    assert "Alert: alert-1" in written[0][1]
+
+
+def test_export_current_dashboard_view_writes_current_state() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.queue_preset_var = type("Var", (), {"get": lambda self: "handoff"})()
+    dashboard._latest_dashboard = {
+        "summary": {
+            "open_alerts": 1,
+            "open_cases": 1,
+            "recent_events": [{"event_id": "evt-1", "event_type": "host.monitor.finding", "severity": "high", "title": "Event one"}],
+        },
+        "triage": {"recent_correlations": [{"alert_id": "alert-2", "status": "open", "severity": "high", "title": "Correlation"}]},
+        "assignee_workload": [],
+        "aging_buckets": {},
+        "top_event_types": {},
+        "workload": {},
+    }
+    dashboard._alert_rows_for_view = lambda dashboard_payload: [
+        type("Alert", (), {"model_dump": lambda self, mode="json": {"alert_id": "alert-1", "status": "open", "severity": "high", "title": "Alert one"}})()
+    ]
+    dashboard._case_rows_for_view = lambda dashboard_payload: [
+        type("Case", (), {"model_dump": lambda self, mode="json": {"case_id": "case-1", "status": "open", "severity": "high", "title": "Case one"}})()
+    ]
+    written: list[tuple[str, str]] = []
+
+    def fake_write(prefix: str, content: str) -> Path:
+        written.append((prefix, content))
+        return Path("out.txt")
+
+    dashboard._write_dashboard_export = fake_write
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        dashboard.export_current_dashboard_view()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert written
+    assert written[0][0] == "dashboard-handoff"
+    assert "Security Gateway Dashboard Export" in written[0][1]
+    assert "Alert records" in written[0][1]
+    assert "Case records" in written[0][1]
 
 
 def test_format_summary_records_limits_output() -> None:
