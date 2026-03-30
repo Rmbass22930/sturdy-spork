@@ -359,7 +359,15 @@ class SocDashboard:
         alert_detail_frame = ttk.LabelFrame(detail_row, text="Alert Details", padding=(10, 10), style="SOC.TLabelframe")
         alert_detail_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         alert_detail_frame.columnconfigure(0, weight=1)
-        alert_detail_frame.rowconfigure(0, weight=1)
+        alert_detail_frame.rowconfigure(1, weight=1)
+        alert_detail_controls = ttk.Frame(alert_detail_frame, style="SOC.TFrame")
+        alert_detail_controls.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        ttk.Button(alert_detail_controls, text="Copy Alert Detail", command=self.copy_selected_alert_detail).grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Button(alert_detail_controls, text="Open Linked Case", command=self.open_linked_case_from_alert_detail).grid(
+            row=0, column=1, sticky="w", padx=(8, 0)
+        )
         self.alert_detail_text = tk.Text(
             alert_detail_frame,
             height=10,
@@ -371,13 +379,18 @@ class SocDashboard:
             padx=10,
             pady=10,
         )
-        self.alert_detail_text.grid(row=0, column=0, sticky="nsew")
+        self.alert_detail_text.grid(row=1, column=0, sticky="nsew")
         self.alert_detail_text.configure(state="disabled")
 
         detail_frame = ttk.LabelFrame(detail_row, text="Case Details", padding=(10, 10), style="SOC.TLabelframe")
         detail_frame.grid(row=0, column=1, sticky="nsew")
         detail_frame.columnconfigure(0, weight=1)
-        detail_frame.rowconfigure(0, weight=1)
+        detail_frame.rowconfigure(1, weight=1)
+        case_detail_controls = ttk.Frame(detail_frame, style="SOC.TFrame")
+        case_detail_controls.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        ttk.Button(case_detail_controls, text="Copy Case Detail", command=self.copy_selected_case_detail).grid(
+            row=0, column=0, sticky="w"
+        )
         self.case_detail_text = tk.Text(
             detail_frame,
             height=10,
@@ -389,13 +402,21 @@ class SocDashboard:
             padx=10,
             pady=10,
         )
-        self.case_detail_text.grid(row=0, column=0, sticky="nsew")
+        self.case_detail_text.grid(row=1, column=0, sticky="nsew")
         self.case_detail_text.configure(state="disabled")
 
         host_detail_frame = ttk.LabelFrame(detail_row, text="Host Monitor Details", padding=(10, 10), style="SOC.TLabelframe")
         host_detail_frame.grid(row=0, column=2, sticky="nsew")
         host_detail_frame.columnconfigure(0, weight=1)
-        host_detail_frame.rowconfigure(0, weight=1)
+        host_detail_frame.rowconfigure(1, weight=1)
+        host_detail_controls = ttk.Frame(host_detail_frame, style="SOC.TFrame")
+        host_detail_controls.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        ttk.Button(host_detail_controls, text="Copy Host Detail", command=self.copy_selected_host_detail).grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Button(host_detail_controls, text="View Related Activity", command=self.view_host_related_activity).grid(
+            row=0, column=1, sticky="w", padx=(8, 0)
+        )
         self.host_detail_text = tk.Text(
             host_detail_frame,
             height=10,
@@ -407,7 +428,7 @@ class SocDashboard:
             padx=10,
             pady=10,
         )
-        self.host_detail_text.grid(row=0, column=0, sticky="nsew")
+        self.host_detail_text.grid(row=1, column=0, sticky="nsew")
         self.host_detail_text.configure(state="disabled")
 
     def _build_tree(
@@ -2148,6 +2169,78 @@ class SocDashboard:
         self.ops_detail_text.delete("1.0", "end")
         self.ops_detail_text.insert("1.0", text)
         self.ops_detail_text.configure(state="disabled")
+
+    def _copy_text_to_clipboard(self, text: str, *, title: str, empty_message: str) -> None:
+        if not text.strip():
+            if messagebox is not None:
+                messagebox.showwarning(title, empty_message)
+            return
+        if tk is None or not hasattr(self, "root"):
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self.root.update_idletasks()
+        if messagebox is not None:
+            messagebox.showinfo(title, "Copied to clipboard.")
+
+    def copy_selected_alert_detail(self) -> None:
+        alert_id = self._selected_tree_item_id(self.alert_tree)
+        if alert_id is None:
+            self._copy_text_to_clipboard("", title="Copy Alert Detail", empty_message="Select an alert before copying its detail.")
+            return
+        alert_payload = self.alert_rows_by_id.get(alert_id)
+        self._copy_text_to_clipboard(
+            self._format_alert_detail(alert_payload) if alert_payload is not None else "",
+            title="Copy Alert Detail",
+            empty_message="The selected alert is no longer available.",
+        )
+
+    def copy_selected_case_detail(self) -> None:
+        case_id = self._selected_tree_item_id(self.case_tree)
+        if case_id is None:
+            self._copy_text_to_clipboard("", title="Copy Case Detail", empty_message="Select a case before copying its detail.")
+            return
+        case_payload = self.case_rows_by_id.get(case_id)
+        self._copy_text_to_clipboard(
+            self._format_case_detail(case_payload) if case_payload is not None else "",
+            title="Copy Case Detail",
+            empty_message="The selected case is no longer available.",
+        )
+
+    def copy_selected_host_detail(self) -> None:
+        finding_key = self._selected_tree_item_id(self.host_tree)
+        if finding_key is None:
+            self._copy_text_to_clipboard("", title="Copy Host Detail", empty_message="Select a host finding before copying its detail.")
+            return
+        finding_payload = self.host_rows_by_key.get(finding_key)
+        self._copy_text_to_clipboard(
+            self._format_host_detail(finding_payload) if finding_payload is not None else "",
+            title="Copy Host Detail",
+            empty_message="The selected host finding is no longer available.",
+        )
+
+    def open_linked_case_from_alert_detail(self) -> None:
+        alert_id = self._selected_tree_item_id(self.alert_tree)
+        if alert_id is None:
+            if messagebox is not None:
+                messagebox.showwarning("Open Linked Case", "Select an alert before opening its linked case.")
+            return
+        alert_payload = self.alert_rows_by_id.get(alert_id)
+        if alert_payload is None:
+            if messagebox is not None:
+                messagebox.showwarning("Open Linked Case", "The selected alert is no longer available.")
+            return
+        linked_case_id = str(alert_payload.get("linked_case_id") or "")
+        if not linked_case_id:
+            if messagebox is not None:
+                messagebox.showinfo("Open Linked Case", "The selected alert is not linked to a case.")
+            return
+        linked_case = self.case_rows_by_id.get(linked_case_id)
+        if linked_case is None:
+            if messagebox is not None:
+                messagebox.showwarning("Open Linked Case", "The linked case is not available in the current view.")
+            return
+        self._pivot_from_case(linked_case)
 
     @staticmethod
     def _format_correlation_detail(correlation_payload: dict[str, Any]) -> str:

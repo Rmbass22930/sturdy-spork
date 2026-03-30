@@ -429,6 +429,78 @@ def test_show_host_context_menu_selects_clicked_row_and_uses_host_actions() -> N
     assert "popup:130:260" in calls
 
 
+def test_open_linked_case_from_alert_detail_pivots_to_case() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.alert_tree = type("Tree", (), {"selection": lambda self: ("alert-1",)})()
+    dashboard.alert_rows_by_id = {
+        "alert-1": {
+            "alert_id": "alert-1",
+            "linked_case_id": "case-2",
+        }
+    }
+    dashboard.case_rows_by_id = {
+        "case-2": {
+            "case_id": "case-2",
+            "title": "Investigate linked case",
+        }
+    }
+    pivoted_cases: list[dict[str, Any]] = []
+    dashboard._pivot_from_case = lambda payload: pivoted_cases.append(payload)
+
+    dashboard.open_linked_case_from_alert_detail()
+
+    assert pivoted_cases
+    assert pivoted_cases[0]["case_id"] == "case-2"
+
+
+def test_copy_selected_case_detail_uses_clipboard_helper() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_tree = type("Tree", (), {"selection": lambda self: ("case-5",)})()
+    dashboard.case_rows_by_id = {
+        "case-5": {
+            "case_id": "case-5",
+            "title": "Case five",
+            "status": "open",
+            "severity": "high",
+            "summary": "Summary",
+            "observables": [],
+            "notes": [],
+        }
+    }
+    copied: list[tuple[str, str, str]] = []
+    dashboard._copy_text_to_clipboard = lambda text, title, empty_message: copied.append((text, title, empty_message))
+
+    dashboard.copy_selected_case_detail()
+
+    assert copied
+    assert "Case: case-5" in copied[0][0]
+    assert copied[0][1] == "Copy Case Detail"
+
+
+def test_copy_selected_host_detail_uses_clipboard_helper() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.host_tree = type("Tree", (), {"selection": lambda self: ("firewall-disabled",)})()
+    dashboard.host_rows_by_key = {
+        "firewall-disabled": {
+            "key": "firewall-disabled",
+            "title": "Windows firewall profile disabled",
+            "severity": "critical",
+            "resolved": False,
+            "summary": "One or more firewall profiles are disabled.",
+            "details": {},
+            "snapshot": {},
+        }
+    }
+    copied: list[tuple[str, str, str]] = []
+    dashboard._copy_text_to_clipboard = lambda text, title, empty_message: copied.append((text, title, empty_message))
+
+    dashboard.copy_selected_host_detail()
+
+    assert copied
+    assert "Finding: firewall-disabled" in copied[0][0]
+    assert copied[0][1] == "Copy Host Detail"
+
+
 def test_format_summary_records_limits_output() -> None:
     rows = [
         {"alert_id": f"alert-{index}", "status": "open", "severity": "high", "title": f"Alert {index}"}
