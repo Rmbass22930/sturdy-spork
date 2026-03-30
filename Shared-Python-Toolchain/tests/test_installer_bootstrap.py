@@ -403,6 +403,23 @@ def test_show_install_guide_materializes_frozen_resource(monkeypatch, tmp_path: 
     assert "Setup will continue immediately." in output
 
 
+def test_materialize_external_resource_versions_guide_when_existing_copy_differs(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "INSTALL_GUIDE.pdf"
+    source.write_text("new-pdf", encoding="utf-8")
+    target_dir = tmp_path / "docs"
+    target_dir.mkdir()
+    existing = target_dir / "INSTALL_GUIDE.pdf"
+    existing.write_text("old-pdf-content", encoding="utf-8")
+
+    monkeypatch.setattr(installer.time, "time", lambda: 1234567890)
+
+    materialized = installer.materialize_external_resource(source, target_dir=target_dir)
+
+    assert materialized == target_dir / "INSTALL_GUIDE-1234567890.pdf"
+    assert materialized.read_text(encoding="utf-8") == "new-pdf"
+    assert existing.read_text(encoding="utf-8") == "old-pdf-content"
+
+
 def test_offer_to_print_install_guide_prints_when_confirmed(monkeypatch, tmp_path: Path, capsys) -> None:
     guide_path = tmp_path / "INSTALL_GUIDE.pdf"
     guide_path.write_text("pdf", encoding="utf-8")

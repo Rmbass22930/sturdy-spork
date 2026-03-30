@@ -437,6 +437,15 @@ def materialize_external_resource(path: Path, *, target_dir: Optional[Path] = No
     destination_root = target_dir or (USER_DATA_DIR / "docs")
     destination_root.mkdir(parents=True, exist_ok=True)
     destination = destination_root / path.name
+    if destination.exists():
+        try:
+            source_stat = path.stat()
+            destination_stat = destination.stat()
+            if source_stat.st_size == destination_stat.st_size:
+                return destination
+        except OSError:
+            pass
+        destination = destination_root / f"{path.stem}-{int(time.time())}{path.suffix}"
     shutil.copy2(path, destination)
     return destination
 
