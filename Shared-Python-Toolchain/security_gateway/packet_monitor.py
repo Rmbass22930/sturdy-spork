@@ -39,6 +39,12 @@ class PacketMonitor:
             r"(?P<dst>\[[0-9A-Fa-f:]+\]|\d{1,3}(?:\.\d{1,3}){3}):(?P<dst_port>\d+)",
             re.IGNORECASE,
         ),
+        re.compile(
+            r"(?P<protocol>TCP|UDP|ICMPv4|ICMPv6|ICMP)?[^\n]*?"
+            r"src=(?P<src>\[[0-9A-Fa-f:]+\]|\d{1,3}(?:\.\d{1,3}){3}):(?P<src_port>\d+)[^\n]*?"
+            r"dst=(?P<dst>\[[0-9A-Fa-f:]+\]|\d{1,3}(?:\.\d{1,3}){3}):(?P<dst_port>\d+)",
+            re.IGNORECASE,
+        ),
     )
 
     def __init__(
@@ -73,13 +79,13 @@ class PacketMonitor:
                 {
                     "last_checked_at": _utc_now().isoformat(),
                     "snapshot": snapshot,
-                    "active_findings": [],
+                    "active_findings": previous_state.get("active_findings", []),
                     "history": previous_state.get("history", {}),
                 }
             )
             return {
                 "snapshot": snapshot,
-                "active_findings": [],
+                "active_findings": previous_state.get("active_findings", []),
                 "emitted_findings": [],
                 "resolved_findings": [],
             }
@@ -217,7 +223,11 @@ class PacketMonitor:
 
     def _updated_history(self, snapshot: dict[str, Any], *, previous_state: dict[str, Any]) -> dict[str, Any]:
         history = previous_state.get("history") or {}
-        next_history: dict[str, Any] = {}
+        next_history: dict[str, Any] = {
+            remote_ip: payload
+            for remote_ip, payload in history.items()
+            if isinstance(remote_ip, str) and isinstance(payload, dict)
+        }
         observations = snapshot.get("packet_observations") or []
         for item in observations:
             if not isinstance(item, dict):
