@@ -797,10 +797,14 @@ class SocDashboard:
             messagebox.showinfo("Case Aging Bucket", self._format_age_bucket_records("case", bucket, rows))
 
     def assign_alert_age_bucket(self) -> None:
-        rows = self._age_bucket_alert_rows(self.alert_age_bucket_var.get().strip() or "all")
+        bucket = self.alert_age_bucket_var.get().strip() or "all"
+        rows = self._age_bucket_alert_rows(bucket)
         if not rows:
             if messagebox is not None:
                 messagebox.showinfo("No Alerts", "No alerts matched the selected age bucket.")
+            return
+        rows = self._select_age_bucket_rows("alert", bucket, rows, id_key="alert_id")
+        if not rows:
             return
         if simpledialog is None:
             return
@@ -814,14 +818,18 @@ class SocDashboard:
             payload = self._build_alert_update_payload(field="assignee", value=assignee.strip())
             self.manager.update_alert(alert_id, payload)
         if messagebox is not None:
-            messagebox.showinfo("Alert Bucket Assigned", f"Assigned {len(rows)} alerts from the selected bucket.")
+            messagebox.showinfo("Alert Bucket Assigned", f"Assigned {len(rows)} alerts from the selected rows.")
         self.refresh()
 
     def promote_alert_age_bucket(self) -> None:
-        rows = self._age_bucket_alert_rows(self.alert_age_bucket_var.get().strip() or "all")
+        bucket = self.alert_age_bucket_var.get().strip() or "all"
+        rows = self._age_bucket_alert_rows(bucket)
         if not rows:
             if messagebox is not None:
                 messagebox.showinfo("No Alerts", "No alerts matched the selected age bucket.")
+            return
+        rows = self._select_age_bucket_rows("alert", bucket, rows, id_key="alert_id")
+        if not rows:
             return
         case_id = self._selected_tree_item_id(self.case_tree)
         if case_id is None:
@@ -847,10 +855,14 @@ class SocDashboard:
         self._refresh_case_detail()
 
     def assign_case_age_bucket(self) -> None:
-        rows = self._age_bucket_case_rows(self.case_age_bucket_var.get().strip() or "all")
+        bucket = self.case_age_bucket_var.get().strip() or "all"
+        rows = self._age_bucket_case_rows(bucket)
         if not rows:
             if messagebox is not None:
                 messagebox.showinfo("No Cases", "No cases matched the selected age bucket.")
+            return
+        rows = self._select_age_bucket_rows("case", bucket, rows, id_key="case_id")
+        if not rows:
             return
         if simpledialog is None:
             return
@@ -864,7 +876,7 @@ class SocDashboard:
             payload = self._build_case_update_payload(field="assignee", value=assignee.strip())
             self.manager.update_case(case_id, payload)
         if messagebox is not None:
-            messagebox.showinfo("Case Bucket Assigned", f"Assigned {len(rows)} cases from the selected bucket.")
+            messagebox.showinfo("Case Bucket Assigned", f"Assigned {len(rows)} cases from the selected rows.")
         self.refresh()
 
     def view_case_linked_activity(self) -> None:
@@ -1101,6 +1113,93 @@ class SocDashboard:
             return rows
         return [row for row in rows if self._record_matches_age_bucket(str(row.get("updated_at") or ""), bucket)]
 
+    def _select_age_bucket_rows(
+        self,
+        kind: str,
+        bucket: str,
+        rows: Sequence[dict[str, Any]],
+        *,
+        id_key: str,
+    ) -> list[dict[str, Any]]:
+        if not rows:
+            return []
+        if tk is None or not hasattr(self, "root"):
+            return list(rows)
+        if len(rows) == 1:
+            return [dict(rows[0])]
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Select {kind.title()} Rows")
+        dialog.configure(bg="#eef4ff")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        _center_window(dialog, 900, 560)
+        dialog.minsize(780, 460)
+        dialog.columnconfigure(0, weight=1)
+        dialog.rowconfigure(1, weight=1)
+
+        tk.Label(
+            dialog,
+            text=f"{kind.title()} rows in {bucket}",
+            bg="#eef4ff",
+            fg="#0f2f57",
+            font=("Segoe UI", 14, "bold"),
+            anchor="w",
+            padx=16,
+            pady=12,
+        ).grid(row=0, column=0, sticky="ew")
+
+        list_frame = tk.Frame(dialog, bg="#eef4ff", padx=16, pady=4)
+        list_frame.grid(row=1, column=0, sticky="nsew")
+        list_frame.columnconfigure(0, weight=1)
+        list_frame.rowconfigure(0, weight=1)
+
+        listbox = tk.Listbox(
+            list_frame,
+            selectmode=tk.EXTENDED,
+            activestyle="none",
+            bg="#ffffff",
+            fg="#24364a",
+            font=("Consolas", 10),
+            relief="flat",
+            highlightthickness=1,
+        )
+        listbox.grid(row=0, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=listbox.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        listbox.configure(yscrollcommand=scrollbar.set)
+
+        for index, row in enumerate(rows):
+            listbox.insert("end", self._format_age_bucket_row_label(kind, row))
+            listbox.selection_set(index)
+
+        selected_indices: list[int] = list(range(len(rows)))
+
+        def apply_selection() -> None:
+            nonlocal selected_indices
+            selected_indices = [int(index) for index in listbox.curselection()]
+            dialog.destroy()
+
+        def cancel_selection() -> None:
+            nonlocal selected_indices
+            selected_indices = []
+            dialog.destroy()
+
+        controls = tk.Frame(dialog, bg="#eef4ff", padx=16, pady=12)
+        controls.grid(row=2, column=0, sticky="ew")
+        tk.Button(controls, text="Select All", command=lambda: listbox.selection_set(0, "end"), width=12).pack(side="left")
+        tk.Button(controls, text="Clear", command=lambda: listbox.selection_clear(0, "end"), width=12).pack(side="left", padx=(8, 0))
+        tk.Button(controls, text="Cancel", command=cancel_selection, width=12).pack(side="right")
+        tk.Button(controls, text="Use Selected", command=apply_selection, width=14).pack(side="right", padx=(0, 8))
+        dialog.bind("<Escape>", lambda _event: cancel_selection())
+        dialog.bind("<Return>", lambda _event: apply_selection())
+        self.root.wait_window(dialog)
+        return [
+            dict(rows[index])
+            for index in selected_indices
+            if 0 <= index < len(rows) and str(rows[index].get(id_key) or "")
+        ]
+
     def _stale_alert_ids(self) -> list[str]:
         triage = cast(dict[str, list[dict[str, Any]]], self._latest_dashboard.get("triage") or {})
         rows = cast(list[dict[str, Any]], triage.get("assigned_stale_alerts") or [])
@@ -1171,6 +1270,16 @@ class SocDashboard:
             lines.append("")
             lines.append(f"...and {remaining} more")
         return "\n".join(lines)
+
+    @staticmethod
+    def _format_age_bucket_row_label(kind: str, row: dict[str, Any]) -> str:
+        record_id = str((row.get("alert_id") if kind == "alert" else row.get("case_id")) or "-")
+        severity = str(row.get("severity") or "-")
+        status = str(row.get("status") or "-")
+        assignee = str(row.get("assignee") or "unassigned")
+        updated_at = str(row.get("updated_at") or "-")
+        title = str(row.get("title") or "-")
+        return f"{record_id} | {severity} | {status} | {assignee} | {updated_at} | {title}"
 
     @classmethod
     def _preset_values(cls, preset_name: str) -> dict[str, str]:

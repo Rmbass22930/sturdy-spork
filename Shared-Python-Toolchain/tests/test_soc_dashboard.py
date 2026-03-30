@@ -267,6 +267,37 @@ def test_assign_alert_age_bucket_updates_matching_rows() -> None:
     assert updates[0][1].assignee == "tier3"
 
 
+def test_assign_alert_age_bucket_scopes_to_selected_rows() -> None:
+    now = datetime.now(UTC)
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.alert_age_bucket_var = type("Var", (), {"get": lambda self: "24-72h"})()
+    dashboard.workload_assignee_var = type("Var", (), {"get": lambda self: "all"})()
+    dashboard.all_alert_rows_by_id = {
+        "alert-a": {"alert_id": "alert-a", "status": "open", "assignee": "tier1", "updated_at": (now - timedelta(hours=30)).isoformat()},
+        "alert-b": {"alert_id": "alert-b", "status": "open", "assignee": "tier2", "updated_at": (now - timedelta(hours=40)).isoformat()},
+    }
+    dashboard._select_age_bucket_rows = lambda *args, **kwargs: [dashboard.all_alert_rows_by_id["alert-b"]]
+    updates: list[tuple[str, Any]] = []
+    dashboard.manager = type("Manager", (), {"update_alert": lambda self, alert_id, payload: updates.append((alert_id, payload))})()
+    dashboard.refresh = lambda: None
+    dashboard.root = object()
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+
+    original_simpledialog = soc_dashboard_module.simpledialog
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.simpledialog = cast(Any, type("SimpleDialog", (), {"askstring": staticmethod(lambda *args, **kwargs: "tier3")})())
+        soc_dashboard_module.messagebox = cast(Any, None)
+        dashboard.assign_alert_age_bucket()
+    finally:
+        soc_dashboard_module.simpledialog = original_simpledialog
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert [alert_id for alert_id, _payload in updates] == ["alert-b"]
+    assert updates[0][1].assignee == "tier3"
+
+
 def test_assign_case_age_bucket_updates_matching_rows() -> None:
     now = datetime.now(UTC)
     dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
@@ -295,6 +326,73 @@ def test_assign_case_age_bucket_updates_matching_rows() -> None:
 
     assert [case_id for case_id, _payload in updates] == ["case-a"]
     assert updates[0][1].assignee == "tier4"
+
+
+def test_assign_case_age_bucket_scopes_to_selected_rows() -> None:
+    now = datetime.now(UTC)
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_age_bucket_var = type("Var", (), {"get": lambda self: "24-72h"})()
+    dashboard.workload_assignee_var = type("Var", (), {"get": lambda self: "all"})()
+    dashboard.case_rows_by_id = {
+        "case-a": {"case_id": "case-a", "status": "investigating", "assignee": "tier1", "updated_at": (now - timedelta(hours=30)).isoformat()},
+        "case-b": {"case_id": "case-b", "status": "investigating", "assignee": "tier2", "updated_at": (now - timedelta(hours=40)).isoformat()},
+    }
+    dashboard._select_age_bucket_rows = lambda *args, **kwargs: [dashboard.case_rows_by_id["case-b"]]
+    updates: list[tuple[str, Any]] = []
+    dashboard.manager = type("Manager", (), {"update_case": lambda self, case_id, payload: updates.append((case_id, payload))})()
+    dashboard.refresh = lambda: None
+    dashboard.root = object()
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+
+    original_simpledialog = soc_dashboard_module.simpledialog
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.simpledialog = cast(Any, type("SimpleDialog", (), {"askstring": staticmethod(lambda *args, **kwargs: "tier4")})())
+        soc_dashboard_module.messagebox = cast(Any, None)
+        dashboard.assign_case_age_bucket()
+    finally:
+        soc_dashboard_module.simpledialog = original_simpledialog
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert [case_id for case_id, _payload in updates] == ["case-b"]
+    assert updates[0][1].assignee == "tier4"
+
+
+def test_promote_alert_age_bucket_scopes_to_selected_rows() -> None:
+    now = datetime.now(UTC)
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.alert_age_bucket_var = type("Var", (), {"get": lambda self: "24-72h"})()
+    dashboard.workload_assignee_var = type("Var", (), {"get": lambda self: "all"})()
+    dashboard.case_tree = type("Tree", (), {"selection": lambda self: ("case-z",), "selection_set": lambda self, value: None})()
+    dashboard._refresh_case_detail = lambda: None
+    dashboard.refresh = lambda: None
+    dashboard._current_analyst_identity = lambda: "tier1"
+    dashboard.all_alert_rows_by_id = {
+        "alert-a": {"alert_id": "alert-a", "status": "open", "assignee": "tier1", "updated_at": (now - timedelta(hours=30)).isoformat(), "title": "A", "summary": "A", "severity": "high"},
+        "alert-b": {"alert_id": "alert-b", "status": "open", "assignee": "tier2", "updated_at": (now - timedelta(hours=40)).isoformat(), "title": "B", "summary": "B", "severity": "high"},
+    }
+    dashboard._select_age_bucket_rows = lambda *args, **kwargs: [dashboard.all_alert_rows_by_id["alert-b"]]
+    promoted: list[str] = []
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "get_alert": lambda self, alert_id: type("Alert", (), {"title": "Selected", "summary": "Selected", "severity": SocSeverity.high, "assignee": "tier2"})(),
+            "promote_alert_to_case": lambda self, alert_id, payload: promoted.append(alert_id),
+        },
+    )()
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        dashboard.promote_alert_age_bucket()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert promoted == ["alert-b"]
 
 
 def test_alert_query_kwargs_use_unassigned_open_alert_defaults() -> None:
