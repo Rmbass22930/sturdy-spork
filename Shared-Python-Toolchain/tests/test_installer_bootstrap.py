@@ -167,7 +167,7 @@ def test_register_automation_task_falls_back_to_schtasks(monkeypatch, tmp_path: 
         "/SC",
         "ONSTART",
     ]
-    assert exists_checks == [installer.TASK_NAME]
+    assert exists_checks == [installer.TASK_NAME, installer.TASK_NAME, installer.TASK_NAME]
 
 
 def test_task_xml_contents_uses_system_boot_trigger(tmp_path: Path) -> None:

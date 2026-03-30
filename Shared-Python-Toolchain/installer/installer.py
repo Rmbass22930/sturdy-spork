@@ -54,6 +54,7 @@ DEFAULT_DEPENDENCY_TIMEOUT_SECONDS = 300
 LOCKED_FILE_RETRY_ATTEMPTS = 3
 LOCKED_FILE_RETRY_DELAY_SECONDS = 0.5
 GUIDE_AUTO_CLOSE_SECONDS = 30
+TASK_REGISTRATION_LOG = USER_DATA_DIR / "installer" / "task-registration.log"
 
 
 def center_window(root: Any, width: int, height: int) -> None:
@@ -784,6 +785,16 @@ def _write_task_xml(exe_path: Path) -> Path:
     return xml_path
 
 
+def _append_task_registration_log(message: str) -> None:
+    timestamp = datetime.now(UTC).isoformat()
+    try:
+        TASK_REGISTRATION_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with TASK_REGISTRATION_LOG.open("a", encoding="utf-8") as handle:
+            handle.write(f"[{timestamp}] {message.rstrip()}\n")
+    except Exception:
+        return
+
+
 def _schtasks_xml_registration_command(xml_path: Path) -> list[str]:
     return [
         "schtasks",
@@ -827,19 +838,28 @@ def _scheduled_task_exists(task_name: str) -> bool:
 def register_automation_task(exe_path: Path) -> None:
     unregister_automation_task()
     xml_path = _write_task_xml(exe_path)
+    _append_task_registration_log(f"Starting task registration for {exe_path}")
+    _append_task_registration_log(f"Task XML written to {xml_path}")
     registration_errors: list[str] = []
-    for command in (
-        _schtasks_xml_registration_command(xml_path),
-        _scheduled_task_registration_command(exe_path),
-        _schtasks_registration_command(exe_path),
+    for label, command in (
+        ("xml", _schtasks_xml_registration_command(xml_path)),
+        ("powershell", _scheduled_task_registration_command(exe_path)),
+        ("schtasks", _schtasks_registration_command(exe_path)),
     ):
         result = subprocess.run(command, check=False, capture_output=True, text=True)
-        if result.returncode == 0 and _scheduled_task_exists(TASK_NAME):
+        exists = _scheduled_task_exists(TASK_NAME)
+        output = (result.stderr or result.stdout or "").strip()
+        _append_task_registration_log(
+            f"{label} registration returned code {result.returncode}; task_exists={exists}; output={output or '<none>'}"
+        )
+        if result.returncode == 0 and exists:
+            _append_task_registration_log(f"Task registration succeeded via {label}")
             return
-        error_text = (result.stderr or result.stdout or "").strip() or f"exit code {result.returncode}"
+        error_text = output or f"exit code {result.returncode}"
         registration_errors.append(error_text)
+    _append_task_registration_log("Task registration failed: " + " | ".join(registration_errors))
     raise RuntimeError(
-        "Failed to register automation startup task. "
+        f"Failed to register automation startup task. See {TASK_REGISTRATION_LOG}. "
         + " | ".join(registration_errors)
     )
 
