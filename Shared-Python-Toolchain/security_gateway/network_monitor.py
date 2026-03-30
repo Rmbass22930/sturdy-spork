@@ -34,6 +34,7 @@ class NetworkMonitor:
         dos_hit_threshold: int = 12,
         dos_syn_threshold: int = 6,
         dos_port_span_threshold: int = 3,
+        evidence_sample_limit: int = 5,
         sensitive_ports: list[int] | None = None,
         runner: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None,
     ) -> None:
@@ -42,6 +43,7 @@ class NetworkMonitor:
         self._dos_hit_threshold = max(2, dos_hit_threshold)
         self._dos_syn_threshold = max(1, dos_syn_threshold)
         self._dos_port_span_threshold = max(1, dos_port_span_threshold)
+        self._evidence_sample_limit = max(1, evidence_sample_limit)
         self._sensitive_ports = set(sensitive_ports or [22, 23, 135, 139, 445, 3389, 5900, 5985, 5986])
         self._runner = runner or self._run_command
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -129,6 +131,7 @@ class NetworkMonitor:
                     "remote_ports": set(),
                     "hit_count": 0,
                     "sensitive_ports": set(),
+                    "sample_connections": [],
                 },
             )
             record["states"].add(str(item["state"]))
@@ -141,6 +144,17 @@ class NetworkMonitor:
             record["hit_count"] += 1
             if bool(item["sensitive_port"]):
                 record["sensitive_ports"].add(int(item["local_port"]))
+            sample_connections = record["sample_connections"]
+            if len(sample_connections) < self._evidence_sample_limit:
+                sample_connections.append(
+                    {
+                        "state": state_name,
+                        "local_ip": str(item["local_ip"]),
+                        "local_port": int(item["local_port"]),
+                        "remote_ip": remote_ip,
+                        "remote_port": int(item["remote_port"]),
+                    }
+                )
 
         observations = []
         for value in grouped.values():
@@ -156,6 +170,7 @@ class NetworkMonitor:
                     "remote_ports": sorted(value["remote_ports"]),
                     "hit_count": value["hit_count"],
                     "sensitive_ports": sorted(value["sensitive_ports"]),
+                    "sample_connections": list(value["sample_connections"]),
                 }
             )
         observations.sort(key=lambda item: (-(int(item["hit_count"])), str(item["remote_ip"])))
@@ -220,6 +235,11 @@ class NetworkMonitor:
                             "dos_hit_threshold": self._dos_hit_threshold,
                             "dos_syn_threshold": self._dos_syn_threshold,
                             "dos_port_span_threshold": self._dos_port_span_threshold,
+                            "evidence": {
+                                "sample_connections": item.get("sample_connections") or [],
+                                "sample_count": len(item.get("sample_connections") or []),
+                                "retention_mode": "compact_evidence_only",
+                            },
                         },
                         tags=["network", "ip", "intrusion", "dos"],
                     )
@@ -255,6 +275,12 @@ class NetworkMonitor:
                         "syn_received_count": syn_received_count,
                         "finding_type": "suspicious_remote_ip",
                         "repeat_threshold": self._suspicious_repeat_threshold,
+                        "abnormal_reason": "sensitive_port" if sensitive_ports else "repeat_threshold_exceeded",
+                        "evidence": {
+                            "sample_connections": item.get("sample_connections") or [],
+                            "sample_count": len(item.get("sample_connections") or []),
+                            "retention_mode": "compact_evidence_only",
+                        },
                     },
                     tags=["network", "ip", "intrusion"],
                 )

@@ -56,6 +56,7 @@ class PacketMonitor:
         pkt_size: int = 128,
         anomaly_multiplier: float = 2.0,
         learning_samples: int = 3,
+        evidence_sample_limit: int = 5,
         sensitive_ports: list[int] | None = None,
         runner: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None,
         sleeper: Callable[[float], None] | None = None,
@@ -66,6 +67,7 @@ class PacketMonitor:
         self._pkt_size = max(0, pkt_size)
         self._anomaly_multiplier = max(1.1, anomaly_multiplier)
         self._learning_samples = max(1, learning_samples)
+        self._evidence_sample_limit = max(1, evidence_sample_limit)
         self._sensitive_ports = set(sensitive_ports or [22, 23, 135, 139, 445, 3389, 5900, 5985, 5986])
         self._runner = runner or self._run_command
         self._sleeper = sleeper or time.sleep
@@ -215,6 +217,11 @@ class PacketMonitor:
                         "baseline_average": abnormal_result["baseline_average"],
                         "abnormal_threshold": abnormal_result["threshold"],
                         "abnormal_reason": "sensitive_port" if sensitive_ports else "baseline_exceeded",
+                        "evidence": {
+                            "sample_packet_endpoints": item.get("sample_packet_endpoints") or [],
+                            "sample_count": len(item.get("sample_packet_endpoints") or []),
+                            "retention_mode": "compact_evidence_only",
+                        },
                     },
                     tags=["packet", "network", "ip", "intrusion"],
                 )
@@ -262,6 +269,7 @@ class PacketMonitor:
                     "packet_count": 0,
                     "sensitive_ports": set(),
                     "local_ips": set(),
+                    "sample_packet_endpoints": [],
                 },
             )
             record["protocols"].add(protocol)
@@ -271,6 +279,17 @@ class PacketMonitor:
             record["packet_count"] += 1
             if local_port in self._sensitive_ports:
                 record["sensitive_ports"].add(local_port)
+            sample_packet_endpoints = record["sample_packet_endpoints"]
+            if len(sample_packet_endpoints) < self._evidence_sample_limit:
+                sample_packet_endpoints.append(
+                    {
+                        "protocol": protocol,
+                        "remote_ip": remote_ip,
+                        "remote_port": remote_port,
+                        "local_ip": local_ip,
+                        "local_port": local_port,
+                    }
+                )
 
         observations = []
         for value in grouped.values():
@@ -283,6 +302,7 @@ class PacketMonitor:
                     "remote_ports": sorted(value["remote_ports"]),
                     "packet_count": value["packet_count"],
                     "sensitive_ports": sorted(value["sensitive_ports"]),
+                    "sample_packet_endpoints": list(value["sample_packet_endpoints"]),
                 }
             )
         observations.sort(key=lambda item: (-int(item["packet_count"]), str(item["remote_ip"])))

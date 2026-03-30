@@ -45,6 +45,7 @@ def test_collect_snapshot_groups_public_remote_activity_against_listening_ports(
     assert observations[0]["remote_ip"] == "8.8.8.8"
     assert observations[0]["hit_count"] == 2
     assert observations[0]["sensitive_ports"] == [3389]
+    assert len(observations[0]["sample_connections"]) == 2
 
 
 def test_evaluate_snapshot_emits_critical_for_sensitive_ports(tmp_path: Path) -> None:
@@ -100,6 +101,8 @@ def test_evaluate_snapshot_emits_high_for_repeated_non_sensitive_public_ip(tmp_p
     assert findings[0].severity == "high"
     assert findings[0].details["hit_count"] == 3
     assert findings[0].details["finding_type"] == "suspicious_remote_ip"
+    assert findings[0].details["abnormal_reason"] == "repeat_threshold_exceeded"
+    assert findings[0].details["evidence"]["retention_mode"] == "compact_evidence_only"
 
 
 def test_evaluate_snapshot_emits_critical_dos_candidate_for_abnormal_burst(tmp_path: Path) -> None:
@@ -133,6 +136,43 @@ def test_evaluate_snapshot_emits_critical_dos_candidate_for_abnormal_burst(tmp_p
     assert findings[0].details["finding_type"] == "dos_candidate"
     assert findings[0].details["remote_ip"] == "198.51.100.80"
     assert findings[0].details["syn_received_count"] == 7
+    assert findings[0].details["evidence"]["retention_mode"] == "compact_evidence_only"
+
+
+def test_evaluate_snapshot_carries_compact_network_evidence() -> None:
+    monitor = NetworkMonitor(
+        state_path=Path("network_state.json"),
+        suspicious_repeat_threshold=1,
+        sensitive_ports=[3389],
+    )
+
+    findings = monitor.evaluate_snapshot(
+        {
+            "suspicious_observations": [
+                {
+                    "remote_ip": "203.0.113.45",
+                    "states": ["ESTABLISHED"],
+                    "state_counts": {"ESTABLISHED": 1},
+                    "local_ports": [3389],
+                    "remote_ports": [51000],
+                    "hit_count": 1,
+                    "sensitive_ports": [3389],
+                    "sample_connections": [
+                        {
+                            "state": "ESTABLISHED",
+                            "local_ip": "192.168.1.10",
+                            "local_port": 3389,
+                            "remote_ip": "203.0.113.45",
+                            "remote_port": 51000,
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+
+    assert findings[0].details["evidence"]["sample_count"] == 1
+    assert findings[0].details["evidence"]["sample_connections"][0]["remote_ip"] == "203.0.113.45"
 
 
 def test_run_check_tracks_resolution(tmp_path: Path) -> None:

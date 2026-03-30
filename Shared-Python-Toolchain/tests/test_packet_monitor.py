@@ -23,6 +23,7 @@ def test_parse_packet_text_groups_public_remote_packet_activity() -> None:
     assert observations[0]["remote_ip"] == "8.8.8.8"
     assert observations[0]["packet_count"] == 2
     assert observations[0]["sensitive_ports"] == [3389]
+    assert len(observations[0]["sample_packet_endpoints"]) == 2
 
 
 def test_parse_packet_text_handles_ipv6() -> None:
@@ -115,6 +116,8 @@ def test_evaluate_snapshot_emits_finding_when_packet_count_exceeds_baseline() ->
     assert findings[0].severity == "high"
     assert findings[0].details["packet_count"] == 7
     assert findings[0].details["abnormal_threshold"] == 5
+    assert findings[0].details["evidence"]["retention_mode"] == "compact_evidence_only"
+    assert findings[0].details["evidence"]["sample_count"] == 0
 
 
 def test_evaluate_snapshot_emits_sensitive_port_finding_without_baseline() -> None:
@@ -138,6 +141,39 @@ def test_evaluate_snapshot_emits_sensitive_port_finding_without_baseline() -> No
 
     assert len(findings) == 1
     assert findings[0].severity == "critical"
+    assert findings[0].details["evidence"]["sample_count"] == 0
+
+
+def test_evaluate_snapshot_carries_compact_packet_evidence() -> None:
+    monitor = PacketMonitor(state_path=Path("packet_state.json"), min_packet_count=1, sensitive_ports=[3389])
+
+    findings = monitor.evaluate_snapshot(
+        {
+            "capture_status": "ok",
+            "packet_observations": [
+                {
+                    "remote_ip": "8.8.8.8",
+                    "protocols": ["TCP"],
+                    "local_ports": [3389],
+                    "remote_ports": [51000],
+                    "packet_count": 1,
+                    "sensitive_ports": [3389],
+                    "sample_packet_endpoints": [
+                        {
+                            "protocol": "TCP",
+                            "remote_ip": "8.8.8.8",
+                            "remote_port": 51000,
+                            "local_ip": "192.168.1.10",
+                            "local_port": 3389,
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert findings[0].details["evidence"]["sample_count"] == 1
+    assert findings[0].details["evidence"]["sample_packet_endpoints"][0]["remote_ip"] == "8.8.8.8"
 
 
 def test_run_check_tracks_resolution(tmp_path: Path) -> None:
