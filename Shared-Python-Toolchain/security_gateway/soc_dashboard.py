@@ -306,6 +306,15 @@ class SocDashboard:
         ttk.Button(ops_controls, text="View Case Bucket", command=self.view_case_age_bucket).grid(
             row=0, column=10, sticky="w", padx=(8, 0)
         )
+        ttk.Button(ops_controls, text="Assign Alert Bucket", command=self.assign_alert_age_bucket).grid(
+            row=0, column=11, sticky="w", padx=(12, 0)
+        )
+        ttk.Button(ops_controls, text="Promote Alert Bucket", command=self.promote_alert_age_bucket).grid(
+            row=0, column=12, sticky="w", padx=(8, 0)
+        )
+        ttk.Button(ops_controls, text="Assign Case Bucket", command=self.assign_case_age_bucket).grid(
+            row=0, column=13, sticky="w", padx=(8, 0)
+        )
         self.ops_detail_text = tk.Text(
             ops_frame,
             height=14,
@@ -786,6 +795,77 @@ class SocDashboard:
         rows = self._age_bucket_case_rows(bucket)
         if messagebox is not None:
             messagebox.showinfo("Case Aging Bucket", self._format_age_bucket_records("case", bucket, rows))
+
+    def assign_alert_age_bucket(self) -> None:
+        rows = self._age_bucket_alert_rows(self.alert_age_bucket_var.get().strip() or "all")
+        if not rows:
+            if messagebox is not None:
+                messagebox.showinfo("No Alerts", "No alerts matched the selected age bucket.")
+            return
+        if simpledialog is None:
+            return
+        assignee = simpledialog.askstring("Assign Alert Bucket", "Enter the analyst or queue for the selected alert bucket:", parent=self.root)
+        if assignee is None or not assignee.strip():
+            return
+        for row in rows:
+            alert_id = str(row.get("alert_id") or "")
+            if not alert_id:
+                continue
+            payload = self._build_alert_update_payload(field="assignee", value=assignee.strip())
+            self.manager.update_alert(alert_id, payload)
+        if messagebox is not None:
+            messagebox.showinfo("Alert Bucket Assigned", f"Assigned {len(rows)} alerts from the selected bucket.")
+        self.refresh()
+
+    def promote_alert_age_bucket(self) -> None:
+        rows = self._age_bucket_alert_rows(self.alert_age_bucket_var.get().strip() or "all")
+        if not rows:
+            if messagebox is not None:
+                messagebox.showinfo("No Alerts", "No alerts matched the selected age bucket.")
+            return
+        case_id = self._selected_tree_item_id(self.case_tree)
+        if case_id is None:
+            if messagebox is not None:
+                messagebox.showwarning("No Case Selected", "Select a case before promoting the alert bucket.")
+            return
+        actor = self._current_analyst_identity()
+        promoted = 0
+        for row in rows:
+            alert_id = str(row.get("alert_id") or "")
+            if not alert_id:
+                continue
+            alert = self.manager.get_alert(alert_id)
+            self.manager.promote_alert_to_case(
+                alert_id,
+                payload=self._build_promote_payload(alert, acted_by=actor, existing_case_id=case_id),
+            )
+            promoted += 1
+        if messagebox is not None:
+            messagebox.showinfo("Alert Bucket Promoted", f"Linked {promoted} alerts into case {case_id}.")
+        self.refresh()
+        self.case_tree.selection_set(case_id)
+        self._refresh_case_detail()
+
+    def assign_case_age_bucket(self) -> None:
+        rows = self._age_bucket_case_rows(self.case_age_bucket_var.get().strip() or "all")
+        if not rows:
+            if messagebox is not None:
+                messagebox.showinfo("No Cases", "No cases matched the selected age bucket.")
+            return
+        if simpledialog is None:
+            return
+        assignee = simpledialog.askstring("Assign Case Bucket", "Enter the analyst or queue for the selected case bucket:", parent=self.root)
+        if assignee is None or not assignee.strip():
+            return
+        for row in rows:
+            case_id = str(row.get("case_id") or "")
+            if not case_id:
+                continue
+            payload = self._build_case_update_payload(field="assignee", value=assignee.strip())
+            self.manager.update_case(case_id, payload)
+        if messagebox is not None:
+            messagebox.showinfo("Case Bucket Assigned", f"Assigned {len(rows)} cases from the selected bucket.")
+        self.refresh()
 
     def view_case_linked_activity(self) -> None:
         case_id = self._selected_tree_item_id(self.case_tree)
