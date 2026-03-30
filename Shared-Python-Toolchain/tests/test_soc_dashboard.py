@@ -8,10 +8,11 @@ def test_format_status_line_includes_open_workloads_and_top_events() -> None:
         "top_event_types": {"policy.access_decision": 4, "privacy.tracker_block": 3},
     }
 
-    line = SocDashboard._format_status_line(dashboard)
+    line = SocDashboard._format_status_line(dashboard, host_findings_count=2)
 
     assert "Open alerts: 3" in line
     assert "Open cases: 2" in line
+    assert "Host findings: 2" in line
     assert "policy.access_decision: 4" in line
     assert "privacy.tracker_block: 3" in line
 
@@ -281,3 +282,28 @@ def test_format_case_detail_handles_empty_lists() -> None:
     )
     assert "Observables:\n- none" in text
     assert "Notes:\n- none" in text
+
+
+def test_format_host_detail_includes_snapshot_and_details() -> None:
+    text = SocDashboard._format_host_detail(
+        {
+            "key": "firewall-disabled",
+            "title": "Windows firewall profile disabled",
+            "severity": "critical",
+            "resolved": False,
+            "summary": "One or more firewall profiles are disabled on the monitored host.",
+            "details": {"disabled_profiles": ["public", "private"]},
+            "snapshot": {
+                "system_drive": "C:",
+                "disk_free_percent": 42.5,
+                "defender_running": True,
+                "firewall_disabled_profiles": ["public", "private"],
+            },
+            "last_checked_at": "2026-03-29T20:10:00+00:00",
+        }
+    )
+    assert "Finding: firewall-disabled" in text
+    assert "Severity: critical" in text
+    assert "- disabled_profiles: ['public', 'private']" in text
+    assert "- system_drive: C:" in text
+    assert "- checked_at: 2026-03-29T20:10:00+00:00" in text

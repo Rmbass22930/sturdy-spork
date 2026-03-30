@@ -1,7 +1,9 @@
 """Tk dashboard for Security Gateway SOC operations."""
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any, Callable, cast
 
 try:
@@ -61,6 +63,7 @@ class SocDashboard:
         self.case_rows_by_id: dict[str, dict[str, Any]] = {}
         self.event_rows_by_id: dict[str, dict[str, Any]] = {}
         self.all_alert_rows_by_id: dict[str, dict[str, Any]] = {}
+        self.host_rows_by_key: dict[str, dict[str, Any]] = {}
         self._build_ui()
         self.refresh()
 
@@ -98,7 +101,7 @@ class SocDashboard:
 
         summary = ttk.Frame(self.root, padding=(18, 0, 18, 12), style="SOC.TFrame")
         summary.grid(row=1, column=0, sticky="ew")
-        for index in range(5):
+        for index in range(6):
             summary.columnconfigure(index, weight=1)
         self.summary_vars = {
             "events_total": tk.StringVar(value="0"),
@@ -106,6 +109,7 @@ class SocDashboard:
             "open_alerts": tk.StringVar(value="0"),
             "cases_total": tk.StringVar(value="0"),
             "open_cases": tk.StringVar(value="0"),
+            "host_findings": tk.StringVar(value="0"),
         }
         cards = [
             ("Events", "events_total", "#dbeafe"),
@@ -113,6 +117,7 @@ class SocDashboard:
             ("Open Alerts", "open_alerts", "#fecaca"),
             ("Cases", "cases_total", "#d1fae5"),
             ("Open Cases", "open_cases", "#ddd6fe"),
+            ("Host Findings", "host_findings", "#fee2e2"),
         ]
         for column, (label, key, bg) in enumerate(cards):
             card = tk.Frame(summary, bg=bg, bd=0, highlightthickness=0, padx=14, pady=14)
@@ -124,6 +129,7 @@ class SocDashboard:
         body.grid(row=2, column=0, sticky="nsew")
         body.columnconfigure(0, weight=1)
         body.columnconfigure(1, weight=1)
+        body.columnconfigure(2, weight=1)
         body.rowconfigure(0, weight=1)
         body.rowconfigure(1, weight=1)
         body.rowconfigure(2, weight=0)
@@ -148,6 +154,15 @@ class SocDashboard:
             controls=self._build_case_controls,
         )
         self.case_tree.bind("<<TreeviewSelect>>", lambda _event: self._refresh_case_detail())
+        self.host_tree = self._build_tree(
+            body,
+            row=0,
+            column=2,
+            title="Host Monitor Findings",
+            columns=("severity", "title", "checked"),
+            headings={"severity": "Severity", "title": "Title", "checked": "Checked"},
+        )
+        self.host_tree.bind("<<TreeviewSelect>>", lambda _event: self._refresh_host_detail())
         self.correlation_tree = self._build_tree(
             body,
             row=1,
@@ -165,9 +180,10 @@ class SocDashboard:
             headings={"type": "Type", "severity": "Severity", "title": "Title", "created": "Created"},
         )
         detail_row = ttk.Frame(body, style="SOC.TFrame")
-        detail_row.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(8, 0))
+        detail_row.grid(row=2, column=0, columnspan=3, sticky="nsew", pady=(8, 0))
         detail_row.columnconfigure(0, weight=1)
         detail_row.columnconfigure(1, weight=1)
+        detail_row.columnconfigure(2, weight=1)
         detail_row.rowconfigure(0, weight=1)
 
         alert_detail_frame = ttk.LabelFrame(detail_row, text="Alert Details", padding=(10, 10), style="SOC.TLabelframe")
@@ -205,6 +221,24 @@ class SocDashboard:
         )
         self.case_detail_text.grid(row=0, column=0, sticky="nsew")
         self.case_detail_text.configure(state="disabled")
+
+        host_detail_frame = ttk.LabelFrame(detail_row, text="Host Monitor Details", padding=(10, 10), style="SOC.TLabelframe")
+        host_detail_frame.grid(row=0, column=2, sticky="nsew")
+        host_detail_frame.columnconfigure(0, weight=1)
+        host_detail_frame.rowconfigure(0, weight=1)
+        self.host_detail_text = tk.Text(
+            host_detail_frame,
+            height=10,
+            wrap="word",
+            bg="#fff5f5",
+            fg="#24364a",
+            font=("Consolas", 10),
+            relief="flat",
+            padx=10,
+            pady=10,
+        )
+        self.host_detail_text.grid(row=0, column=0, sticky="nsew")
+        self.host_detail_text.configure(state="disabled")
 
     def _build_tree(
         self,
@@ -336,13 +370,18 @@ class SocDashboard:
         dashboard = cast(dict[str, Any], self.manager.dashboard())
         summary = cast(dict[str, Any], dashboard["summary"])
         triage = cast(dict[str, list[dict[str, Any]]], dashboard["triage"])
+        host_state = self._load_host_monitor_state()
+        host_findings = cast(list[dict[str, Any]], host_state.get("active_findings") or [])
         alert_rows = self.manager.query_alerts(**self._alert_query_kwargs())
         case_rows = self.manager.query_cases(**self._case_query_kwargs())
         all_events = self.manager.list_events(limit=500)
         all_alerts = self.manager.list_alerts()
         for key, value in self.summary_vars.items():
-            value.set(str(summary.get(key, 0)))
-        self.status_var.set(self._format_status_line(dashboard))
+            if key == "host_findings":
+                value.set(str(len(host_findings)))
+            else:
+                value.set(str(summary.get(key, 0)))
+        self.status_var.set(self._format_status_line(dashboard, host_findings_count=len(host_findings)))
         self._populate_tree(
             self.alert_tree,
             [item.model_dump(mode="json") for item in alert_rows],
@@ -361,6 +400,26 @@ class SocDashboard:
         self.event_rows_by_id = {item.event_id: item.model_dump(mode="json") for item in all_events}
         self._refresh_alert_detail()
         self._refresh_case_detail()
+        self._populate_tree(
+            self.host_tree,
+            host_findings,
+            lambda item: (
+                str(item.get("severity", "-")),
+                str(item.get("title", "-")),
+                str(host_state.get("last_checked_at") or "-"),
+            ),
+            item_id_key="key",
+        )
+        self.host_rows_by_key = {
+            str(item["key"]): {
+                **item,
+                "last_checked_at": host_state.get("last_checked_at"),
+                "snapshot": host_state.get("snapshot") or {},
+            }
+            for item in host_findings
+            if item.get("key")
+        }
+        self._refresh_host_detail()
         self._populate_tree(
             self.correlation_tree,
             triage["recent_correlations"],
@@ -712,13 +771,14 @@ class SocDashboard:
         return SocCaseStatus(normalized)
 
     @staticmethod
-    def _format_status_line(dashboard: dict[str, Any]) -> str:
+    def _format_status_line(dashboard: dict[str, Any], *, host_findings_count: int = 0) -> str:
         summary = dashboard["summary"]
         top_event_types = dashboard.get("top_event_types") or {}
         most_common = ", ".join(f"{name}: {count}" for name, count in list(top_event_types.items())[:3]) or "none"
         return (
             f"Open alerts: {summary['open_alerts']} | "
             f"Open cases: {summary['open_cases']} | "
+            f"Host findings: {host_findings_count} | "
             f"Top event types: {most_common}"
         )
 
@@ -782,6 +842,23 @@ class SocDashboard:
         self.case_detail_text.delete("1.0", "end")
         self.case_detail_text.insert("1.0", text)
         self.case_detail_text.configure(state="disabled")
+
+    def _refresh_host_detail(self) -> None:
+        finding_key = self._selected_tree_item_id(self.host_tree)
+        if finding_key is None:
+            self._set_host_detail_text("Select a host finding to view the current posture issue and snapshot context.")
+            return
+        finding_payload = self.host_rows_by_key.get(finding_key)
+        if finding_payload is None:
+            self._set_host_detail_text("Selected host finding is no longer available.")
+            return
+        self._set_host_detail_text(self._format_host_detail(finding_payload))
+
+    def _set_host_detail_text(self, text: str) -> None:
+        self.host_detail_text.configure(state="normal")
+        self.host_detail_text.delete("1.0", "end")
+        self.host_detail_text.insert("1.0", text)
+        self.host_detail_text.configure(state="disabled")
 
     @staticmethod
     def _format_alert_detail(alert_payload: dict[str, Any]) -> str:
@@ -875,6 +952,44 @@ class SocDashboard:
             f"Observables:\n{observable_lines}\n\n"
             f"Notes:\n{note_lines}"
         )
+
+    @staticmethod
+    def _format_host_detail(finding_payload: dict[str, Any]) -> str:
+        details = finding_payload.get("details") or {}
+        snapshot = finding_payload.get("snapshot") or {}
+        detail_lines = (
+            "\n".join(f"- {key}: {value}" for key, value in details.items())
+            if isinstance(details, dict) and details
+            else "- none"
+        )
+        snapshot_pairs = [
+            ("system_drive", snapshot.get("system_drive")),
+            ("disk_free_percent", snapshot.get("disk_free_percent")),
+            ("defender_running", snapshot.get("defender_running")),
+            ("firewall_disabled_profiles", snapshot.get("firewall_disabled_profiles")),
+            ("checked_at", finding_payload.get("last_checked_at")),
+        ]
+        snapshot_lines = "\n".join(f"- {key}: {value}" for key, value in snapshot_pairs if value is not None)
+        return (
+            f"Finding: {finding_payload.get('key', '-')}\n"
+            f"Title: {finding_payload.get('title', '-')}\n"
+            f"Severity: {finding_payload.get('severity', '-')}\n"
+            f"Resolved: {finding_payload.get('resolved', False)}\n\n"
+            f"Summary:\n{finding_payload.get('summary', '-')}\n\n"
+            f"Details:\n{detail_lines}\n\n"
+            f"Snapshot:\n{snapshot_lines or '- none'}"
+        )
+
+    @staticmethod
+    def _load_host_monitor_state() -> dict[str, Any]:
+        state_path = Path(settings.host_monitor_state_path)
+        if not state_path.exists():
+            return {}
+        try:
+            payload = json.loads(state_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {}
+        return payload if isinstance(payload, dict) else {}
 
 
 def run_soc_dashboard(manager: SecurityOperationsManager | None = None) -> None:
