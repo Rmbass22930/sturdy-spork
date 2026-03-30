@@ -70,6 +70,8 @@ def test_create_shortcut_returns_created_paths(tmp_path: Path) -> None:
         tmp_path / "OneDrive" / "Desktop" / "SecurityGateway.lnk",
     ]
     run.assert_called_once()
+    command = run.call_args.args[0]
+    assert "automation-run" not in command[-1]
 
 
 def test_install_dependency_reports_winget_method(monkeypatch) -> None:

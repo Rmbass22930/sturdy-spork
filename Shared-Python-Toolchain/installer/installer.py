@@ -501,7 +501,6 @@ def create_shortcut(exe_path: Path) -> List[Path]:
     ps_script += "New-Item -ItemType Directory -Force -Path ([System.IO.Path]::GetDirectoryName($shortcutPath)) | Out-Null;"
     ps_script += "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($shortcutPath);"
     ps_script += f"$s.TargetPath={_ps_quote(str(exe_path))};"
-    ps_script += "$s.Arguments='automation-run';"
     ps_script += f"$s.WorkingDirectory={_ps_quote(str(exe_path.parent))};"
     ps_script += "$s.Save() }"
     subprocess.run([resolve_powershell_executable(), "-NoProfile", "-Command", ps_script], check=True)
