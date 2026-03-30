@@ -93,7 +93,13 @@ def test_register_automation_task_uses_powershell_scheduled_task_api(monkeypatch
     calls: list[list[str]] = []
 
     monkeypatch.setattr(installer, "unregister_automation_task", lambda: calls.append(["unregister"]))
-    monkeypatch.setattr(installer.subprocess, "run", lambda args, check: calls.append(args))
+    monkeypatch.setattr(installer, "_scheduled_task_exists", lambda name: True)
+
+    def fake_run(args, check=False, capture_output=False, text=False):
+        calls.append(args)
+        return mock.Mock(returncode=0, stderr="", stdout="")
+
+    monkeypatch.setattr(installer.subprocess, "run", fake_run)
 
     installer.register_automation_task(exe_path)
 
@@ -108,31 +114,65 @@ def test_register_automation_task_uses_powershell_scheduled_task_api(monkeypatch
     ]
     script = calls[1][6]
     assert "New-ScheduledTaskAction" in script
-    assert "New-ScheduledTaskTrigger -AtLogOn" in script
+    assert "New-ScheduledTaskTrigger -AtStartup" in script
     assert "New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest" in script
     assert "Register-ScheduledTask" in script
     assert str(exe_path) in script
     assert "automation-run" in script
 
 
-def test_start_automation_task_uses_powershell_start_scheduled_task(monkeypatch) -> None:
+def test_register_automation_task_falls_back_to_schtasks(monkeypatch, tmp_path: Path) -> None:
+    exe_path = tmp_path / "SecurityGateway.exe"
     calls: list[list[str]] = []
+    exists_checks: list[str] = []
 
-    monkeypatch.setattr(installer.subprocess, "run", lambda args, check: calls.append(args))
+    monkeypatch.setattr(installer, "unregister_automation_task", lambda: calls.append(["unregister"]))
 
-    installer.start_automation_task()
+    def fake_exists(name: str) -> bool:
+        exists_checks.append(name)
+        return True
 
-    assert calls[0][:6] == [
-        "powershell",
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
+    def fake_run(args, check=False, capture_output=False, text=False):
+        calls.append(args)
+        if args[0] == "powershell":
+            return mock.Mock(returncode=1, stderr="Access is denied.", stdout="")
+        return mock.Mock(returncode=0, stderr="", stdout="")
+
+    monkeypatch.setattr(installer, "_scheduled_task_exists", fake_exists)
+    monkeypatch.setattr(installer.subprocess, "run", fake_run)
+
+    installer.register_automation_task(exe_path)
+
+    assert calls[0] == ["unregister"]
+    assert calls[1][0] == "powershell"
+    assert calls[2][:6] == [
+        "schtasks",
+        "/Create",
+        "/TN",
+        installer.TASK_NAME,
+        "/SC",
+        "ONSTART",
     ]
-    script = calls[0][6]
-    assert "Start-ScheduledTask" in script
-    assert installer.TASK_NAME in script
+    assert exists_checks == [installer.TASK_NAME]
+
+
+def test_register_automation_task_raises_when_no_task_is_created(monkeypatch, tmp_path: Path) -> None:
+    exe_path = tmp_path / "SecurityGateway.exe"
+
+    monkeypatch.setattr(installer, "unregister_automation_task", lambda: None)
+    monkeypatch.setattr(installer, "_scheduled_task_exists", lambda name: False)
+    monkeypatch.setattr(
+        installer.subprocess,
+        "run",
+        lambda args, check=False, capture_output=False, text=False: mock.Mock(
+            returncode=1,
+            stderr="Access is denied.",
+            stdout="",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="Failed to register automation startup task"):
+        installer.register_automation_task(exe_path)
 
 
 def test_copy_binary_retries_after_locked_file_error(tmp_path: Path, monkeypatch) -> None:
@@ -426,7 +466,6 @@ def test_main_skips_dependencies_when_requested(monkeypatch, tmp_path: Path) -> 
     monkeypatch.setattr(installer, "update_user_path", lambda path: "C:\\Existing\\Path")
     monkeypatch.setattr(installer, "create_shortcut", lambda path: [tmp_path / "Desktop" / "SecurityGateway.lnk"])
     monkeypatch.setattr(installer, "register_automation_task", lambda path: None)
-    monkeypatch.setattr(installer, "start_automation_task", lambda: None)
     monkeypatch.setattr(installer, "write_uninstall_script", lambda path, backup: uninstall_script)
 
     result = installer.main(["--skip-dependencies"])
@@ -577,7 +616,6 @@ def test_main_summary_includes_uninstaller(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(installer, "update_user_path", lambda path: "C:\\Existing\\Path")
     monkeypatch.setattr(installer, "create_shortcut", lambda path: [tmp_path / "Desktop" / "SecurityGateway.lnk"])
     monkeypatch.setattr(installer, "register_automation_task", lambda path: None)
-    monkeypatch.setattr(installer, "start_automation_task", lambda: None)
     monkeypatch.setattr(installer, "write_uninstall_script", lambda path, backup: uninstall_script)
 
     class RecordingReporter:

@@ -709,7 +709,7 @@ def _scheduled_task_registration_command(exe_path: Path) -> list[str]:
     task_name_literal = _ps_quote(TASK_NAME)
     script = (
         f"$action = New-ScheduledTaskAction -Execute {exe_literal} -Argument 'automation-run'; "
-        "$trigger = New-ScheduledTaskTrigger -AtLogOn; "
+        "$trigger = New-ScheduledTaskTrigger -AtStartup; "
         "$principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest; "
         f"Register-ScheduledTask -TaskName {task_name_literal} -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null"
     )
@@ -724,26 +724,50 @@ def _scheduled_task_registration_command(exe_path: Path) -> list[str]:
     ]
 
 
-def _scheduled_task_start_command() -> list[str]:
-    script = f"Start-ScheduledTask -TaskName {_ps_quote(TASK_NAME)}"
+def _schtasks_registration_command(exe_path: Path) -> list[str]:
     return [
-        "powershell",
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        script,
+        "schtasks",
+        "/Create",
+        "/TN",
+        TASK_NAME,
+        "/SC",
+        "ONSTART",
+        "/RU",
+        "SYSTEM",
+        "/RL",
+        "HIGHEST",
+        "/TR",
+        f'"{exe_path}" automation-run',
+        "/F",
     ]
+
+
+def _scheduled_task_exists(task_name: str) -> bool:
+    result = subprocess.run(
+        ["schtasks", "/Query", "/TN", task_name],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
 
 
 def register_automation_task(exe_path: Path) -> None:
     unregister_automation_task()
-    subprocess.run(_scheduled_task_registration_command(exe_path), check=True)
-
-
-def start_automation_task() -> None:
-    subprocess.run(_scheduled_task_start_command(), check=True)
+    registration_errors: list[str] = []
+    for command in (
+        _scheduled_task_registration_command(exe_path),
+        _schtasks_registration_command(exe_path),
+    ):
+        result = subprocess.run(command, check=False, capture_output=True, text=True)
+        if result.returncode == 0 and _scheduled_task_exists(TASK_NAME):
+            return
+        error_text = (result.stderr or result.stdout or "").strip() or f"exit code {result.returncode}"
+        registration_errors.append(error_text)
+    raise RuntimeError(
+        "Failed to register automation startup task. "
+        + " | ".join(registration_errors)
+    )
 
 
 def unregister_automation_task() -> None:
@@ -1119,8 +1143,6 @@ def perform_install(args: argparse.Namespace, reporter: Optional[InstallReporter
         reporter.stage("Registering automation task")
         register_automation_task(installed_path)
         transaction.automation_task_registered = True
-        reporter.stage("Starting automation monitor")
-        start_automation_task()
         reporter.stage("Installing uninstaller")
         reporter.stage("Writing uninstall script")
         uninstall_script = write_uninstall_script(installed_path, backup_file)
