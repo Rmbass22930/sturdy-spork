@@ -9,12 +9,8 @@ from typing import Any
 
 try:
     from .config import get_runtime_data_dir
-    from .monitor_runtime import run_background_monitor
-    from .soc_dashboard import run_soc_dashboard
 except ImportError:  # pragma: no cover - frozen entrypoint fallback
     from security_gateway.config import get_runtime_data_dir
-    from security_gateway.monitor_runtime import run_background_monitor
-    from security_gateway.soc_dashboard import run_soc_dashboard
 
 
 def _center_window(root: Any, width: int, height: int) -> None:
@@ -73,13 +69,29 @@ def _ensure_runtime_directories() -> None:
         directory.mkdir(parents=True, exist_ok=True)
 
 
+def _run_background_monitor() -> None:
+    try:
+        from .monitor_runtime import run_background_monitor
+    except ImportError:  # pragma: no cover - frozen entrypoint fallback
+        from security_gateway.monitor_runtime import run_background_monitor
+    run_background_monitor()
+
+
+def _run_soc_dashboard() -> None:
+    try:
+        from .soc_dashboard import run_soc_dashboard
+    except ImportError:  # pragma: no cover - frozen entrypoint fallback
+        from security_gateway.soc_dashboard import run_soc_dashboard
+    run_soc_dashboard()
+
+
 def main() -> int:
     import tkinter as tk
     from tkinter import messagebox
 
     _ensure_runtime_directories()
     if len(sys.argv) > 1 and sys.argv[1] == "automation-run":
-        run_background_monitor()
+        _run_background_monitor()
         return 0
 
     root = tk.Tk()
@@ -93,7 +105,7 @@ def main() -> int:
             if action == "reports":
                 _open_reports_folder()
             elif action == "soc-dashboard":
-                run_soc_dashboard()
+                _run_soc_dashboard()
                 return
             elif action == "install-folder":
                 _open_install_folder()
