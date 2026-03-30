@@ -246,6 +246,8 @@ class SocDashboard:
             headings={"severity": "Severity", "title": "Title", "checked": "Checked"},
         )
         self.host_tree.bind("<<TreeviewSelect>>", lambda _event: self._refresh_host_detail())
+        self.host_tree.bind("<Return>", lambda _event: self.view_host_related_activity())
+        self.host_tree.bind("<Button-3>", self._show_host_context_menu)
         self.correlation_tree = self._build_tree(
             body,
             row=1,
@@ -956,6 +958,27 @@ class SocDashboard:
             return
         self._show_info_dialog("Case Linked Activity", self._format_case_linked_activity(case_payload, linked_alerts, source_events))
 
+    def view_host_related_activity(self) -> None:
+        finding_key = self._selected_tree_item_id(self.host_tree)
+        if finding_key is None:
+            if messagebox is not None:
+                messagebox.showwarning("No Host Finding Selected", "Select a host finding before viewing related activity.")
+            return
+        finding_payload = self.host_rows_by_key.get(finding_key)
+        if finding_payload is None:
+            if messagebox is not None:
+                messagebox.showwarning("Host Finding Unavailable", "The selected host finding is no longer available.")
+            return
+        related_events = self._resolve_host_events(finding_payload)
+        if not related_events:
+            self._show_info_dialog("Host Finding Activity", self._format_host_detail(finding_payload))
+            return
+        selected_event = self._select_summary_record("event", related_events, title="Host Finding Events")
+        if selected_event is None:
+            self._show_info_dialog("Host Finding Activity", self._format_summary_records("event", related_events, limit=30))
+            return
+        self._pivot_from_event(selected_event)
+
     def assign_selected_case(self) -> None:
         case_id = self._selected_tree_item_id(self.case_tree)
         if case_id is None:
@@ -1309,6 +1332,14 @@ class SocDashboard:
         menu.add_command(label="Add Case Note", command=self.add_case_note)
         menu.add_command(label="Add Observable", command=self.add_case_observable)
         menu.add_command(label="View Linked Activity", command=self.view_case_linked_activity)
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _show_host_context_menu(self, event: Any) -> None:
+        if self._select_tree_row_at_pointer(self.host_tree, event) is None or tk is None:
+            return
+        menu = tk.Menu(self.root, tearoff=0)
+        menu.add_command(label="View Related Activity", command=self.view_host_related_activity)
+        menu.add_command(label="Refresh Host Detail", command=self._refresh_host_detail)
         menu.tk_popup(event.x_root, event.y_root)
 
     @staticmethod
@@ -2059,6 +2090,18 @@ class SocDashboard:
             for event in [self.event_rows_by_id.get(event_id)]
             if event is not None
         ]
+
+    def _resolve_host_events(self, finding_payload: dict[str, Any]) -> list[dict[str, Any]]:
+        finding_key = str(finding_payload.get("key") or "")
+        if not finding_key:
+            return []
+        related_events: list[dict[str, Any]] = []
+        for event in self.event_rows_by_id.values():
+            raw_details = event.get("details")
+            event_details = cast(dict[str, Any], raw_details) if isinstance(raw_details, dict) else {}
+            if str(event_details.get("key") or "") == finding_key:
+                related_events.append(event)
+        return related_events
 
     def _refresh_case_detail(self) -> None:
         case_id = self._selected_tree_item_id(self.case_tree)

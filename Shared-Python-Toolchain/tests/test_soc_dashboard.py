@@ -360,6 +360,75 @@ def test_show_case_context_menu_selects_clicked_row_and_uses_case_actions() -> N
     assert "popup:120:240" in calls
 
 
+def test_view_host_related_activity_pivots_from_selected_event() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.host_tree = type("Tree", (), {"selection": lambda self: ("firewall-disabled",)})()
+    dashboard.host_rows_by_key = {
+        "firewall-disabled": {
+            "key": "firewall-disabled",
+            "title": "Windows firewall profile disabled",
+            "severity": "critical",
+            "summary": "One or more firewall profiles are disabled.",
+        }
+    }
+    dashboard.event_rows_by_id = {
+        "evt-1": {
+            "event_id": "evt-1",
+            "event_type": "host.monitor.finding",
+            "severity": "critical",
+            "title": "Windows firewall profile disabled",
+            "summary": "One or more firewall profiles are disabled.",
+            "details": {"key": "firewall-disabled"},
+        }
+    }
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    pivoted_events: list[dict[str, Any]] = []
+    dashboard._pivot_from_event = lambda payload: pivoted_events.append(payload)
+
+    dashboard.view_host_related_activity()
+
+    assert pivoted_events
+    assert pivoted_events[0]["event_id"] == "evt-1"
+
+
+def test_show_host_context_menu_selects_clicked_row_and_uses_host_actions() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.root = object()
+    dashboard.host_tree = type(
+        "Tree",
+        (),
+        {
+            "identify_row": lambda self, y: "firewall-disabled",
+            "selection_set": lambda self, value: setattr(self, "selected", value),
+            "focus": lambda self, value: setattr(self, "focused", value),
+        },
+    )()
+    event = type("Event", (), {"y": 14, "x_root": 130, "y_root": 260})()
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+
+    calls: list[str] = []
+    original_tk = soc_dashboard_module.tk
+    try:
+        class FakeMenu:
+            def __init__(self, root, tearoff=0):
+                calls.append("menu")
+            def add_command(self, label, command):
+                calls.append(label)
+            def tk_popup(self, x, y):
+                calls.append(f"popup:{x}:{y}")
+
+        soc_dashboard_module.tk = cast(Any, type("TkModule", (), {"Menu": FakeMenu})())
+        dashboard._show_host_context_menu(event)
+    finally:
+        soc_dashboard_module.tk = original_tk
+
+    assert getattr(dashboard.host_tree, "selected") == "firewall-disabled"
+    assert "View Related Activity" in calls
+    assert "Refresh Host Detail" in calls
+    assert "popup:130:260" in calls
+
+
 def test_format_summary_records_limits_output() -> None:
     rows = [
         {"alert_id": f"alert-{index}", "status": "open", "severity": "high", "title": f"Alert {index}"}
