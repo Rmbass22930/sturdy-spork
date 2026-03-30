@@ -171,6 +171,30 @@ def test_show_install_guide_does_not_wait_for_input(monkeypatch, tmp_path: Path,
     assert "Setup will continue immediately." in output
 
 
+def test_show_install_guide_materializes_frozen_resource(monkeypatch, tmp_path: Path, capsys) -> None:
+    guide_path = tmp_path / "INSTALL_GUIDE.pdf"
+    guide_path.write_text("pdf", encoding="utf-8")
+    docs_dir = tmp_path / "stable-docs"
+    opened: list[Path] = []
+
+    def fake_materialize(path: Path, target_dir: Path | None = None) -> Path:
+        docs_dir.mkdir(parents=True, exist_ok=True)
+        materialized = docs_dir / path.name
+        materialized.write_text("pdf", encoding="utf-8")
+        return materialized
+
+    monkeypatch.setattr(installer, "resolve_resource", lambda rel: guide_path)
+    monkeypatch.setattr(installer, "materialize_external_resource", fake_materialize)
+    monkeypatch.setattr(installer.os, "startfile", lambda path: opened.append(Path(path)), raising=False)
+    monkeypatch.setattr(installer.sys, "_MEIPASS", str(tmp_path), raising=False)
+
+    installer.show_install_guide()
+    output = capsys.readouterr().out
+
+    assert opened == [docs_dir / "INSTALL_GUIDE.pdf"]
+    assert "Setup will continue immediately." in output
+
+
 def test_main_skips_dependencies_when_requested(monkeypatch, tmp_path: Path) -> None:
     installed_path = tmp_path / "SecurityGateway.exe"
     uninstall_executable = tmp_path / "SecurityGateway-Uninstall.exe"

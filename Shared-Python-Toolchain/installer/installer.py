@@ -424,6 +424,14 @@ def resolve_optional_resource(rel_path: Path) -> Optional[Path]:
     return resource
 
 
+def materialize_external_resource(path: Path, *, target_dir: Optional[Path] = None) -> Path:
+    destination_root = target_dir or (USER_DATA_DIR / "docs")
+    destination_root.mkdir(parents=True, exist_ok=True)
+    destination = destination_root / path.name
+    shutil.copy2(path, destination)
+    return destination
+
+
 def download_file(
     url: str,
     description: str,
@@ -698,6 +706,8 @@ def show_install_guide(override_url: Optional[str] = None, reporter: Optional[In
         guide = download_file(override_url, "installation guide PDF")
     else:
         guide = resolve_resource(GUIDE_RELATIVE)
+        if hasattr(sys, "_MEIPASS"):
+            guide = materialize_external_resource(guide)
     reporter.info(f"Opening installation guide: {guide}")
     opened = False
     try:
