@@ -266,3 +266,58 @@ def test_updated_history_keeps_prior_remote_ips() -> None:
 
     assert history["8.8.8.8"]["samples"] == [2, 3]
     assert history["1.1.1.1"]["samples"] == [1, 2, 7]
+
+
+def test_run_command_uses_capture_directory_as_cwd(monkeypatch, tmp_path: Path) -> None:
+    etl_path = tmp_path / "nested" / "capture.etl"
+    captured: dict[str, object] = {}
+
+    def fake_run(args: list[str], capture_output: bool, text: bool, check: bool, timeout: int, cwd: str | None = None) -> subprocess.CompletedProcess[str]:
+        captured["args"] = args
+        captured["cwd"] = cwd
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    PacketMonitor._run_command(["pktmon", "start", "--capture", "--file-name", str(etl_path)])
+
+    assert captured["cwd"] == str(etl_path.parent)
+    assert captured["args"] == ["pktmon", "start", "--capture", "--file-name", "capture.etl"]
+
+
+def test_run_command_uses_etl_parent_for_conversion(monkeypatch, tmp_path: Path) -> None:
+    etl_path = tmp_path / "capture.etl"
+    txt_path = tmp_path / "capture.txt"
+    captured: dict[str, object] = {}
+
+    def fake_run(args: list[str], capture_output: bool, text: bool, check: bool, timeout: int, cwd: str | None = None) -> subprocess.CompletedProcess[str]:
+        captured["args"] = args
+        captured["cwd"] = cwd
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    PacketMonitor._run_command(["pktmon", "etl2txt", str(etl_path), "--out", str(txt_path), "--brief"])
+
+    assert captured["cwd"] == str(etl_path.parent)
+    assert captured["args"] == ["pktmon", "etl2txt", str(etl_path), "--out", "capture.txt", "--brief"]
+
+
+def test_find_capture_file_falls_back_to_pktmon_default_name(tmp_path: Path) -> None:
+    requested = tmp_path / "capture.etl"
+    fallback = tmp_path / "PktMon.etl"
+    fallback.write_text("etl", encoding="utf-8")
+
+    located = PacketMonitor._find_capture_file(tmp_path, requested_path=requested)
+
+    assert located == fallback
+
+
+def test_find_capture_file_falls_back_to_any_etl_in_directory(tmp_path: Path) -> None:
+    requested = tmp_path / "capture.etl"
+    fallback = tmp_path / "alternate.etl"
+    fallback.write_text("etl", encoding="utf-8")
+
+    located = PacketMonitor._find_capture_file(tmp_path, requested_path=requested)
+
+    assert located == fallback

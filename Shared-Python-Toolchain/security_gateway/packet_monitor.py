@@ -134,8 +134,10 @@ class PacketMonitor:
                     str(self._pkt_size),
                     "--file-name",
                     str(etl_path),
+                    "--file-size",
+                    "4",
                     "--log-mode",
-                    "memory",
+                    "circular",
                 ]
             )
             start_error = (start_result.stderr or start_result.stdout or "").strip()
@@ -151,14 +153,19 @@ class PacketMonitor:
             stop_error = (stop_result.stderr or stop_result.stdout or "").strip()
             if stop_result.returncode != 0:
                 return self._capture_failure_snapshot(stop_error or "pktmon stop failed")
-            if not self._wait_for_file(etl_path, timeout_seconds=min(5.0, self._sample_seconds + 3.0)):
+            actual_etl_path = self._wait_for_capture_file(
+                temp_dir,
+                requested_path=etl_path,
+                timeout_seconds=max(12.0, self._sample_seconds + 10.0),
+            )
+            if actual_etl_path is None:
                 return self._capture_failure_snapshot(f"pktmon capture file missing: {etl_path}")
 
             convert_result = self._runner(
                 [
                     "pktmon",
                     "etl2txt",
-                    str(etl_path),
+                    str(actual_etl_path),
                     "--out",
                     str(txt_path),
                     "--brief",
@@ -395,7 +402,24 @@ class PacketMonitor:
 
     @staticmethod
     def _run_command(args: list[str]) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(args, capture_output=True, text=True, check=False, timeout=30)
+        command = list(args)
+        cwd: str | None = None
+        if len(command) >= 2 and command[0].lower() == "pktmon":
+            verb = command[1].lower()
+            if verb == "start" and "--file-name" in command:
+                index = command.index("--file-name") + 1
+                target = Path(command[index])
+                cwd = str(target.parent)
+                command[index] = target.name
+            elif verb == "etl2txt":
+                input_path = Path(command[2])
+                cwd = str(input_path.parent)
+                if "--out" in command:
+                    out_index = command.index("--out") + 1
+                    output_path = Path(command[out_index])
+                    if output_path.parent == input_path.parent:
+                        command[out_index] = output_path.name
+        return subprocess.run(command, capture_output=True, text=True, check=False, timeout=30, cwd=cwd)
 
     def _wait_for_file(self, path: Path, *, timeout_seconds: float) -> bool:
         deadline = time.monotonic() + max(0.1, timeout_seconds)
@@ -404,6 +428,26 @@ class PacketMonitor:
                 return True
             self._sleeper(0.1)
         return path.exists()
+
+    def _wait_for_capture_file(self, directory: Path, *, requested_path: Path, timeout_seconds: float) -> Path | None:
+        deadline = time.monotonic() + max(0.1, timeout_seconds)
+        while time.monotonic() < deadline:
+            located = self._find_capture_file(directory, requested_path=requested_path)
+            if located is not None:
+                return located
+            self._sleeper(0.1)
+        return self._find_capture_file(directory, requested_path=requested_path)
+
+    @staticmethod
+    def _find_capture_file(directory: Path, *, requested_path: Path) -> Path | None:
+        candidates = [requested_path, directory / "PktMon.etl"]
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        for candidate in sorted(directory.glob("*.etl"), key=lambda item: item.stat().st_mtime, reverse=True):
+            if candidate.exists():
+                return candidate
+        return None
 
     def _read_state(self) -> dict[str, Any]:
         if not self._state_path.exists():

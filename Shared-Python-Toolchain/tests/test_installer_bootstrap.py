@@ -88,7 +88,7 @@ def test_task_name_is_monitor_and_uninstall_script_uses_it(tmp_path: Path) -> No
     assert 'TaskName = "SecurityGatewayMonitor"' in script
 
 
-def test_register_automation_task_uses_schtasks(monkeypatch, tmp_path: Path) -> None:
+def test_register_automation_task_uses_powershell_scheduled_task_api(monkeypatch, tmp_path: Path) -> None:
     exe_path = tmp_path / "SecurityGateway.exe"
     calls: list[list[str]] = []
 
@@ -98,9 +98,41 @@ def test_register_automation_task_uses_schtasks(monkeypatch, tmp_path: Path) -> 
     installer.register_automation_task(exe_path)
 
     assert calls[0] == ["unregister"]
-    assert calls[1][:6] == ["schtasks", "/Create", "/TN", "SecurityGatewayMonitor", "/SC", "ONLOGON"]
-    assert calls[1][-3:] == ["/RL", "HIGHEST", "/F"]
-    assert calls[1][calls[1].index("/TR") + 1] == f'"{exe_path}" automation-run'
+    assert calls[1][:6] == [
+        "powershell",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+    ]
+    script = calls[1][6]
+    assert "New-ScheduledTaskAction" in script
+    assert "New-ScheduledTaskTrigger -AtLogOn" in script
+    assert "New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest" in script
+    assert "Register-ScheduledTask" in script
+    assert str(exe_path) in script
+    assert "automation-run" in script
+
+
+def test_start_automation_task_uses_powershell_start_scheduled_task(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(installer.subprocess, "run", lambda args, check: calls.append(args))
+
+    installer.start_automation_task()
+
+    assert calls[0][:6] == [
+        "powershell",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+    ]
+    script = calls[0][6]
+    assert "Start-ScheduledTask" in script
+    assert installer.TASK_NAME in script
 
 
 def test_copy_binary_retries_after_locked_file_error(tmp_path: Path, monkeypatch) -> None:
@@ -394,6 +426,7 @@ def test_main_skips_dependencies_when_requested(monkeypatch, tmp_path: Path) -> 
     monkeypatch.setattr(installer, "update_user_path", lambda path: "C:\\Existing\\Path")
     monkeypatch.setattr(installer, "create_shortcut", lambda path: [tmp_path / "Desktop" / "SecurityGateway.lnk"])
     monkeypatch.setattr(installer, "register_automation_task", lambda path: None)
+    monkeypatch.setattr(installer, "start_automation_task", lambda: None)
     monkeypatch.setattr(installer, "write_uninstall_script", lambda path, backup: uninstall_script)
 
     result = installer.main(["--skip-dependencies"])
@@ -544,6 +577,7 @@ def test_main_summary_includes_uninstaller(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(installer, "update_user_path", lambda path: "C:\\Existing\\Path")
     monkeypatch.setattr(installer, "create_shortcut", lambda path: [tmp_path / "Desktop" / "SecurityGateway.lnk"])
     monkeypatch.setattr(installer, "register_automation_task", lambda path: None)
+    monkeypatch.setattr(installer, "start_automation_task", lambda: None)
     monkeypatch.setattr(installer, "write_uninstall_script", lambda path, backup: uninstall_script)
 
     class RecordingReporter:

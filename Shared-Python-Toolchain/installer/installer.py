@@ -704,25 +704,46 @@ def _ps_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def _scheduled_task_registration_command(exe_path: Path) -> list[str]:
+    exe_literal = _ps_quote(str(exe_path))
+    task_name_literal = _ps_quote(TASK_NAME)
+    script = (
+        f"$action = New-ScheduledTaskAction -Execute {exe_literal} -Argument 'automation-run'; "
+        "$trigger = New-ScheduledTaskTrigger -AtLogOn; "
+        "$principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest; "
+        f"Register-ScheduledTask -TaskName {task_name_literal} -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null"
+    )
+    return [
+        "powershell",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        script,
+    ]
+
+
+def _scheduled_task_start_command() -> list[str]:
+    script = f"Start-ScheduledTask -TaskName {_ps_quote(TASK_NAME)}"
+    return [
+        "powershell",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        script,
+    ]
+
+
 def register_automation_task(exe_path: Path) -> None:
     unregister_automation_task()
-    task_command = f'"{exe_path}" automation-run'
-    subprocess.run(
-        [
-            "schtasks",
-            "/Create",
-            "/TN",
-            TASK_NAME,
-            "/SC",
-            "ONLOGON",
-            "/TR",
-            task_command,
-            "/RL",
-            "HIGHEST",
-            "/F",
-        ],
-        check=True,
-    )
+    subprocess.run(_scheduled_task_registration_command(exe_path), check=True)
+
+
+def start_automation_task() -> None:
+    subprocess.run(_scheduled_task_start_command(), check=True)
 
 
 def unregister_automation_task() -> None:
@@ -1098,6 +1119,8 @@ def perform_install(args: argparse.Namespace, reporter: Optional[InstallReporter
         reporter.stage("Registering automation task")
         register_automation_task(installed_path)
         transaction.automation_task_registered = True
+        reporter.stage("Starting automation monitor")
+        start_automation_task()
         reporter.stage("Installing uninstaller")
         reporter.stage("Writing uninstall script")
         uninstall_script = write_uninstall_script(installed_path, backup_file)

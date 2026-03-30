@@ -349,6 +349,9 @@ class SocDashboard:
         ttk.Button(ops_controls, text="Refresh Tracker Feeds", command=self.refresh_tracker_feeds).grid(
             row=1, column=11, columnspan=2, sticky="w", padx=(8, 0), pady=(8, 0)
         )
+        ttk.Button(ops_controls, text="Tracker Feed Details", command=self.show_tracker_feed_details).grid(
+            row=1, column=13, columnspan=2, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
         ttk.Button(ops_controls, text="Open Selected Correlation", command=self.open_selected_correlation_action).grid(
             row=1, column=0, columnspan=3, sticky="w", pady=(8, 0)
         )
@@ -1520,10 +1523,14 @@ class SocDashboard:
             for event in self.manager.list_events(limit=200)
             if event.event_type == "privacy.tracker_block"
         ]
-        self._show_info_dialog(
-            "Recent Tracker Blocks",
-            self._format_summary_records("tracker_block", tracker_events[:50], limit=50),
-        )
+        selected = self._select_summary_record("tracker_block", tracker_events[:50], title="Recent Tracker Blocks")
+        if selected is None:
+            self._show_info_dialog(
+                "Recent Tracker Blocks",
+                self._format_summary_records("tracker_block", tracker_events[:50], limit=50),
+            )
+            return
+        self._pivot_from_event(selected)
 
     def refresh_tracker_feeds(self) -> None:
         try:
@@ -1536,6 +1543,48 @@ class SocDashboard:
         if messagebox is not None:
             domain_count = int(result.get("domain_count") or 0)
             messagebox.showinfo("Refresh Tracker Feeds", f"Tracker feeds refreshed. Domains loaded: {domain_count}.")
+
+    def show_tracker_feed_details(self) -> None:
+        status = cast(dict[str, Any], getattr(self, "_latest_dashboard", {}).get("tracker_feed_status") or self.tracker_intel.feed_status())
+        lines = [
+            "Tracker Feed Details:",
+            "",
+            f"Cache Path: {status.get('cache_path') or '-'}",
+            f"Domain Count: {status.get('domain_count', 0)}",
+            f"Updated At: {status.get('updated_at') or '-'}",
+            f"Last Refresh Attempted At: {status.get('last_refresh_attempted_at') or '-'}",
+            f"Last Refresh Result: {status.get('last_refresh_result') or 'unknown'}",
+            f"Last Error: {status.get('last_error') or 'none'}",
+            f"Stale: {status.get('is_stale', False)}",
+            f"Age Hours: {status.get('age_hours') if status.get('age_hours') is not None else '-'}",
+            f"TLS Verification: {status.get('verify_tls', True)}",
+            "",
+            "Active Feed URLs:",
+        ]
+        active_urls = cast(list[str], status.get("active_feed_urls") or [])
+        if active_urls:
+            lines.extend(f"- {url}" for url in active_urls)
+        else:
+            lines.append("- none")
+        lines.extend(["", "Source Results:"])
+        sources = cast(list[dict[str, Any]], status.get("sources") or [])
+        if sources:
+            lines.extend(
+                f"- {item.get('url', '-')}: domains={item.get('domain_count', 0)}"
+                for item in sources[:20]
+            )
+        else:
+            lines.append("- none")
+        lines.extend(["", "Failures:"])
+        failures = cast(list[dict[str, Any]], status.get("failures") or [])
+        if failures:
+            lines.extend(
+                f"- {item.get('url', '-')}: {item.get('error', '-')}"
+                for item in failures[:20]
+            )
+        else:
+            lines.append("- none")
+        self._show_info_dialog("Tracker Feed Details", "\n".join(lines))
 
     def _choose_event_pivot(
         self,

@@ -82,6 +82,56 @@ def test_format_summary_records_supports_tracker_blocks() -> None:
     assert "- evt-1: privacy.tracker_block | medium | Tracker request blocked" in text
 
 
+def test_show_tracker_feed_details_includes_sources_and_failures() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dialogs: list[tuple[str, str]] = []
+    dashboard._latest_dashboard = {
+        "tracker_feed_status": {
+            "cache_path": "C:/cache/tracker.json",
+            "domain_count": 123,
+            "updated_at": "2026-03-30T00:00:00+00:00",
+            "last_refresh_attempted_at": "2026-03-30T00:05:00+00:00",
+            "last_refresh_result": "failed",
+            "last_error": "network error",
+            "is_stale": True,
+            "age_hours": 12.5,
+            "verify_tls": True,
+            "active_feed_urls": ["https://example.com/feed.txt"],
+            "sources": [{"url": "https://example.com/feed.txt", "domain_count": 123}],
+            "failures": [{"url": "https://bad.example/feed.txt", "error": "timeout"}],
+        }
+    }
+    dashboard.tracker_intel = type("TrackerIntel", (), {"feed_status": lambda self: {}})()
+    dashboard._show_info_dialog = lambda title, body: dialogs.append((title, body))
+
+    dashboard.show_tracker_feed_details()
+
+    assert dialogs
+    title, body = dialogs[-1]
+    assert title == "Tracker Feed Details"
+    assert "Domain Count: 123" in body
+    assert "- https://example.com/feed.txt" in body
+    assert "- https://bad.example/feed.txt: timeout" in body
+
+
+def test_view_recent_tracker_blocks_pivots_selected_event() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    event = type(
+        "Event",
+        (),
+        {"event_type": "privacy.tracker_block", "model_dump": lambda self, mode="json": {"event_id": "evt-1", "event_type": "privacy.tracker_block"}},
+    )()
+    dashboard.manager = type("Manager", (), {"list_events": lambda self, limit=200: [event]})()
+    selected: list[dict[str, Any]] = []
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._pivot_from_event = lambda payload: selected.append(payload)
+    dashboard._show_info_dialog = lambda title, body: (_ for _ in ()).throw(AssertionError("should not show dialog"))
+
+    dashboard.view_recent_tracker_blocks()
+
+    assert selected == [{"event_id": "evt-1", "event_type": "privacy.tracker_block"}]
+
+
 def test_format_correlation_detail_includes_rule_and_linked_case() -> None:
     text = SocDashboard._format_correlation_detail(
         {
