@@ -88,6 +88,11 @@ class Settings(BaseSettings):
     host_monitor_system_drive: str = Field(
         default_factory=lambda: os.environ.get("SystemDrive", str(Path.home().anchor or "C:")).rstrip("\\/")
     )
+    network_monitor_enabled: bool = True
+    network_monitor_every_ticks: int = 1
+    network_monitor_state_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "network_monitor_state.json"))
+    network_monitor_repeat_threshold: int = 3
+    network_monitor_sensitive_ports: List[int] = Field(default_factory=lambda: [22, 23, 135, 139, 445, 3389, 5900, 5985, 5986])
     automation_tracker_feed_refresh_enabled: bool = False
     automation_tracker_feed_refresh_every_ticks: int = 12
     automation_malware_feed_refresh_enabled: bool = False

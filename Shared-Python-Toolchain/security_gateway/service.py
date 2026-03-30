@@ -35,6 +35,7 @@ from .config import settings
 from .dns import SecureDNSResolver
 from .endpoint import EndpointTelemetryService, MalwareScanner
 from .host_monitor import HostMonitor
+from .network_monitor import NetworkMonitor
 from .ip_controls import IPBlocklistManager
 from .models import (
     AccessDecision,
@@ -132,6 +133,11 @@ host_monitor = HostMonitor(
     state_path=settings.host_monitor_state_path,
     system_drive=settings.host_monitor_system_drive,
     disk_free_percent_threshold=settings.host_monitor_disk_free_percent_threshold,
+)
+network_monitor = NetworkMonitor(
+    state_path=settings.network_monitor_state_path,
+    suspicious_repeat_threshold=settings.network_monitor_repeat_threshold,
+    sensitive_ports=settings.network_monitor_sensitive_ports,
 )
 
 
@@ -269,6 +275,27 @@ def _record_host_monitor_finding(finding: dict[str, object]) -> None:
     )
 
 
+def _record_network_monitor_finding(finding: dict[str, object]) -> None:
+    raw_tags = finding.get("tags")
+    tags = [str(item) for item in raw_tags] if isinstance(raw_tags, list) else []
+    severity_name = "low" if bool(finding.get("resolved")) else str(finding.get("severity", "medium"))
+    soc_manager.ingest_event(
+        SocEventIngest(
+            event_type="network.monitor.recovered" if bool(finding.get("resolved")) else "network.monitor.finding",
+            source="security_gateway",
+            severity=SocSeverity(severity_name),
+            title=str(finding.get("title", "Suspicious remote IP activity")),
+            summary=str(finding.get("summary", "")),
+            details={
+                "key": finding.get("key"),
+                "resolved": bool(finding.get("resolved")),
+                "details": finding.get("details", {}),
+            },
+            tags=tags,
+        )
+    )
+
+
 automation = AutomationSupervisor(
     vault=vault,
     proxy=proxy,
@@ -287,6 +314,10 @@ automation = AutomationSupervisor(
     host_monitor_enabled=settings.host_monitor_enabled,
     host_monitor_every_ticks=settings.host_monitor_every_ticks,
     host_monitor_callback=_record_host_monitor_finding,
+    network_monitor=network_monitor,
+    network_monitor_enabled=settings.network_monitor_enabled,
+    network_monitor_every_ticks=settings.network_monitor_every_ticks,
+    network_monitor_callback=_record_network_monitor_finding,
 )
 
 

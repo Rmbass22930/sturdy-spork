@@ -68,6 +68,20 @@ class SocDashboard:
             "case_status": "closed",
             "case_sort": "updated_desc",
         },
+        "unassigned": {
+            "alert_severity": "all",
+            "alert_link_state": "unlinked",
+            "alert_sort": "updated_desc",
+            "case_status": "all",
+            "case_sort": "updated_desc",
+        },
+        "needs-attention": {
+            "alert_severity": "all",
+            "alert_link_state": "unlinked",
+            "alert_sort": "updated_asc",
+            "case_status": "all",
+            "case_sort": "updated_asc",
+        },
         "my-queue": {
             "alert_severity": "all",
             "alert_link_state": "all",
@@ -139,7 +153,7 @@ class SocDashboard:
         preset_combo = ttk.Combobox(
             identity_controls,
             textvariable=self.queue_preset_var,
-            values=("tier1-triage", "tier2-investigation", "containment", "review-closed", "my-queue", "custom"),
+            values=("tier1-triage", "tier2-investigation", "containment", "review-closed", "unassigned", "needs-attention", "my-queue", "custom"),
             state="readonly",
             width=18,
         )
@@ -434,8 +448,8 @@ class SocDashboard:
         triage = cast(dict[str, list[dict[str, Any]]], dashboard["triage"])
         host_state = self._load_host_monitor_state()
         host_findings = cast(list[dict[str, Any]], host_state.get("active_findings") or [])
-        alert_rows = self.manager.query_alerts(**self._alert_query_kwargs())
-        case_rows = self.manager.query_cases(**self._case_query_kwargs())
+        alert_rows = self._alert_rows_for_view(dashboard)
+        case_rows = self._case_rows_for_view(dashboard)
         all_events = self.manager.list_events(limit=500)
         all_alerts = self.manager.list_alerts()
         for key, value in self.summary_vars.items():
@@ -450,7 +464,7 @@ class SocDashboard:
             lambda item: (item["severity"], item["title"], item["updated_at"]),
             item_id_key="alert_id",
         )
-        self.alert_rows_by_id = {item.alert_id: item.model_dump(mode="json") for item in alert_rows}
+        self.alert_rows_by_id = {item["alert_id"]: item for item in [item.model_dump(mode="json") for item in alert_rows]}
         self.all_alert_rows_by_id = {item.alert_id: item.model_dump(mode="json") for item in all_alerts}
         self._populate_tree(
             self.case_tree,
@@ -458,7 +472,7 @@ class SocDashboard:
             lambda item: (item["status"], item["severity"], item["title"], item.get("assignee") or "-"),
             item_id_key="case_id",
         )
-        self.case_rows_by_id = {item.case_id: item.model_dump(mode="json") for item in case_rows}
+        self.case_rows_by_id = {item["case_id"]: item for item in [item.model_dump(mode="json") for item in case_rows]}
         self.event_rows_by_id = {item.event_id: item.model_dump(mode="json") for item in all_events}
         self._refresh_alert_detail()
         self._refresh_case_detail()
@@ -723,9 +737,11 @@ class SocDashboard:
         severity = self._parse_severity(self.alert_severity_var.get())
         linked_case_state = self.alert_link_state_var.get()
         assignee = "unassigned"
-        preset_name = getattr(getattr(self, "queue_preset_var", None), "get", lambda: "tier1-triage")()
+        preset_name = self._selected_preset_name()
         if preset_name == "my-queue":
             assignee = self._current_analyst_identity() or "unassigned"
+        elif preset_name == "unassigned":
+            assignee = "unassigned"
         return {
             "status": SocAlertStatus.open,
             "severity": severity,
@@ -742,9 +758,11 @@ class SocDashboard:
             "sort": self.case_sort_var.get() or "updated_desc",
             "limit": 25,
         }
-        preset_name = getattr(getattr(self, "queue_preset_var", None), "get", lambda: "tier1-triage")()
+        preset_name = self._selected_preset_name()
         if preset_name == "my-queue":
             query["assignee"] = self._current_analyst_identity() or "unassigned"
+        elif preset_name == "unassigned":
+            query["assignee"] = "unassigned"
         return query
 
     @staticmethod
@@ -829,6 +847,23 @@ class SocDashboard:
     @classmethod
     def _preset_values(cls, preset_name: str) -> dict[str, str]:
         return dict(cls.QUEUE_PRESETS.get((preset_name or "custom").strip().lower(), {}))
+
+    def _selected_preset_name(self) -> str:
+        return str(getattr(getattr(self, "queue_preset_var", None), "get", lambda: "tier1-triage")() or "tier1-triage")
+
+    def _alert_rows_for_view(self, dashboard: dict[str, Any]) -> list[Any]:
+        preset_name = self._selected_preset_name()
+        if preset_name == "needs-attention":
+            stale_rows = cast(list[dict[str, Any]], cast(dict[str, Any], dashboard["triage"]).get("stale_open_alerts") or [])
+            return [self.manager.get_alert(str(item["alert_id"])) for item in stale_rows if item.get("alert_id")]
+        return list(self.manager.query_alerts(**self._alert_query_kwargs()))
+
+    def _case_rows_for_view(self, dashboard: dict[str, Any]) -> list[Any]:
+        preset_name = self._selected_preset_name()
+        if preset_name == "needs-attention":
+            cases = [item for item in self.manager.list_cases() if item.status is not SocCaseStatus.closed]
+            return sorted(cases, key=lambda item: item.updated_at)[:25]
+        return list(self.manager.query_cases(**self._case_query_kwargs()))
 
     @staticmethod
     def _parse_severity(value: str) -> SocSeverity | None:

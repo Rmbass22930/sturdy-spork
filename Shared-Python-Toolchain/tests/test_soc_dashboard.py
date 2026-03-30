@@ -83,6 +83,30 @@ def test_preset_values_for_my_queue() -> None:
     }
 
 
+def test_preset_values_for_unassigned() -> None:
+    preset = SocDashboard._preset_values("unassigned")
+
+    assert preset == {
+        "alert_severity": "all",
+        "alert_link_state": "unlinked",
+        "alert_sort": "updated_desc",
+        "case_status": "all",
+        "case_sort": "updated_desc",
+    }
+
+
+def test_preset_values_for_needs_attention() -> None:
+    preset = SocDashboard._preset_values("needs-attention")
+
+    assert preset == {
+        "alert_severity": "all",
+        "alert_link_state": "unlinked",
+        "alert_sort": "updated_asc",
+        "case_status": "all",
+        "case_sort": "updated_asc",
+    }
+
+
 def test_apply_queue_preset_updates_filter_variables_and_refreshes() -> None:
     class Var:
         def __init__(self, value: str):
@@ -128,6 +152,18 @@ def test_alert_query_kwargs_use_analyst_identity_for_my_queue() -> None:
     assert kwargs["linked_case_state"] is None
 
 
+def test_alert_query_kwargs_use_unassigned_for_unassigned_view() -> None:
+    dashboard = SocDashboard.__new__(SocDashboard)
+    dashboard.queue_preset_var = type("Var", (), {"get": lambda self: "unassigned"})()
+    dashboard.alert_severity_var = type("Var", (), {"get": lambda self: "all"})()
+    dashboard.alert_link_state_var = type("Var", (), {"get": lambda self: "unlinked"})()
+    dashboard.alert_sort_var = type("Var", (), {"get": lambda self: "updated_desc"})()
+
+    kwargs = dashboard._alert_query_kwargs()
+
+    assert kwargs["assignee"] == "unassigned"
+
+
 def test_case_query_kwargs_use_analyst_identity_for_my_queue() -> None:
     dashboard = SocDashboard.__new__(SocDashboard)
     dashboard.queue_preset_var = type("Var", (), {"get": lambda self: "my-queue"})()
@@ -138,6 +174,70 @@ def test_case_query_kwargs_use_analyst_identity_for_my_queue() -> None:
     kwargs = dashboard._case_query_kwargs()
 
     assert kwargs["assignee"] == "tier2-analyst"
+
+
+def test_case_query_kwargs_use_unassigned_for_unassigned_view() -> None:
+    dashboard = SocDashboard.__new__(SocDashboard)
+    dashboard.queue_preset_var = type("Var", (), {"get": lambda self: "unassigned"})()
+    dashboard.case_status_var = type("Var", (), {"get": lambda self: "all"})()
+    dashboard.case_sort_var = type("Var", (), {"get": lambda self: "updated_desc"})()
+
+    kwargs = dashboard._case_query_kwargs()
+
+    assert kwargs["assignee"] == "unassigned"
+
+
+def test_alert_rows_for_needs_attention_use_stale_triage_alerts() -> None:
+    def get_alert(_self: object, alert_id: str) -> dict[str, str]:
+        fetched.append(alert_id)
+        return {"alert_id": alert_id}
+
+    dashboard = SocDashboard.__new__(SocDashboard)
+    dashboard.queue_preset_var = type("Var", (), {"get": lambda self: "needs-attention"})()
+    fetched: list[str] = []
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "get_alert": get_alert,
+            "query_alerts": lambda self, **kwargs: [],
+        },
+    )()
+
+    rows = dashboard._alert_rows_for_view(
+        {
+            "triage": {
+                "stale_open_alerts": [
+                    {"alert_id": "alert-1"},
+                    {"alert_id": "alert-2"},
+                ]
+            }
+        }
+    )
+
+    assert fetched == ["alert-1", "alert-2"]
+    assert rows == [{"alert_id": "alert-1"}, {"alert_id": "alert-2"}]
+
+
+def test_case_rows_for_needs_attention_use_oldest_open_cases() -> None:
+    dashboard = SocDashboard.__new__(SocDashboard)
+    dashboard.queue_preset_var = type("Var", (), {"get": lambda self: "needs-attention"})()
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_cases": lambda self: [
+                type("Case", (), {"case_id": "case-closed", "status": SocCaseStatus.closed, "updated_at": 30})(),
+                type("Case", (), {"case_id": "case-newer", "status": SocCaseStatus.investigating, "updated_at": 20})(),
+                type("Case", (), {"case_id": "case-older", "status": SocCaseStatus.open, "updated_at": 10})(),
+            ],
+            "query_cases": lambda self, **kwargs: [],
+        },
+    )()
+
+    rows = dashboard._case_rows_for_view({"triage": {}})
+
+    assert [row.case_id for row in rows] == ["case-older", "case-newer"]
 
 
 def test_case_status_parser_understands_investigating() -> None:
