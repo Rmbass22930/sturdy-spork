@@ -223,6 +223,8 @@ class SocDashboard:
             controls=self._build_alert_controls,
         )
         self.alert_tree.bind("<<TreeviewSelect>>", lambda _event: self._refresh_alert_detail())
+        self.alert_tree.bind("<Return>", lambda _event: self.view_alert_source_events())
+        self.alert_tree.bind("<Button-3>", self._show_alert_context_menu)
         self.case_tree = self._build_tree(
             body,
             row=0,
@@ -233,6 +235,8 @@ class SocDashboard:
             controls=self._build_case_controls,
         )
         self.case_tree.bind("<<TreeviewSelect>>", lambda _event: self._refresh_case_detail())
+        self.case_tree.bind("<Return>", lambda _event: self.view_case_linked_activity())
+        self.case_tree.bind("<Button-3>", self._show_case_context_menu)
         self.host_tree = self._build_tree(
             body,
             row=0,
@@ -1278,6 +1282,33 @@ class SocDashboard:
         menu.add_command(label="Open Selected Event", command=self.open_selected_recent_event_action)
         menu.add_separator()
         menu.add_command(label="Clear Activity Focus", command=self.clear_activity_focus)
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _show_alert_context_menu(self, event: Any) -> None:
+        if self._select_tree_row_at_pointer(self.alert_tree, event) is None or tk is None:
+            return
+        menu = tk.Menu(self.root, tearoff=0)
+        menu.add_command(label="Assign Alert", command=self.assign_selected_alert)
+        menu.add_command(label="Acknowledge Alert", command=self.acknowledge_selected_alert)
+        menu.add_command(label="Close Alert", command=self.close_selected_alert)
+        menu.add_separator()
+        menu.add_command(label="Add Alert Note", command=self.add_alert_note)
+        menu.add_command(label="View Source Events", command=self.view_alert_source_events)
+        menu.add_command(label="Promote To New Case", command=self.promote_selected_alert)
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _show_case_context_menu(self, event: Any) -> None:
+        if self._select_tree_row_at_pointer(self.case_tree, event) is None or tk is None:
+            return
+        menu = tk.Menu(self.root, tearoff=0)
+        menu.add_command(label="Assign Case", command=self.assign_selected_case)
+        menu.add_command(label="Mark Investigating", command=self.mark_case_investigating)
+        menu.add_command(label="Mark Contained", command=self.mark_case_contained)
+        menu.add_command(label="Close Case", command=self.close_selected_case)
+        menu.add_separator()
+        menu.add_command(label="Add Case Note", command=self.add_case_note)
+        menu.add_command(label="Add Observable", command=self.add_case_observable)
+        menu.add_command(label="View Linked Activity", command=self.view_case_linked_activity)
         menu.tk_popup(event.x_root, event.y_root)
 
     @staticmethod

@@ -280,6 +280,86 @@ def test_select_tree_row_at_pointer_returns_none_when_no_row() -> None:
     assert not hasattr(tree, "selected")
 
 
+def test_show_alert_context_menu_selects_clicked_row_and_uses_alert_actions() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.root = object()
+    dashboard.alert_tree = type(
+        "Tree",
+        (),
+        {
+            "identify_row": lambda self, y: "alert-7",
+            "selection_set": lambda self, value: setattr(self, "selected", value),
+            "focus": lambda self, value: setattr(self, "focused", value),
+        },
+    )()
+    event = type("Event", (), {"y": 12, "x_root": 100, "y_root": 200})()
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+
+    calls: list[str] = []
+    original_tk = soc_dashboard_module.tk
+    try:
+        class FakeMenu:
+            def __init__(self, root, tearoff=0):
+                calls.append("menu")
+            def add_command(self, label, command):
+                calls.append(label)
+            def add_separator(self):
+                calls.append("separator")
+            def tk_popup(self, x, y):
+                calls.append(f"popup:{x}:{y}")
+
+        soc_dashboard_module.tk = cast(Any, type("TkModule", (), {"Menu": FakeMenu})())
+        dashboard._show_alert_context_menu(event)
+    finally:
+        soc_dashboard_module.tk = original_tk
+
+    assert getattr(dashboard.alert_tree, "selected") == "alert-7"
+    assert "Assign Alert" in calls
+    assert "View Source Events" in calls
+    assert "popup:100:200" in calls
+
+
+def test_show_case_context_menu_selects_clicked_row_and_uses_case_actions() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.root = object()
+    dashboard.case_tree = type(
+        "Tree",
+        (),
+        {
+            "identify_row": lambda self, y: "case-4",
+            "selection_set": lambda self, value: setattr(self, "selected", value),
+            "focus": lambda self, value: setattr(self, "focused", value),
+        },
+    )()
+    event = type("Event", (), {"y": 18, "x_root": 120, "y_root": 240})()
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+
+    calls: list[str] = []
+    original_tk = soc_dashboard_module.tk
+    try:
+        class FakeMenu:
+            def __init__(self, root, tearoff=0):
+                calls.append("menu")
+            def add_command(self, label, command):
+                calls.append(label)
+            def add_separator(self):
+                calls.append("separator")
+            def tk_popup(self, x, y):
+                calls.append(f"popup:{x}:{y}")
+
+        soc_dashboard_module.tk = cast(Any, type("TkModule", (), {"Menu": FakeMenu})())
+        dashboard._show_case_context_menu(event)
+    finally:
+        soc_dashboard_module.tk = original_tk
+
+    assert getattr(dashboard.case_tree, "selected") == "case-4"
+    assert "Assign Case" in calls
+    assert "View Linked Activity" in calls
+    assert "popup:120:240" in calls
+
+
 def test_format_summary_records_limits_output() -> None:
     rows = [
         {"alert_id": f"alert-{index}", "status": "open", "severity": "high", "title": f"Alert {index}"}
