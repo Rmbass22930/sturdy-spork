@@ -95,6 +95,38 @@ class DummyHostMonitor:
         }
 
 
+class DummyPacketMonitor:
+    def __init__(self):
+        self.run_calls = 0
+
+    def run_check(self):
+        self.run_calls += 1
+        return {
+            "snapshot": {"capture_status": "ok"},
+            "active_findings": [],
+            "emitted_findings": [],
+            "resolved_findings": [],
+        }
+
+
+class DummyStreamMonitor:
+    def __init__(self):
+        self.run_calls = 0
+        self.include_activity = False
+
+    def run_check(self):
+        self.run_calls += 1
+        return {
+            "snapshot": {
+                "checked_at": "2026-03-30T00:00:00+00:00",
+                "scanned_artifacts": [{"path": "C:/Temp/stream.tmp.js"}] if self.include_activity else [],
+            },
+            "active_findings": [],
+            "emitted_findings": [],
+            "resolved_findings": [],
+        }
+
+
 def test_perform_tasks_records_metrics():
     vault = DummyVault()
     proxy = DummyProxy()
@@ -242,3 +274,78 @@ def test_host_monitor_runs_and_dispatches_findings():
     status = supervisor.status()["host_monitor"]
     assert status["enabled"] is True
     assert status["last_result"] == "success"
+
+
+def test_packet_monitor_runs_on_first_tick_even_with_later_interval():
+    vault = DummyVault()
+    proxy = DummyProxy()
+    audit = DummyAudit()
+    alerts = DummyAlerts()
+    packet_monitor = DummyPacketMonitor()
+    supervisor = AutomationSupervisor(
+        vault=vault,
+        proxy=proxy,
+        audit_logger=audit,
+        alert_manager=alerts,
+        packet_monitor=packet_monitor,
+        packet_monitor_enabled=True,
+        packet_monitor_every_ticks=2,
+        interval_seconds=0.1,
+    )
+
+    supervisor.perform_tasks()
+
+    assert packet_monitor.run_calls == 1
+    assert supervisor.status()["packet_monitor"]["last_result"] == "ok"
+
+
+def test_stream_monitor_runs_on_first_tick_even_with_later_interval():
+    vault = DummyVault()
+    proxy = DummyProxy()
+    audit = DummyAudit()
+    alerts = DummyAlerts()
+    stream_monitor = DummyStreamMonitor()
+    supervisor = AutomationSupervisor(
+        vault=vault,
+        proxy=proxy,
+        audit_logger=audit,
+        alert_manager=alerts,
+        stream_monitor=stream_monitor,
+        stream_monitor_enabled=True,
+        stream_monitor_every_ticks=3,
+        interval_seconds=0.1,
+    )
+
+    supervisor.perform_tasks()
+
+    assert stream_monitor.run_calls == 1
+    assert supervisor.status()["stream_monitor"]["last_result"] == "success"
+
+
+def test_stream_activity_forces_packet_monitor_immediately():
+    vault = DummyVault()
+    proxy = DummyProxy()
+    audit = DummyAudit()
+    alerts = DummyAlerts()
+    packet_monitor = DummyPacketMonitor()
+    stream_monitor = DummyStreamMonitor()
+    stream_monitor.include_activity = True
+    supervisor = AutomationSupervisor(
+        vault=vault,
+        proxy=proxy,
+        audit_logger=audit,
+        alert_manager=alerts,
+        packet_monitor=packet_monitor,
+        packet_monitor_enabled=True,
+        packet_monitor_every_ticks=5,
+        stream_monitor=stream_monitor,
+        stream_monitor_enabled=True,
+        stream_monitor_every_ticks=3,
+        interval_seconds=0.1,
+    )
+
+    supervisor.perform_tasks()
+
+    assert stream_monitor.run_calls == 1
+    assert packet_monitor.run_calls == 1
+    assert supervisor.status()["packet_monitor"]["last_result"] == "ok"

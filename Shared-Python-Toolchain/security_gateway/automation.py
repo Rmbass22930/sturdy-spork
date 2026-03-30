@@ -144,8 +144,10 @@ class AutomationSupervisor:
             malware_rule_feed = self._maybe_refresh_malware_rule_feeds()
             host_monitor = self._maybe_run_host_monitor()
             network_monitor = self._maybe_run_network_monitor()
-            packet_monitor = self._maybe_run_packet_monitor()
             stream_monitor = self._maybe_run_stream_monitor()
+            packet_monitor = self._maybe_run_packet_monitor(
+                force_run=self._stream_activity_detected(stream_monitor)
+            )
             operational = self._maybe_emit_operational_notifications()
             self._audit.log(
                 "automation.tick",
@@ -404,12 +406,16 @@ class AutomationSupervisor:
         details["block_reason"] = blocked_entry.reason
         details["block_expires_at"] = blocked_entry.expires_at
 
-    def _maybe_run_packet_monitor(self) -> dict[str, Any]:
+    def _maybe_run_packet_monitor(self, *, force_run: bool = False) -> dict[str, Any]:
         if not self._packet_monitor_enabled:
             return {"enabled": False}
         if self._packet_monitor is None:
             return {"enabled": True, "result": "unavailable"}
-        if self._tick_count % self._packet_monitor_every_ticks != 0:
+        if not force_run and self._should_wait_for_tick(
+            tick_count=self._tick_count,
+            every_ticks=self._packet_monitor_every_ticks,
+            last_run=self._packet_monitor_last_run,
+        ):
             return {
                 "enabled": True,
                 "result": "skipped",
@@ -470,7 +476,11 @@ class AutomationSupervisor:
             return {"enabled": False}
         if self._stream_monitor is None:
             return {"enabled": True, "result": "unavailable"}
-        if self._tick_count % self._stream_monitor_every_ticks != 0:
+        if self._should_wait_for_tick(
+            tick_count=self._tick_count,
+            every_ticks=self._stream_monitor_every_ticks,
+            last_run=self._stream_monitor_last_run,
+        ):
             return {
                 "enabled": True,
                 "result": "skipped",
@@ -532,6 +542,20 @@ class AutomationSupervisor:
         )
         if self._stream_monitor_callback is not None:
             self._stream_monitor_callback(finding)
+
+    @staticmethod
+    def _should_wait_for_tick(*, tick_count: int, every_ticks: int, last_run: Optional[datetime]) -> bool:
+        if last_run is None:
+            return False
+        return tick_count % every_ticks != 0
+
+    @staticmethod
+    def _stream_activity_detected(stream_result: dict[str, Any]) -> bool:
+        snapshot = stream_result.get("snapshot")
+        if not isinstance(snapshot, dict):
+            return False
+        scanned_artifacts = snapshot.get("scanned_artifacts")
+        return isinstance(scanned_artifacts, list) and len(scanned_artifacts) > 0
 
     @property
     def running(self) -> bool:
