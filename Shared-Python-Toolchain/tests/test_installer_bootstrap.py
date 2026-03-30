@@ -27,8 +27,9 @@ def test_rollback_install_cleans_created_artifacts(tmp_path: Path) -> None:
     shortcut_path = tmp_path / "Desktop" / "SecurityGateway.lnk"
     shortcut_path.parent.mkdir()
     uninstall_script = install_dir / "Uninstall-SecurityGateway.ps1"
+    register_startup_script = install_dir / "Register-SecurityGatewayMonitor.ps1"
 
-    for path in (installed_path, uninstall_executable, backup_file, shortcut_path, uninstall_script):
+    for path in (installed_path, uninstall_executable, backup_file, shortcut_path, uninstall_script, register_startup_script):
         path.write_text("x", encoding="utf-8")
 
     transaction = installer.InstallTransaction(
@@ -38,6 +39,7 @@ def test_rollback_install_cleans_created_artifacts(tmp_path: Path) -> None:
         backup_file=backup_file,
         shortcut_paths=[shortcut_path],
         uninstall_script=uninstall_script,
+        register_startup_script=register_startup_script,
         automation_task_registered=True,
     )
 
@@ -54,6 +56,7 @@ def test_rollback_install_cleans_created_artifacts(tmp_path: Path) -> None:
     assert not backup_file.exists()
     assert not shortcut_path.exists()
     assert not uninstall_script.exists()
+    assert not register_startup_script.exists()
     assert not install_dir.exists()
 
 
@@ -94,7 +97,7 @@ def test_register_automation_task_prefers_xml_schtasks_registration(monkeypatch,
     calls: list[list[str]] = []
 
     monkeypatch.setattr(installer, "unregister_automation_task", lambda: calls.append(["unregister"]))
-    monkeypatch.setattr(installer, "_scheduled_task_exists", lambda name: True)
+    monkeypatch.setattr(installer, "_scheduled_task_matches", lambda name, path: True)
     monkeypatch.setattr(installer, "_write_task_xml", lambda path: xml_path)
 
     def fake_run(args, check=False, capture_output=False, text=False):
@@ -127,13 +130,13 @@ def test_register_automation_task_falls_back_to_schtasks(monkeypatch, tmp_path: 
     exe_path = tmp_path / "SecurityGateway.exe"
     xml_path = tmp_path / "security_gateway_monitor_task.xml"
     calls: list[list[str]] = []
-    exists_checks: list[str] = []
+    exists_checks: list[tuple[str, Path]] = []
 
     monkeypatch.setattr(installer, "unregister_automation_task", lambda: calls.append(["unregister"]))
     monkeypatch.setattr(installer, "_write_task_xml", lambda path: xml_path)
 
-    def fake_exists(name: str) -> bool:
-        exists_checks.append(name)
+    def fake_exists(name: str, path: Path) -> bool:
+        exists_checks.append((name, path))
         return True
 
     def fake_run(args, check=False, capture_output=False, text=False):
@@ -144,7 +147,7 @@ def test_register_automation_task_falls_back_to_schtasks(monkeypatch, tmp_path: 
             return mock.Mock(returncode=1, stderr="Access is denied.", stdout="")
         return mock.Mock(returncode=0, stderr="", stdout="")
 
-    monkeypatch.setattr(installer, "_scheduled_task_exists", fake_exists)
+    monkeypatch.setattr(installer, "_scheduled_task_matches", fake_exists)
     monkeypatch.setattr(installer.subprocess, "run", fake_run)
 
     installer.register_automation_task(exe_path)
@@ -167,7 +170,11 @@ def test_register_automation_task_falls_back_to_schtasks(monkeypatch, tmp_path: 
         "/SC",
         "ONSTART",
     ]
-    assert exists_checks == [installer.TASK_NAME, installer.TASK_NAME, installer.TASK_NAME]
+    assert exists_checks == [
+        (installer.TASK_NAME, exe_path),
+        (installer.TASK_NAME, exe_path),
+        (installer.TASK_NAME, exe_path),
+    ]
 
 
 def test_task_xml_contents_uses_system_boot_trigger(tmp_path: Path) -> None:
@@ -188,7 +195,7 @@ def test_register_automation_task_raises_when_no_task_is_created(monkeypatch, tm
     xml_path = tmp_path / "security_gateway_monitor_task.xml"
 
     monkeypatch.setattr(installer, "unregister_automation_task", lambda: None)
-    monkeypatch.setattr(installer, "_scheduled_task_exists", lambda name: False)
+    monkeypatch.setattr(installer, "_scheduled_task_matches", lambda name, path: False)
     monkeypatch.setattr(installer, "_write_task_xml", lambda path: xml_path)
     monkeypatch.setattr(
         installer.subprocess,
@@ -279,6 +286,7 @@ def test_print_install_summary_lists_shortcuts_and_dependencies(capsys, tmp_path
         ],
         uninstall_executable=tmp_path / "SecurityGateway-Uninstall.exe",
         uninstall_script=tmp_path / "Uninstall-SecurityGateway.ps1",
+        register_startup_script=tmp_path / "Register-SecurityGatewayMonitor.ps1",
         dependency_results=[
             installer.DependencyInstallResult(
                 name="Cloudflare WARP",

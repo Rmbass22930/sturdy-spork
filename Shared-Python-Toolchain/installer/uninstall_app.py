@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import winreg
 from ctypes import wintypes
 from pathlib import Path
 
@@ -15,11 +16,15 @@ APP_EXE_NAME = "SecurityGateway.exe"
 UNINSTALL_EXE_NAME = "SecurityGateway-Uninstall.exe"
 UNINSTALL_SCRIPT_NAME = "Uninstall-SecurityGateway.ps1"
 PATH_BACKUP_NAME = "user_path_backup.txt"
-TASK_NAME = "SecurityGatewayAutomation"
+DEFAULT_INSTALL_ROOT = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "SecurityGateway"
+TASK_NAME = "SecurityGatewayMonitor"
+LEGACY_TASK_NAMES = ("SecurityGatewayAutomation",)
 SYSTEM_DATA_DIR = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "SecurityGateway"
 USER_DATA_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "SecurityGateway"
 CSIDL_DESKTOPDIRECTORY = 0x0010
 SHGFP_TYPE_CURRENT = 0
+UNINSTALL_REGISTRY_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\SecurityGateway"
+APP_REGISTRY_KEY = r"Software\SecurityGateway"
 
 
 def ensure_admin() -> None:
@@ -69,15 +74,11 @@ def remove_tree(path: Path) -> None:
 
 
 def restore_user_path(previous: str) -> None:
-    import winreg
-
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_ALL_ACCESS) as key:
         winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, previous)
 
 
 def remove_path_entry(dir_path: Path) -> None:
-    import winreg
-
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_ALL_ACCESS) as key:
         try:
             path_value, _ = winreg.QueryValueEx(key, "Path")
@@ -97,12 +98,33 @@ def restore_path_from_backup(install_root: Path) -> None:
 
 
 def unregister_automation_task() -> None:
-    subprocess.run(
-        ["schtasks", "/Delete", "/TN", TASK_NAME, "/F"],
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    for task_name in (TASK_NAME, *LEGACY_TASK_NAMES):
+        subprocess.run(
+            ["schtasks", "/Delete", "/TN", task_name, "/F"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+
+def _delete_registry_tree(root: int, subkey: str) -> None:
+    try:
+        with winreg.OpenKey(root, subkey, 0, winreg.KEY_ALL_ACCESS) as key:
+            child_count = winreg.QueryInfoKey(key)[0]
+            children = [winreg.EnumKey(key, index) for index in range(child_count)]
+        for child in children:
+            _delete_registry_tree(root, f"{subkey}\\{child}")
+        winreg.DeleteKey(root, subkey)
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+
+
+def remove_registry_entries() -> None:
+    for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        _delete_registry_tree(root, APP_REGISTRY_KEY)
+        _delete_registry_tree(root, UNINSTALL_REGISTRY_KEY)
 
 
 def schedule_self_delete(exe_path: Path, install_root: Path) -> None:
@@ -126,10 +148,18 @@ def remove_install_payload(install_root: Path, current_exe_path: Path | None = N
         remove_file(target)
 
 
+def resolve_install_root(current_exe_path: Path) -> Path:
+    if current_exe_path.parent == DEFAULT_INSTALL_ROOT:
+        return DEFAULT_INSTALL_ROOT
+    if DEFAULT_INSTALL_ROOT.exists():
+        return DEFAULT_INSTALL_ROOT
+    return current_exe_path.parent
+
+
 def main() -> int:
     ensure_admin()
     exe_path = Path(sys.argv[0]).resolve()
-    install_root = exe_path.parent
+    install_root = resolve_install_root(exe_path)
 
     print(f"Removing {APP_NAME} from {install_root}")
 
@@ -138,6 +168,7 @@ def main() -> int:
 
     unregister_automation_task()
     restore_path_from_backup(install_root)
+    remove_registry_entries()
     remove_install_payload(install_root, current_exe_path=exe_path)
     remove_tree(SYSTEM_DATA_DIR)
     remove_tree(USER_DATA_DIR)

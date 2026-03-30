@@ -39,6 +39,7 @@ UNINSTALLER_RELATIVE = Path("payload") / "SecurityGateway-Uninstall.exe"
 GUIDE_RELATIVE = Path("docs") / "INSTALL_GUIDE.pdf"
 DEPENDENCY_MANIFEST_RELATIVE = Path("installer") / "dependencies.json"
 UNINSTALL_SCRIPT_NAME = "Uninstall-SecurityGateway.ps1"
+REGISTER_STARTUP_SCRIPT_NAME = "Register-SecurityGatewayMonitor.ps1"
 PATH_BACKUP_NAME = "user_path_backup.txt"
 SYSTEM_DATA_DIR = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "SecurityGateway"
 USER_DATA_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "SecurityGateway"
@@ -87,6 +88,7 @@ class InstallTransaction:
     backup_file: Optional[Path] = None
     shortcut_paths: Optional[List[Path]] = None
     uninstall_script: Optional[Path] = None
+    register_startup_script: Optional[Path] = None
     reports_dir: Optional[Path] = None
     automation_task_registered: bool = False
 
@@ -107,6 +109,7 @@ class InstallSummary:
     shortcut_paths: List[Path]
     uninstall_executable: Path
     uninstall_script: Path
+    register_startup_script: Path
     dependency_results: List[DependencyInstallResult]
 
 
@@ -292,6 +295,7 @@ class InstallerUI(InstallReporter):
                     self._append_log("- Dependencies: none")
                 self._append_log(f"- Uninstall executable: {summary.uninstall_executable}")
                 self._append_log(f"- Uninstall script: {summary.uninstall_script}")
+                self._append_log(f"- Startup registration script: {summary.register_startup_script}")
                 self._append_log("- PATH updated for current user. Sign out/in or restart terminal to use immediately.")
             elif kind == "error":
                 self.status_var.set("Install failed.")
@@ -834,14 +838,27 @@ def _schtasks_registration_command(exe_path: Path) -> list[str]:
     ]
 
 
-def _scheduled_task_exists(task_name: str) -> bool:
+def _query_scheduled_task_xml(task_name: str) -> str:
     result = subprocess.run(
-        ["schtasks", "/Query", "/TN", task_name],
+        ["schtasks", "/Query", "/TN", task_name, "/XML"],
         check=False,
         capture_output=True,
         text=True,
     )
-    return result.returncode == 0
+    output = (result.stdout or "") + (result.stderr or "")
+    if result.returncode != 0:
+        return ""
+    lowered = output.lower()
+    if "access is denied" in lowered or "error:" in lowered:
+        return ""
+    return output
+
+
+def _scheduled_task_matches(task_name: str, exe_path: Path) -> bool:
+    xml = _query_scheduled_task_xml(task_name)
+    if not xml.strip():
+        return False
+    return str(exe_path) in xml and "automation-run" in xml
 
 
 def register_automation_task(exe_path: Path) -> None:
@@ -856,10 +873,10 @@ def register_automation_task(exe_path: Path) -> None:
         ("schtasks", _schtasks_registration_command(exe_path)),
     ):
         result = subprocess.run(command, check=False, capture_output=True, text=True)
-        exists = _scheduled_task_exists(TASK_NAME)
+        exists = _scheduled_task_matches(TASK_NAME, exe_path)
         output = (result.stderr or result.stdout or "").strip()
         _append_task_registration_log(
-            f"{label} registration returned code {result.returncode}; task_exists={exists}; output={output or '<none>'}"
+            f"{label} registration returned code {result.returncode}; task_matches={exists}; output={output or '<none>'}"
         )
         if result.returncode == 0 and exists:
             _append_task_registration_log(f"Task registration succeeded via {label}")
@@ -929,6 +946,20 @@ function Remove-AutomationTask {{
     }}
 }}
 
+function Remove-RegistryTreeIfPresent {{
+    param([Microsoft.Win32.RegistryKey]$Root, [string]$SubKey)
+    try {{
+        $base = $Root.OpenSubKey($SubKey, $true)
+        if ($null -eq $base) {{ return }}
+        foreach ($child in $base.GetSubKeyNames()) {{
+            Remove-RegistryTreeIfPresent -Root $Root -SubKey ($SubKey + "\\" + $child)
+        }}
+        $base.Close()
+        $Root.DeleteSubKey($SubKey, $false)
+    }} catch {{
+    }}
+}}
+
 try {{
     Assert-Admin
     foreach ($ShortcutPath in @({shortcut_path_block})) {{
@@ -937,6 +968,10 @@ try {{
     $restored = Restore-PathFromBackup -File $PathBackupFile
     Remove-PathEntry -Dir $InstallDir
     Remove-AutomationTask -Name $TaskName
+    Remove-RegistryTreeIfPresent -Root ([Microsoft.Win32.Registry]::CurrentUser) -SubKey "Software\\SecurityGateway"
+    Remove-RegistryTreeIfPresent -Root ([Microsoft.Win32.Registry]::LocalMachine) -SubKey "Software\\SecurityGateway"
+    Remove-RegistryTreeIfPresent -Root ([Microsoft.Win32.Registry]::CurrentUser) -SubKey "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\SecurityGateway"
+    Remove-RegistryTreeIfPresent -Root ([Microsoft.Win32.Registry]::LocalMachine) -SubKey "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\SecurityGateway"
     foreach ($target in @($InstallDir, $SystemDataPath, $UserDataPath)) {{
         if (Test-Path $target) {{
             Remove-Item -Recurse -Force $target
@@ -948,6 +983,34 @@ try {{
     Write-Error $_
     exit 1
 }}
+"""
+    script_path.write_text(script, encoding="utf-8")
+    return script_path
+
+
+def write_register_startup_script(installed_path: Path) -> Path:
+    script_path = installed_path.parent / REGISTER_STARTUP_SCRIPT_NAME
+    script = f"""\
+param(
+    [string]$ExePath = "{installed_path}",
+    [string]$TaskName = "{TASK_NAME}"
+)
+
+function Assert-Admin {{
+    if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {{
+        throw "Please run this script in an elevated PowerShell session."
+    }}
+}}
+
+function Remove-TaskIfPresent {{
+    param([string]$Name)
+    schtasks /Delete /TN $Name /F | Out-Null
+}}
+
+Assert-Admin
+Remove-TaskIfPresent -Name $TaskName
+schtasks /Create /TN $TaskName /SC ONSTART /RU SYSTEM /RL HIGHEST /TR ('"' + $ExePath + '" automation-run') /F
+Write-Host "Security Gateway startup task registered."
 """
     script_path.write_text(script, encoding="utf-8")
     return script_path
@@ -966,6 +1029,7 @@ def rollback_install(transaction: InstallTransaction) -> None:
     for path in (
         transaction.uninstall_executable,
         transaction.uninstall_script,
+        transaction.register_startup_script,
         *shortcut_paths,
         transaction.backup_file,
         transaction.installed_path,
@@ -1168,6 +1232,7 @@ def print_install_summary(summary: InstallSummary) -> None:
         print("- Dependencies: none")
     print(f"- Uninstall executable: {summary.uninstall_executable}")
     print(f"- Uninstall script: {summary.uninstall_script}")
+    print(f"- Startup registration script: {summary.register_startup_script}")
     print("- PATH updated for current user. Sign out/in or restart terminal to use immediately.")
 
 
@@ -1250,6 +1315,8 @@ def perform_install(args: argparse.Namespace, reporter: Optional[InstallReporter
         reporter.stage("Writing uninstall script")
         uninstall_script = write_uninstall_script(installed_path, backup_file)
         transaction.uninstall_script = uninstall_script
+        register_startup_script = write_register_startup_script(installed_path)
+        transaction.register_startup_script = register_startup_script
     except Exception as exc:
         try:
             rollback_install(transaction)
@@ -1268,6 +1335,7 @@ def perform_install(args: argparse.Namespace, reporter: Optional[InstallReporter
             shortcut_paths=transaction.shortcut_paths or [],
             uninstall_executable=uninstall_executable,
             uninstall_script=uninstall_script,
+            register_startup_script=register_startup_script,
             dependency_results=dependency_results,
         )
     )
