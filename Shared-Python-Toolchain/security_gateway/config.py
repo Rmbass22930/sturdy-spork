@@ -12,9 +12,19 @@ from pydantic import Field, HttpUrl
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _default_runtime_data_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "SecurityGateway"
+    return Path(".")
+
+
+def _default_runtime_path(*parts: str) -> str:
+    return str(_default_runtime_data_dir().joinpath(*parts))
+
+
 def _default_report_output_dir() -> str:
     if getattr(sys, "frozen", False):
-        return str(Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "SecurityGateway" / "reports")
+        return _default_runtime_path("reports")
     return "output/pdf"
 
 
@@ -31,11 +41,11 @@ def _default_doh_providers() -> list[HttpUrl]:
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SECURITY_GATEWAY_", env_file=".env")
     environment: str = Field("dev", description="Deployment environment tag")
-    audit_log_path: str = Field("logs/audit.jsonl")
-    soc_event_log_path: str = Field("logs/soc_events.jsonl")
-    soc_alert_store_path: str = Field("logs/soc_alerts.json")
-    soc_case_store_path: str = Field("logs/soc_cases.json")
-    ip_blocklist_path: str = Field("logs/blocked_ips.json")
+    audit_log_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "audit.jsonl"))
+    soc_event_log_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "soc_events.jsonl"))
+    soc_alert_store_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "soc_alerts.json"))
+    soc_case_store_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "soc_cases.json"))
+    ip_blocklist_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "blocked_ips.json"))
     report_output_dir: str = Field(default_factory=_default_report_output_dir)
     hashicorp_vault_url: Optional[str] = None
     hashicorp_vault_token: Optional[str] = None
@@ -113,7 +123,7 @@ class Settings(BaseSettings):
             "https://raw.githubusercontent.com/easylist/easylist/master/easyprivacy/easyprivacy_general.txt",
         ]
     )
-    tracker_feed_cache_path: str = Field("logs/tracker_feed_domains.json")
+    tracker_feed_cache_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "tracker_feed_domains.json"))
     tracker_feed_stale_hours: float = 168.0
     tracker_feed_disabled_urls: List[str] = Field(default_factory=list)
     tracker_feed_min_domains_per_source: int = 10
@@ -123,7 +133,7 @@ class Settings(BaseSettings):
     tracker_feed_ca_bundle_path: Optional[str] = None
     tracker_offline_seed_path: Optional[str] = None
     malware_feed_urls: List[str] = Field(default_factory=list)
-    malware_feed_cache_path: str = Field("logs/malware_feed_hashes.json")
+    malware_feed_cache_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "malware_feed_hashes.json"))
     malware_feed_stale_hours: float = 168.0
     malware_feed_disabled_urls: List[str] = Field(default_factory=list)
     malware_feed_min_hashes_per_source: int = 1
@@ -133,7 +143,7 @@ class Settings(BaseSettings):
     malware_feed_ca_bundle_path: Optional[str] = None
     malware_offline_hash_seed_path: Optional[str] = None
     malware_rule_feed_urls: List[str] = Field(default_factory=list)
-    malware_rule_feed_cache_path: str = Field("logs/malware_rule_feed_rules.json")
+    malware_rule_feed_cache_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "malware_rule_feed_rules.json"))
     malware_rule_feed_stale_hours: float = 168.0
     malware_rule_feed_disabled_urls: List[str] = Field(default_factory=list)
     malware_rule_feed_min_rules_per_source: int = 1
