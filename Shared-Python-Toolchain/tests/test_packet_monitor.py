@@ -178,6 +178,7 @@ def test_evaluate_snapshot_carries_compact_packet_evidence() -> None:
 
 def test_run_check_tracks_resolution(tmp_path: Path) -> None:
     state_path = tmp_path / "packet_state.json"
+    current_etl: dict[str, Path] = {}
     outputs = [
         subprocess.CompletedProcess(args=["pktmon"], returncode=0, stdout="", stderr=""),
         subprocess.CompletedProcess(args=["pktmon"], returncode=0, stdout="", stderr=""),
@@ -193,6 +194,10 @@ def test_run_check_tracks_resolution(tmp_path: Path) -> None:
 
     def runner(args: list[str]) -> subprocess.CompletedProcess[str]:
         result = outputs.pop(0)
+        if args[1] == "start":
+            current_etl["path"] = Path(args[6])
+        if args[1] == "stop":
+            current_etl["path"].write_text("etl", encoding="utf-8")
         if args[1] == "etl2txt":
             Path(args[4]).write_text(txt_payloads.pop(0), encoding="utf-8")
         return result

@@ -151,6 +151,8 @@ class PacketMonitor:
             stop_error = (stop_result.stderr or stop_result.stdout or "").strip()
             if stop_result.returncode != 0:
                 return self._capture_failure_snapshot(stop_error or "pktmon stop failed")
+            if not self._wait_for_file(etl_path, timeout_seconds=min(5.0, self._sample_seconds + 3.0)):
+                return self._capture_failure_snapshot(f"pktmon capture file missing: {etl_path}")
 
             convert_result = self._runner(
                 [
@@ -164,8 +166,10 @@ class PacketMonitor:
                 ]
             )
             convert_error = (convert_result.stderr or convert_result.stdout or "").strip()
-            if convert_result.returncode != 0 or not txt_path.exists():
+            if convert_result.returncode != 0:
                 return self._capture_failure_snapshot(convert_error or "pktmon conversion failed")
+            if not self._wait_for_file(txt_path, timeout_seconds=2.0):
+                return self._capture_failure_snapshot(f"pktmon conversion output missing: {txt_path}")
 
             text = txt_path.read_text(encoding="utf-8", errors="ignore")
             observations = self._parse_packet_text(text)
@@ -392,6 +396,14 @@ class PacketMonitor:
     @staticmethod
     def _run_command(args: list[str]) -> subprocess.CompletedProcess[str]:
         return subprocess.run(args, capture_output=True, text=True, check=False, timeout=30)
+
+    def _wait_for_file(self, path: Path, *, timeout_seconds: float) -> bool:
+        deadline = time.monotonic() + max(0.1, timeout_seconds)
+        while time.monotonic() < deadline:
+            if path.exists():
+                return True
+            self._sleeper(0.1)
+        return path.exists()
 
     def _read_state(self) -> dict[str, Any]:
         if not self._state_path.exists():
