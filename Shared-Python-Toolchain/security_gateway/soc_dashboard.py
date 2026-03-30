@@ -28,6 +28,7 @@ from .models import (
     SocSeverity,
 )
 from .soc import SecurityOperationsManager
+from .tracker_intel import TrackerIntel
 
 
 def _center_window(root: Any, width: int, height: int) -> None:
@@ -108,6 +109,18 @@ class SocDashboard:
             case_store_path=settings.soc_case_store_path,
             audit_logger=AuditLogger(settings.audit_log_path),
             alert_manager=alert_manager,
+        )
+        self.tracker_intel = TrackerIntel(
+            extra_domains_path=settings.tracker_domain_list_path,
+            feed_cache_path=settings.tracker_feed_cache_path,
+            feed_urls=settings.tracker_feed_urls,
+            stale_after_hours=settings.tracker_feed_stale_hours,
+            disabled_feed_urls=settings.tracker_feed_disabled_urls,
+            min_domains_per_source=settings.tracker_feed_min_domains_per_source,
+            min_total_domains=settings.tracker_feed_min_total_domains,
+            replace_ratio_floor=settings.tracker_feed_replace_ratio_floor,
+            verify_tls=settings.tracker_feed_verify_tls,
+            ca_bundle_path=settings.tracker_feed_ca_bundle_path,
         )
         self.root = tk.Tk()
         self.root.title("Security Gateway SOC Dashboard")
@@ -329,6 +342,12 @@ class SocDashboard:
         )
         ttk.Button(ops_controls, text="Export Current View", command=self.export_current_dashboard_view).grid(
             row=0, column=14, sticky="w", padx=(12, 0)
+        )
+        ttk.Button(ops_controls, text="View Tracker Blocks", command=self.view_recent_tracker_blocks).grid(
+            row=1, column=9, columnspan=2, sticky="w", padx=(12, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="Refresh Tracker Feeds", command=self.refresh_tracker_feeds).grid(
+            row=1, column=11, columnspan=2, sticky="w", padx=(8, 0), pady=(8, 0)
         )
         ttk.Button(ops_controls, text="Open Selected Correlation", command=self.open_selected_correlation_action).grid(
             row=1, column=0, columnspan=3, sticky="w", pady=(8, 0)
@@ -608,6 +627,7 @@ class SocDashboard:
         summary = cast(dict[str, Any], dashboard["summary"])
         workload = cast(dict[str, Any], dashboard.get("workload") or {})
         triage = cast(dict[str, list[dict[str, Any]]], dashboard["triage"])
+        dashboard["tracker_feed_status"] = self.tracker_intel.feed_status()
         host_state = self._load_host_monitor_state()
         host_findings = cast(list[dict[str, Any]], host_state.get("active_findings") or [])
         alert_rows = self._alert_rows_for_view(dashboard)
@@ -1494,6 +1514,29 @@ class SocDashboard:
             return None
         return dict(rows[selected_index])
 
+    def view_recent_tracker_blocks(self) -> None:
+        tracker_events = [
+            event.model_dump(mode="json")
+            for event in self.manager.list_events(limit=200)
+            if event.event_type == "privacy.tracker_block"
+        ]
+        self._show_info_dialog(
+            "Recent Tracker Blocks",
+            self._format_summary_records("tracker_block", tracker_events[:50], limit=50),
+        )
+
+    def refresh_tracker_feeds(self) -> None:
+        try:
+            result = self.tracker_intel.refresh_feed_cache()
+        except Exception as exc:  # noqa: BLE001
+            if messagebox is not None:
+                messagebox.showerror("Refresh Tracker Feeds", str(exc))
+            return
+        self.refresh()
+        if messagebox is not None:
+            domain_count = int(result.get("domain_count") or 0)
+            messagebox.showinfo("Refresh Tracker Feeds", f"Tracker feeds refreshed. Domains loaded: {domain_count}.")
+
     def _choose_event_pivot(
         self,
         event_payload: dict[str, Any],
@@ -1956,6 +1999,7 @@ class SocDashboard:
             "alert": ("alert_id", "status", "severity", "title"),
             "case": ("case_id", "status", "severity", "title"),
             "host": ("key", "severity", "title", "summary"),
+            "tracker_block": ("event_id", "event_type", "severity", "title"),
         }
         id_key, first_key, second_key, title_key = labels.get(kind, ("id", "type", "severity", "title"))
         lines = [f"{kind.title()} records ({len(rows)}):", ""]
@@ -1977,6 +2021,7 @@ class SocDashboard:
             "alert": ("alert_id", "status", "severity", "title"),
             "case": ("case_id", "status", "severity", "title"),
             "host": ("key", "severity", "title", "summary"),
+            "tracker_block": ("event_id", "event_type", "severity", "title"),
         }
         id_key, first_key, second_key, title_key = labels.get(kind, ("id", "type", "severity", "title"))
         return (
@@ -2053,6 +2098,7 @@ class SocDashboard:
     def _format_workload_detail(dashboard: dict[str, Any]) -> str:
         assignee_workload = cast(list[dict[str, Any]], dashboard.get("assignee_workload") or [])
         aging = cast(dict[str, dict[str, int]], dashboard.get("aging_buckets") or {})
+        tracker_status = cast(dict[str, Any], dashboard.get("tracker_feed_status") or {})
         alert_aging = aging.get("alerts") or {}
         case_aging = aging.get("cases") or {}
         lines = ["Assignee Summary:"]
@@ -2082,6 +2128,12 @@ class SocDashboard:
                 f"- 4-24h: {case_aging.get('4-24h', 0)}",
                 f"- 24-72h: {case_aging.get('24-72h', 0)}",
                 f"- 72h+: {case_aging.get('72h+', 0)}",
+                "",
+                "Tracker Feed Status:",
+                f"- domains: {tracker_status.get('domain_count', 0)}",
+                f"- stale: {tracker_status.get('is_stale', False)}",
+                f"- last result: {tracker_status.get('last_refresh_result') or 'unknown'}",
+                f"- last error: {tracker_status.get('last_error') or 'none'}",
             ]
         )
         return "\n".join(lines)

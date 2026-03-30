@@ -49,6 +49,7 @@ def test_format_workload_detail_includes_assignees_and_aging() -> None:
             "alerts": {"0-4h": 1, "4-24h": 2, "24-72h": 3, "72h+": 4},
             "cases": {"0-4h": 5, "4-24h": 6, "24-72h": 7, "72h+": 8},
         },
+        "tracker_feed_status": {"domain_count": 1200, "is_stale": False, "last_refresh_result": "success", "last_error": None},
     }
 
     text = SocDashboard._format_workload_detail(dashboard)
@@ -59,6 +60,26 @@ def test_format_workload_detail_includes_assignees_and_aging() -> None:
     assert "- 72h+: 4" in text
     assert "Case Aging:" in text
     assert "- 24-72h: 7" in text
+    assert "Tracker Feed Status:" in text
+    assert "- domains: 1200" in text
+    assert "- last result: success" in text
+
+
+def test_format_summary_records_supports_tracker_blocks() -> None:
+    text = SocDashboard._format_summary_records(
+        "tracker_block",
+        [
+            {
+                "event_id": "evt-1",
+                "event_type": "privacy.tracker_block",
+                "severity": "medium",
+                "title": "Tracker request blocked",
+            }
+        ],
+    )
+
+    assert "Tracker_Block records (1):" in text
+    assert "- evt-1: privacy.tracker_block | medium | Tracker request blocked" in text
 
 
 def test_format_correlation_detail_includes_rule_and_linked_case() -> None:
