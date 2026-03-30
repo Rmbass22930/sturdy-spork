@@ -1015,6 +1015,9 @@ class SocDashboard:
             return "\n".join(lines)
 
         for event in source_events:
+            raw_details = event.get("details")
+            event_details = cast(dict[str, Any], raw_details) if isinstance(raw_details, dict) else {}
+            evidence_block = SocDashboard._format_monitor_evidence_block(event_details)
             lines.extend(
                 [
                     f"Event: {event.get('event_id', '-')}",
@@ -1023,6 +1026,7 @@ class SocDashboard:
                     f"Created: {event.get('created_at', '-')}",
                     f"Title: {event.get('title', '-')}",
                     f"Summary: {event.get('summary', '-')}",
+                    *(["", evidence_block] if evidence_block else []),
                     "",
                 ]
             )
@@ -1101,6 +1105,59 @@ class SocDashboard:
             f"Details:\n{detail_lines}\n\n"
             f"Snapshot:\n{snapshot_lines or '- none'}"
         )
+
+    @staticmethod
+    def _format_monitor_evidence_block(event_details: dict[str, Any]) -> str:
+        finding_details = event_details.get("details") if isinstance(event_details.get("details"), dict) else event_details
+        if not isinstance(finding_details, dict):
+            return ""
+
+        evidence = finding_details.get("evidence")
+        if not isinstance(evidence, dict):
+            return ""
+
+        sample_connections = evidence.get("sample_connections")
+        sample_packet_endpoints = evidence.get("sample_packet_endpoints")
+        lines = [
+            "Compact Evidence:",
+            f"- Reason: {finding_details.get('abnormal_reason') or finding_details.get('finding_type') or '-'}",
+            f"- Retention: {evidence.get('retention_mode') or '-'}",
+            f"- Sample Count: {evidence.get('sample_count') or 0}",
+        ]
+        if isinstance(finding_details.get("state_counts"), dict):
+            lines.append(f"- State Counts: {finding_details.get('state_counts')}")
+        if finding_details.get("local_ports") is not None:
+            lines.append(f"- Local Ports: {finding_details.get('local_ports')}")
+        if finding_details.get("remote_ports") is not None:
+            lines.append(f"- Remote Ports: {finding_details.get('remote_ports')}")
+        if finding_details.get("packet_count") is not None:
+            lines.append(f"- Packet Count: {finding_details.get('packet_count')}")
+        if finding_details.get("hit_count") is not None:
+            lines.append(f"- Hit Count: {finding_details.get('hit_count')}")
+
+        if isinstance(sample_connections, list) and sample_connections:
+            lines.append("- Sample Connections:")
+            for item in sample_connections:
+                if not isinstance(item, dict):
+                    continue
+                lines.append(
+                    "  "
+                    + f"{item.get('state', '-')} "
+                    + f"{item.get('remote_ip', '-')}:{item.get('remote_port', '-')} "
+                    + f"-> {item.get('local_ip', '-')}:{item.get('local_port', '-')}"
+                )
+        elif isinstance(sample_packet_endpoints, list) and sample_packet_endpoints:
+            lines.append("- Sample Endpoints:")
+            for item in sample_packet_endpoints:
+                if not isinstance(item, dict):
+                    continue
+                lines.append(
+                    "  "
+                    + f"{item.get('protocol', '-')} "
+                    + f"{item.get('remote_ip', '-')}:{item.get('remote_port', '-')} "
+                    + f"-> {item.get('local_ip', '-')}:{item.get('local_port', '-')}"
+                )
+        return "\n".join(lines)
 
     @staticmethod
     def _load_host_monitor_state() -> dict[str, Any]:

@@ -473,6 +473,28 @@ def test_format_source_events_includes_underlying_event_context() -> None:
                 "created_at": "2026-03-29T19:00:00+00:00",
                 "title": "Tracker blocked",
                 "summary": "Blocked beacon.example.test",
+                "details": {
+                    "details": {
+                        "finding_type": "suspicious_remote_ip",
+                        "abnormal_reason": "repeat_threshold_exceeded",
+                        "local_ports": [8443],
+                        "remote_ports": [53123, 53124],
+                        "hit_count": 3,
+                        "evidence": {
+                            "retention_mode": "compact_evidence_only",
+                            "sample_count": 1,
+                            "sample_connections": [
+                                {
+                                    "state": "ESTABLISHED",
+                                    "remote_ip": "1.1.1.1",
+                                    "remote_port": 53123,
+                                    "local_ip": "192.168.1.10",
+                                    "local_port": 8443,
+                                }
+                            ],
+                        },
+                    }
+                },
             }
         ],
     )
@@ -480,6 +502,41 @@ def test_format_source_events_includes_underlying_event_context() -> None:
     assert "Event: evt-1" in text
     assert "Type: privacy.tracker_block" in text
     assert "Summary: Blocked beacon.example.test" in text
+    assert "Compact Evidence:" in text
+    assert "Reason: repeat_threshold_exceeded" in text
+    assert "Sample Connections:" in text
+    assert "1.1.1.1:53123 -> 192.168.1.10:8443" in text
+
+
+def test_format_monitor_evidence_block_handles_packet_endpoint_samples() -> None:
+    text = SocDashboard._format_monitor_evidence_block(
+        {
+            "details": {
+                "abnormal_reason": "baseline_exceeded",
+                "packet_count": 7,
+                "local_ports": [3389],
+                "remote_ports": [51000],
+                "evidence": {
+                    "retention_mode": "compact_evidence_only",
+                    "sample_count": 1,
+                    "sample_packet_endpoints": [
+                        {
+                            "protocol": "TCP",
+                            "remote_ip": "8.8.8.8",
+                            "remote_port": 51000,
+                            "local_ip": "192.168.1.10",
+                            "local_port": 3389,
+                        }
+                    ],
+                },
+            }
+        }
+    )
+
+    assert "Compact Evidence:" in text
+    assert "Reason: baseline_exceeded" in text
+    assert "Sample Endpoints:" in text
+    assert "TCP 8.8.8.8:51000 -> 192.168.1.10:3389" in text
 
 
 def test_format_source_events_handles_missing_rows() -> None:
