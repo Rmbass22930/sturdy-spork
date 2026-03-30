@@ -88,12 +88,14 @@ def test_task_name_is_monitor_and_uninstall_script_uses_it(tmp_path: Path) -> No
     assert 'TaskName = "SecurityGatewayMonitor"' in script
 
 
-def test_register_automation_task_uses_powershell_scheduled_task_api(monkeypatch, tmp_path: Path) -> None:
+def test_register_automation_task_prefers_xml_schtasks_registration(monkeypatch, tmp_path: Path) -> None:
     exe_path = tmp_path / "SecurityGateway.exe"
+    xml_path = tmp_path / "security_gateway_monitor_task.xml"
     calls: list[list[str]] = []
 
     monkeypatch.setattr(installer, "unregister_automation_task", lambda: calls.append(["unregister"]))
     monkeypatch.setattr(installer, "_scheduled_task_exists", lambda name: True)
+    monkeypatch.setattr(installer, "_write_task_xml", lambda path: xml_path)
 
     def fake_run(args, check=False, capture_output=False, text=False):
         calls.append(args)
@@ -105,28 +107,30 @@ def test_register_automation_task_uses_powershell_scheduled_task_api(monkeypatch
 
     assert calls[0] == ["unregister"]
     assert calls[1][:6] == [
-        "powershell",
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
+        "schtasks",
+        "/Create",
+        "/TN",
+        installer.TASK_NAME,
+        "/XML",
+        str(xml_path),
     ]
-    script = calls[1][6]
-    assert "New-ScheduledTaskAction" in script
-    assert "New-ScheduledTaskTrigger -AtStartup" in script
-    assert "New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest" in script
-    assert "Register-ScheduledTask" in script
-    assert str(exe_path) in script
-    assert "automation-run" in script
+    xml_path.write_text(installer._task_xml_contents(exe_path), encoding="utf-16")
+    xml_text = xml_path.read_text(encoding="utf-16")
+    assert "<BootTrigger>" in xml_text
+    assert "<UserId>SYSTEM</UserId>" in xml_text
+    assert "<LogonType>ServiceAccount</LogonType>" in xml_text
+    assert str(exe_path) in xml_text
+    assert "automation-run" in xml_text
 
 
 def test_register_automation_task_falls_back_to_schtasks(monkeypatch, tmp_path: Path) -> None:
     exe_path = tmp_path / "SecurityGateway.exe"
+    xml_path = tmp_path / "security_gateway_monitor_task.xml"
     calls: list[list[str]] = []
     exists_checks: list[str] = []
 
     monkeypatch.setattr(installer, "unregister_automation_task", lambda: calls.append(["unregister"]))
+    monkeypatch.setattr(installer, "_write_task_xml", lambda path: xml_path)
 
     def fake_exists(name: str) -> bool:
         exists_checks.append(name)
@@ -134,6 +138,8 @@ def test_register_automation_task_falls_back_to_schtasks(monkeypatch, tmp_path: 
 
     def fake_run(args, check=False, capture_output=False, text=False):
         calls.append(args)
+        if args[:2] == ["schtasks", "/Create"] and "/XML" in args:
+            return mock.Mock(returncode=1, stderr="ERROR: Access is denied.", stdout="")
         if args[0] == "powershell":
             return mock.Mock(returncode=1, stderr="Access is denied.", stdout="")
         return mock.Mock(returncode=0, stderr="", stdout="")
@@ -144,8 +150,16 @@ def test_register_automation_task_falls_back_to_schtasks(monkeypatch, tmp_path: 
     installer.register_automation_task(exe_path)
 
     assert calls[0] == ["unregister"]
-    assert calls[1][0] == "powershell"
-    assert calls[2][:6] == [
+    assert calls[1][:6] == [
+        "schtasks",
+        "/Create",
+        "/TN",
+        installer.TASK_NAME,
+        "/XML",
+        str(xml_path),
+    ]
+    assert calls[2][0] == "powershell"
+    assert calls[3][:6] == [
         "schtasks",
         "/Create",
         "/TN",
@@ -156,11 +170,26 @@ def test_register_automation_task_falls_back_to_schtasks(monkeypatch, tmp_path: 
     assert exists_checks == [installer.TASK_NAME]
 
 
+def test_task_xml_contents_uses_system_boot_trigger(tmp_path: Path) -> None:
+    exe_path = tmp_path / "SecurityGateway.exe"
+
+    xml_text = installer._task_xml_contents(exe_path)
+
+    assert "<?xml version=\"1.0\" encoding=\"UTF-16\"?>" in xml_text
+    assert "<BootTrigger>" in xml_text
+    assert "<UserId>SYSTEM</UserId>" in xml_text
+    assert "<RunLevel>HighestAvailable</RunLevel>" in xml_text
+    assert f"<Command>{exe_path}</Command>" in xml_text
+    assert "<Arguments>automation-run</Arguments>" in xml_text
+
+
 def test_register_automation_task_raises_when_no_task_is_created(monkeypatch, tmp_path: Path) -> None:
     exe_path = tmp_path / "SecurityGateway.exe"
+    xml_path = tmp_path / "security_gateway_monitor_task.xml"
 
     monkeypatch.setattr(installer, "unregister_automation_task", lambda: None)
     monkeypatch.setattr(installer, "_scheduled_task_exists", lambda name: False)
+    monkeypatch.setattr(installer, "_write_task_xml", lambda path: xml_path)
     monkeypatch.setattr(
         installer.subprocess,
         "run",

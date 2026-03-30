@@ -724,6 +724,78 @@ def _scheduled_task_registration_command(exe_path: Path) -> list[str]:
     ]
 
 
+def _task_xml_contents(exe_path: Path) -> str:
+    command = str(exe_path)
+    arguments = "automation-run"
+    return f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Security Gateway monitor startup task</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <BootTrigger>
+      <Enabled>true</Enabled>
+    </BootTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>SYSTEM</UserId>
+      <LogonType>ServiceAccount</LogonType>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <DisallowStartOnRemoteAppSession>false</DisallowStartOnRemoteAppSession>
+    <UseUnifiedSchedulingEngine>true</UseUnifiedSchedulingEngine>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{command}</Command>
+      <Arguments>{arguments}</Arguments>
+      <WorkingDirectory>{exe_path.parent}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
+"""
+
+
+def _write_task_xml(exe_path: Path) -> Path:
+    task_dir = USER_DATA_DIR / "installer"
+    task_dir.mkdir(parents=True, exist_ok=True)
+    xml_path = task_dir / "security_gateway_monitor_task.xml"
+    xml_path.write_text(_task_xml_contents(exe_path), encoding="utf-16")
+    return xml_path
+
+
+def _schtasks_xml_registration_command(xml_path: Path) -> list[str]:
+    return [
+        "schtasks",
+        "/Create",
+        "/TN",
+        TASK_NAME,
+        "/XML",
+        str(xml_path),
+        "/F",
+    ]
+
+
 def _schtasks_registration_command(exe_path: Path) -> list[str]:
     return [
         "schtasks",
@@ -754,8 +826,10 @@ def _scheduled_task_exists(task_name: str) -> bool:
 
 def register_automation_task(exe_path: Path) -> None:
     unregister_automation_task()
+    xml_path = _write_task_xml(exe_path)
     registration_errors: list[str] = []
     for command in (
+        _schtasks_xml_registration_command(xml_path),
         _scheduled_task_registration_command(exe_path),
         _schtasks_registration_command(exe_path),
     ):
