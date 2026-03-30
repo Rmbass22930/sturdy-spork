@@ -193,6 +193,57 @@ def test_refresh_recent_event_detail_uses_selected_row_and_clears_correlation_se
     assert getattr(dashboard.correlation_tree, "removed") == ("alert-1",)
 
 
+def test_open_selected_correlation_action_routes_to_selected_alert() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.correlation_tree = type("Tree", (), {"selection": lambda self: ("alert-1",)})()
+    called: list[str] = []
+    dashboard._open_selected_correlation = lambda: called.append("open")
+    dashboard._show_info_dialog = lambda title, body: (_ for _ in ()).throw(AssertionError("should not show dialog"))
+
+    dashboard.open_selected_correlation_action()
+
+    assert called == ["open"]
+
+
+def test_open_selected_recent_event_action_shows_dialog_without_selection() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.event_tree = type("Tree", (), {"selection": lambda self: ()})()
+    dialogs: list[tuple[str, str]] = []
+    dashboard._show_info_dialog = lambda title, body: dialogs.append((title, body))
+
+    dashboard.open_selected_recent_event_action()
+
+    assert dialogs == [("Recent Events", "Select an event row to open its event workflow.")]
+
+
+def test_clear_activity_focus_clears_both_selections_and_resets_detail() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.correlation_tree = type(
+        "Tree",
+        (),
+        {
+            "selection": lambda self: ("alert-1",),
+            "selection_remove": lambda self, value: setattr(self, "removed", value),
+        },
+    )()
+    dashboard.event_tree = type(
+        "Tree",
+        (),
+        {
+            "selection": lambda self: ("evt-1",),
+            "selection_remove": lambda self, value: setattr(self, "removed", value),
+        },
+    )()
+    captured: list[str | None] = []
+    dashboard._refresh_activity_detail = lambda text: captured.append(text)
+
+    dashboard.clear_activity_focus()
+
+    assert getattr(dashboard.correlation_tree, "removed") == ("alert-1",)
+    assert getattr(dashboard.event_tree, "removed") == ("evt-1",)
+    assert captured == [None]
+
+
 def test_format_summary_records_limits_output() -> None:
     rows = [
         {"alert_id": f"alert-{index}", "status": "open", "severity": "high", "title": f"Alert {index}"}

@@ -317,6 +317,15 @@ class SocDashboard:
         ttk.Button(ops_controls, text="Assign Case Bucket", command=self.assign_case_age_bucket).grid(
             row=0, column=13, sticky="w", padx=(8, 0)
         )
+        ttk.Button(ops_controls, text="Open Selected Correlation", command=self.open_selected_correlation_action).grid(
+            row=1, column=0, columnspan=3, sticky="w", pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="Open Selected Event", command=self.open_selected_recent_event_action).grid(
+            row=1, column=3, columnspan=3, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="Clear Activity Focus", command=self.clear_activity_focus).grid(
+            row=1, column=6, columnspan=3, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
         self.ops_detail_text = tk.Text(
             ops_frame,
             height=14,
@@ -1236,6 +1245,25 @@ class SocDashboard:
         if event_payload is None:
             return
         self._pivot_from_event(event_payload)
+
+    def open_selected_correlation_action(self) -> None:
+        if self._selected_tree_item_id(self.correlation_tree) is None:
+            self._show_info_dialog("Recent Correlations", "Select a correlation row to open its alert workflow.")
+            return
+        self._open_selected_correlation()
+
+    def open_selected_recent_event_action(self) -> None:
+        if self._selected_tree_item_id(self.event_tree) is None:
+            self._show_info_dialog("Recent Events", "Select an event row to open its event workflow.")
+            return
+        self._open_selected_recent_event()
+
+    def clear_activity_focus(self) -> None:
+        if hasattr(self, "correlation_tree"):
+            self.correlation_tree.selection_remove(self.correlation_tree.selection())
+        if hasattr(self, "event_tree"):
+            self.event_tree.selection_remove(self.event_tree.selection())
+        self._refresh_activity_detail(None)
 
     def _refresh_activity_detail(self, activity_text: str | None) -> None:
         base = self._format_workload_detail(self._latest_dashboard) if getattr(self, "_latest_dashboard", None) else "No workload data loaded."
