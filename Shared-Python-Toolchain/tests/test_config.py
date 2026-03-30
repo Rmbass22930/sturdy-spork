@@ -19,3 +19,5 @@ def test_frozen_runtime_paths_use_localappdata(monkeypatch, tmp_path) -> None:
     assert settings.malware_feed_cache_path == str(expected_root / "logs" / "malware_feed_hashes.json")
     assert settings.malware_rule_feed_cache_path == str(expected_root / "logs" / "malware_rule_feed_rules.json")
     assert settings.report_output_dir == str(expected_root / "reports")
+    assert config.get_runtime_data_dir() == expected_root
+    assert config.get_runtime_logs_dir() == expected_root / "logs"

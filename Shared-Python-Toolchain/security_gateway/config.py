@@ -18,6 +18,14 @@ def _default_runtime_data_dir() -> Path:
     return Path(".")
 
 
+def get_runtime_data_dir() -> Path:
+    return _default_runtime_data_dir()
+
+
+def get_runtime_logs_dir() -> Path:
+    return get_runtime_data_dir() / "logs"
+
+
 def _default_runtime_path(*parts: str) -> str:
     return str(_default_runtime_data_dir().joinpath(*parts))
 

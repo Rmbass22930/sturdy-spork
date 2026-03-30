@@ -8,8 +8,10 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from .config import get_runtime_data_dir
     from .soc_dashboard import run_soc_dashboard
 except ImportError:  # pragma: no cover - frozen entrypoint fallback
+    from security_gateway.config import get_runtime_data_dir
     from security_gateway.soc_dashboard import run_soc_dashboard
 
 
@@ -63,9 +65,17 @@ def _launch_uninstaller() -> None:
     os.startfile(str(target))  # type: ignore[attr-defined]
 
 
+def _ensure_runtime_directories() -> None:
+    runtime_root = get_runtime_data_dir()
+    for directory in (runtime_root, runtime_root / "logs", runtime_root / "reports"):
+        directory.mkdir(parents=True, exist_ok=True)
+
+
 def main() -> int:
     import tkinter as tk
     from tkinter import messagebox
+
+    _ensure_runtime_directories()
 
     root = tk.Tk()
     root.title("Security Gateway")
