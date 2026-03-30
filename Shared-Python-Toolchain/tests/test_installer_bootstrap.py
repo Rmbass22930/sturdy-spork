@@ -76,6 +76,53 @@ def test_create_shortcut_returns_created_paths(tmp_path: Path) -> None:
     assert "automation-run" not in command[-1]
 
 
+def test_copy_binary_retries_after_locked_file_error(tmp_path: Path, monkeypatch) -> None:
+    src = tmp_path / "SecurityGateway.exe"
+    dest_dir = tmp_path / "install"
+    src.write_text("binary", encoding="utf-8")
+    attempts: list[str] = []
+    terminated: list[Path] = []
+    sleeps: list[float] = []
+
+    locked = PermissionError(32, "file in use")
+    locked.winerror = 32
+
+    def fake_copy2(source, target):
+        attempts.append(str(target))
+        if len(attempts) == 1:
+            raise locked
+        Path(target).write_text(Path(source).read_text(encoding="utf-8"), encoding="utf-8")
+        return target
+
+    monkeypatch.setattr(installer.shutil, "copy2", fake_copy2)
+    monkeypatch.setattr(installer, "_terminate_processes_for_binary", lambda target: terminated.append(target))
+    monkeypatch.setattr(installer.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    target = installer.copy_binary(src, dest_dir)
+
+    assert target == dest_dir / "SecurityGateway.exe"
+    assert terminated == [target]
+    assert sleeps == [installer.LOCKED_FILE_RETRY_DELAY_SECONDS]
+    assert target.read_text(encoding="utf-8") == "binary"
+
+
+def test_copy_binary_reraises_non_locked_permission_error(tmp_path: Path, monkeypatch) -> None:
+    src = tmp_path / "SecurityGateway.exe"
+    dest_dir = tmp_path / "install"
+    src.write_text("binary", encoding="utf-8")
+    denied = PermissionError(5, "access denied")
+    denied.winerror = 5
+
+    monkeypatch.setattr(installer.shutil, "copy2", lambda source, target: (_ for _ in ()).throw(denied))
+    monkeypatch.setattr(installer, "_terminate_processes_for_binary", lambda target: (_ for _ in ()).throw(AssertionError("should not terminate")))
+    monkeypatch.setattr(installer.time, "sleep", lambda seconds: (_ for _ in ()).throw(AssertionError("should not sleep")))
+
+    with pytest.raises(PermissionError) as excinfo:
+        installer.copy_binary(src, dest_dir)
+
+    assert excinfo.value is denied
+
+
 def test_install_dependency_reports_winget_method(monkeypatch) -> None:
     dep = installer.ExternalDependency(name="Cloudflare WARP", winget_id="Cloudflare.WARP")
     monkeypatch.setattr(installer.shutil, "which", lambda name: "C:\\Windows\\System32\\winget.exe")

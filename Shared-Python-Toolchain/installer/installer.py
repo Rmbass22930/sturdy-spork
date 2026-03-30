@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.parse
 import urllib.request
 from datetime import UTC, datetime, timedelta
@@ -47,6 +48,8 @@ GUIDE_URL_ENV = "SECURITY_GATEWAY_GUIDE_URL"
 MANIFEST_PATH_ENV = "SECURITY_GATEWAY_DEPENDENCY_MANIFEST"
 MANIFEST_URL_ENV = "SECURITY_GATEWAY_DEPENDENCY_MANIFEST_URL"
 DEFAULT_DEPENDENCY_TIMEOUT_SECONDS = 300
+LOCKED_FILE_RETRY_ATTEMPTS = 3
+LOCKED_FILE_RETRY_DELAY_SECONDS = 0.5
 
 
 def center_window(root: Any, width: int, height: int) -> None:
@@ -510,8 +513,33 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
 def copy_binary(src: Path, dest_dir: Path) -> Path:
     dest_dir.mkdir(parents=True, exist_ok=True)
     target = dest_dir / src.name
-    shutil.copy2(src, target)
-    return target
+    last_error: PermissionError | None = None
+    for attempt in range(LOCKED_FILE_RETRY_ATTEMPTS):
+        try:
+            shutil.copy2(src, target)
+            return target
+        except PermissionError as exc:
+            if not _is_locked_file_error(exc):
+                raise
+            last_error = exc
+            _terminate_processes_for_binary(target)
+            time.sleep(LOCKED_FILE_RETRY_DELAY_SECONDS * (attempt + 1))
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError(f"Failed to copy {src} to {target}")
+
+
+def _is_locked_file_error(exc: PermissionError) -> bool:
+    return getattr(exc, "winerror", None) == 32
+
+
+def _terminate_processes_for_binary(target: Path) -> None:
+    subprocess.run(
+        ["taskkill", "/IM", target.name, "/F"],
+        check=False,
+        stdout=std_subprocess.DEVNULL,
+        stderr=std_subprocess.DEVNULL,
+    )
 
 
 def update_user_path(dir_path: Path) -> str:
