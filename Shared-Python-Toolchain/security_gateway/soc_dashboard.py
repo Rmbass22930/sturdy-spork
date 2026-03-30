@@ -201,10 +201,7 @@ class SocDashboard:
             ("Stale Active Cases", "stale_active_cases", "#ede9fe"),
         ]
         for column, (label, key, bg) in enumerate(cards):
-            card = tk.Frame(summary, bg=bg, bd=0, highlightthickness=0, padx=14, pady=14)
-            card.grid(row=0, column=column, sticky="nsew", padx=(0 if column == 0 else 8, 0))
-            tk.Label(card, text=label, font=("Segoe UI", 10, "bold"), bg=bg, fg="#1f2937").pack(anchor="w")
-            tk.Label(card, textvariable=self.summary_vars[key], font=("Segoe UI", 22, "bold"), bg=bg, fg="#0f2f57").pack(anchor="w", pady=(8, 0))
+            self._build_summary_card(summary, row=0, column=column, label=label, key=key, bg=bg)
 
         body = ttk.Frame(self.root, padding=(18, 0, 18, 18), style="SOC.TFrame")
         body.grid(row=2, column=0, sticky="nsew")
@@ -415,6 +412,28 @@ class SocDashboard:
             tree.heading(name, text=headings[name])
             tree.column(name, anchor="w", width=180 if name != "title" else 320)
         return tree
+
+    def _build_summary_card(self, parent: Any, *, row: int, column: int, label: str, key: str, bg: str) -> None:
+        card = tk.Frame(parent, bg=bg, bd=0, highlightthickness=0, padx=14, pady=14, cursor="hand2")
+        card.grid(row=row, column=column, sticky="nsew", padx=(0 if column == 0 else 8, 0))
+        title = tk.Label(card, text=label, font=("Segoe UI", 10, "bold"), bg=bg, fg="#1f2937", cursor="hand2")
+        title.pack(anchor="w")
+        value = tk.Label(card, textvariable=self.summary_vars[key], font=("Segoe UI", 22, "bold"), bg=bg, fg="#0f2f57", cursor="hand2")
+        value.pack(anchor="w", pady=(8, 0))
+
+        def handle_click(_event: Any) -> None:
+            self.open_summary_drilldown(key)
+
+        def handle_enter(_event: Any) -> None:
+            card.configure(highlightbackground="#4f7cff", highlightthickness=1)
+
+        def handle_leave(_event: Any) -> None:
+            card.configure(highlightthickness=0)
+
+        for widget in (card, title, value):
+            widget.bind("<Button-1>", handle_click)
+            widget.bind("<Enter>", handle_enter)
+            widget.bind("<Leave>", handle_leave)
 
     def _build_alert_controls(self, parent: Any) -> None:
         controls = ttk.Frame(parent, style="SOC.TFrame")
@@ -1033,6 +1052,63 @@ class SocDashboard:
         self.case_tree.selection_set(case_id)
         self._refresh_case_detail()
 
+    def open_summary_drilldown(self, metric_key: str) -> None:
+        handlers: dict[str, Callable[[], None]] = {
+            "events_total": self._show_events_summary_drilldown,
+            "alerts_total": self._show_all_alerts_summary_drilldown,
+            "open_alerts": self._show_open_alerts_summary_drilldown,
+            "cases_total": self._show_all_cases_summary_drilldown,
+            "open_cases": self._show_open_cases_summary_drilldown,
+            "host_findings": self._show_host_findings_summary_drilldown,
+            "stale_assigned_alerts": self._show_stale_alerts_summary_drilldown,
+            "stale_active_cases": self._show_stale_cases_summary_drilldown,
+        }
+        handler = handlers.get(metric_key)
+        if handler is not None:
+            handler()
+
+    def _show_events_summary_drilldown(self) -> None:
+        events = [item.model_dump(mode="json") for item in self.manager.list_events(limit=50)]
+        self._show_info_dialog("Events", self._format_summary_records("event", events, limit=30))
+
+    def _show_all_alerts_summary_drilldown(self) -> None:
+        alerts = [item.model_dump(mode="json") for item in self.manager.list_alerts()]
+        self._show_info_dialog("Alerts", self._format_summary_records("alert", alerts, limit=30))
+
+    def _show_open_alerts_summary_drilldown(self) -> None:
+        alerts = [item.model_dump(mode="json") for item in self.manager.query_alerts(status=SocAlertStatus.open, limit=50)]
+        self._show_info_dialog("Open Alerts", self._format_summary_records("alert", alerts, limit=30))
+
+    def _show_all_cases_summary_drilldown(self) -> None:
+        cases = [item.model_dump(mode="json") for item in self.manager.list_cases()]
+        self._show_info_dialog("Cases", self._format_summary_records("case", cases, limit=30))
+
+    def _show_open_cases_summary_drilldown(self) -> None:
+        cases = [
+            item.model_dump(mode="json")
+            for item in self.manager.query_cases(status=SocCaseStatus.open, limit=50)
+        ]
+        self._show_info_dialog("Open Cases", self._format_summary_records("case", cases, limit=30))
+
+    def _show_host_findings_summary_drilldown(self) -> None:
+        host_state = self._load_host_monitor_state()
+        findings = cast(list[dict[str, Any]], host_state.get("active_findings") or [])
+        self._show_info_dialog("Host Findings", self._format_summary_records("host", findings, limit=30))
+
+    def _show_stale_alerts_summary_drilldown(self) -> None:
+        triage = cast(dict[str, list[dict[str, Any]]], self._latest_dashboard.get("triage") or {})
+        rows = cast(list[dict[str, Any]], triage.get("assigned_stale_alerts") or [])
+        self._show_info_dialog("Stale Assigned Alerts", self._format_summary_records("alert", rows, limit=30))
+
+    def _show_stale_cases_summary_drilldown(self) -> None:
+        triage = cast(dict[str, list[dict[str, Any]]], self._latest_dashboard.get("triage") or {})
+        rows = cast(list[dict[str, Any]], triage.get("stale_active_cases") or [])
+        self._show_info_dialog("Stale Active Cases", self._format_summary_records("case", rows, limit=30))
+
+    def _show_info_dialog(self, title: str, body: str) -> None:
+        if messagebox is not None:
+            messagebox.showinfo(title, body)
+
     @staticmethod
     def _build_promote_payload(
         alert: Any,
@@ -1280,6 +1356,29 @@ class SocDashboard:
         updated_at = str(row.get("updated_at") or "-")
         title = str(row.get("title") or "-")
         return f"{record_id} | {severity} | {status} | {assignee} | {updated_at} | {title}"
+
+    @staticmethod
+    def _format_summary_records(kind: str, rows: Sequence[dict[str, Any]], *, limit: int = 30) -> str:
+        if not rows:
+            return f"No {kind} records are available."
+        labels: dict[str, tuple[str, str, str, str]] = {
+            "event": ("event_id", "event_type", "severity", "title"),
+            "alert": ("alert_id", "status", "severity", "title"),
+            "case": ("case_id", "status", "severity", "title"),
+            "host": ("key", "severity", "title", "summary"),
+        }
+        id_key, first_key, second_key, title_key = labels.get(kind, ("id", "type", "severity", "title"))
+        lines = [f"{kind.title()} records ({len(rows)}):", ""]
+        for row in rows[:limit]:
+            lines.append(
+                f"- {row.get(id_key, '-')}: "
+                f"{row.get(first_key, '-')} | {row.get(second_key, '-')} | {row.get(title_key, '-')}"
+            )
+        remaining = len(rows) - min(len(rows), limit)
+        if remaining > 0:
+            lines.append("")
+            lines.append(f"...and {remaining} more")
+        return "\n".join(lines)
 
     @classmethod
     def _preset_values(cls, preset_name: str) -> dict[str, str]:

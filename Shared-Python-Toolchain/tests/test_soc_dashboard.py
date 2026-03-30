@@ -60,6 +60,78 @@ def test_format_workload_detail_includes_assignees_and_aging() -> None:
     assert "- 24-72h: 7" in text
 
 
+def test_format_summary_records_limits_output() -> None:
+    rows = [
+        {"alert_id": f"alert-{index}", "status": "open", "severity": "high", "title": f"Alert {index}"}
+        for index in range(35)
+    ]
+
+    text = SocDashboard._format_summary_records("alert", rows, limit=30)
+
+    assert "Alert records (35):" in text
+    assert "...and 5 more" in text
+
+
+def test_open_summary_drilldown_routes_to_expected_handler() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    called: list[str] = []
+    dashboard._show_events_summary_drilldown = lambda: called.append("events")
+    dashboard._show_all_alerts_summary_drilldown = lambda: called.append("alerts")
+    dashboard._show_open_alerts_summary_drilldown = lambda: called.append("open_alerts")
+    dashboard._show_all_cases_summary_drilldown = lambda: called.append("cases")
+    dashboard._show_open_cases_summary_drilldown = lambda: called.append("open_cases")
+    dashboard._show_host_findings_summary_drilldown = lambda: called.append("host_findings")
+    dashboard._show_stale_alerts_summary_drilldown = lambda: called.append("stale_alerts")
+    dashboard._show_stale_cases_summary_drilldown = lambda: called.append("stale_cases")
+
+    dashboard.open_summary_drilldown("events_total")
+    dashboard.open_summary_drilldown("stale_active_cases")
+
+    assert called == ["events", "stale_cases"]
+
+
+def test_show_open_alerts_summary_drilldown_uses_open_query() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    captured: list[tuple[str, str]] = []
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "query_alerts": lambda self, **kwargs: [
+                type("Alert", (), {"model_dump": lambda self, mode="json": {"alert_id": "alert-1", "status": "open", "severity": "high", "title": "Open alert"}})()
+            ]
+            if kwargs.get("status") is SocAlertStatus.open
+            else []
+        },
+    )()
+    dashboard._show_info_dialog = lambda title, body: captured.append((title, body))
+
+    dashboard._show_open_alerts_summary_drilldown()
+
+    assert captured
+    assert captured[0][0] == "Open Alerts"
+    assert "alert-1" in captured[0][1]
+
+
+def test_show_stale_cases_summary_drilldown_reads_latest_dashboard() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard._latest_dashboard = {
+        "triage": {
+            "stale_active_cases": [
+                {"case_id": "case-1", "status": "investigating", "severity": "high", "title": "Stale case"}
+            ]
+        }
+    }
+    captured: list[tuple[str, str]] = []
+    dashboard._show_info_dialog = lambda title, body: captured.append((title, body))
+
+    dashboard._show_stale_cases_summary_drilldown()
+
+    assert captured
+    assert captured[0][0] == "Stale Active Cases"
+    assert "case-1" in captured[0][1]
+
+
 def test_stale_id_helpers_read_latest_dashboard_triage() -> None:
     dashboard = SocDashboard.__new__(SocDashboard)
     dashboard.workload_assignee_var = type("Var", (), {"get": lambda self: "all"})()
