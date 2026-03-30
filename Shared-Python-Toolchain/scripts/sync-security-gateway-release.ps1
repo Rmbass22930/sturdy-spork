@@ -64,6 +64,68 @@ function Test-IsAdministrator {
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+function Repair-ShortcutIfPresent {
+    param(
+        [string]$ShortcutPath,
+        [string]$ExpectedTarget,
+        [string]$ExpectedWorkingDirectory
+    )
+
+    if (-not (Test-Path -LiteralPath $ShortcutPath)) {
+        return $null
+    }
+
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($ShortcutPath)
+    $changed = $false
+
+    if ($shortcut.TargetPath -ne $ExpectedTarget) {
+        $shortcut.TargetPath = $ExpectedTarget
+        $changed = $true
+    }
+    if ($shortcut.Arguments) {
+        $shortcut.Arguments = ""
+        $changed = $true
+    }
+    if ($shortcut.WorkingDirectory -ne $ExpectedWorkingDirectory) {
+        $shortcut.WorkingDirectory = $ExpectedWorkingDirectory
+        $changed = $true
+    }
+
+    if ($changed) {
+        $shortcut.Save()
+    }
+
+    return [ordered]@{
+        path = $ShortcutPath
+        target = $ExpectedTarget
+        arguments = ""
+        working_directory = $ExpectedWorkingDirectory
+        repaired = $changed
+    }
+}
+
+function Repair-InstalledShortcuts {
+    param(
+        [string]$InstallRoot
+    )
+
+    $expectedTarget = Join-Path $InstallRoot "SecurityGateway.exe"
+    $taskbarShortcut = Join-Path $env:APPDATA "Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar\SecurityGateway.lnk"
+    $desktopCandidates = @(
+        Join-Path $env:USERPROFILE "Desktop\SecurityGateway.lnk",
+        Join-Path $env:USERPROFILE "OneDrive\Desktop\SecurityGateway.lnk"
+    )
+    $results = @()
+    foreach ($shortcutPath in @($taskbarShortcut) + $desktopCandidates) {
+        $result = Repair-ShortcutIfPresent -ShortcutPath $shortcutPath -ExpectedTarget $expectedTarget -ExpectedWorkingDirectory $InstallRoot
+        if ($null -ne $result) {
+            $results += $result
+        }
+    }
+    return $results
+}
+
 $summary = [ordered]@{
     output_root = $outputRoot
     install_root = $installRoot
@@ -84,6 +146,7 @@ if (-not $SkipInstalled) {
     Copy-Item -LiteralPath (Join-Path $outputRoot "SecurityGateway-Uninstall.exe") -Destination (Join-Path $installRoot "SecurityGateway-Uninstall.exe") -Force
     Assert-HashMatchesManifest -Path (Join-Path $installRoot "SecurityGateway.exe") -Name "SecurityGateway.exe"
     Assert-HashMatchesManifest -Path (Join-Path $installRoot "SecurityGateway-Uninstall.exe") -Name "SecurityGateway-Uninstall.exe"
+    $summary.shortcuts = Repair-InstalledShortcuts -InstallRoot $installRoot
     $summary.installed_sync = "ok"
 }
 
