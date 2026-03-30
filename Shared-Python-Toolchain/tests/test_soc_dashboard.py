@@ -107,6 +107,18 @@ def test_preset_values_for_needs_attention() -> None:
     }
 
 
+def test_preset_values_for_handoff() -> None:
+    preset = SocDashboard._preset_values("handoff")
+
+    assert preset == {
+        "alert_severity": "all",
+        "alert_link_state": "all",
+        "alert_sort": "updated_asc",
+        "case_status": "all",
+        "case_sort": "updated_asc",
+    }
+
+
 def test_apply_queue_preset_updates_filter_variables_and_refreshes() -> None:
     class Var:
         def __init__(self, value: str):
@@ -238,6 +250,70 @@ def test_case_rows_for_needs_attention_use_oldest_open_cases() -> None:
     rows = dashboard._case_rows_for_view({"triage": {}})
 
     assert [row.case_id for row in rows] == ["case-older", "case-newer"]
+
+
+def test_alert_rows_for_handoff_use_stale_assigned_alerts() -> None:
+    def get_alert(_self: object, alert_id: str) -> dict[str, str]:
+        fetched.append(alert_id)
+        return {"alert_id": alert_id}
+
+    dashboard = SocDashboard.__new__(SocDashboard)
+    dashboard.queue_preset_var = type("Var", (), {"get": lambda self: "handoff"})()
+    fetched: list[str] = []
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "get_alert": get_alert,
+            "query_alerts": lambda self, **kwargs: [],
+        },
+    )()
+
+    rows = dashboard._alert_rows_for_view(
+        {
+            "triage": {
+                "assigned_stale_alerts": [
+                    {"alert_id": "alert-a"},
+                    {"alert_id": "alert-b"},
+                ]
+            }
+        }
+    )
+
+    assert fetched == ["alert-a", "alert-b"]
+    assert rows == [{"alert_id": "alert-a"}, {"alert_id": "alert-b"}]
+
+
+def test_case_rows_for_handoff_use_stale_active_cases() -> None:
+    def get_case(_self: object, case_id: str) -> dict[str, str]:
+        fetched.append(case_id)
+        return {"case_id": case_id}
+
+    dashboard = SocDashboard.__new__(SocDashboard)
+    dashboard.queue_preset_var = type("Var", (), {"get": lambda self: "handoff"})()
+    fetched: list[str] = []
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "get_case": get_case,
+            "query_cases": lambda self, **kwargs: [],
+        },
+    )()
+
+    rows = dashboard._case_rows_for_view(
+        {
+            "triage": {
+                "stale_active_cases": [
+                    {"case_id": "case-a"},
+                    {"case_id": "case-b"},
+                ]
+            }
+        }
+    )
+
+    assert fetched == ["case-a", "case-b"]
+    assert rows == [{"case_id": "case-a"}, {"case_id": "case-b"}]
 
 
 def test_case_status_parser_understands_investigating() -> None:

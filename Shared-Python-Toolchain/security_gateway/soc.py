@@ -456,10 +456,23 @@ class SecurityOperationsManager:
                     if item.status is SocAlertStatus.open
                     and item.updated_at < stale_cutoff
                     and not item.linked_case_id
+                    and not item.assignee
+                ][:10],
+                "assigned_stale_alerts": [
+                    item.model_dump(mode="json")
+                    for item in alerts
+                    if item.status is SocAlertStatus.open
+                    and item.updated_at < stale_cutoff
+                    and item.assignee
                 ][:10],
                 "recent_correlations": [item.model_dump(mode="json") for item in correlation_alerts[:10]],
                 "active_cases": [
                     item.model_dump(mode="json") for item in cases if item.status is not SocCaseStatus.closed
+                ][:10],
+                "stale_active_cases": [
+                    item.model_dump(mode="json")
+                    for item in cases
+                    if item.status is not SocCaseStatus.closed and item.updated_at < stale_cutoff
                 ][:10],
             },
         }

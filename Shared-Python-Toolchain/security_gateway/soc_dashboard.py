@@ -82,6 +82,13 @@ class SocDashboard:
             "case_status": "all",
             "case_sort": "updated_asc",
         },
+        "handoff": {
+            "alert_severity": "all",
+            "alert_link_state": "all",
+            "alert_sort": "updated_asc",
+            "case_status": "all",
+            "case_sort": "updated_asc",
+        },
         "my-queue": {
             "alert_severity": "all",
             "alert_link_state": "all",
@@ -153,7 +160,7 @@ class SocDashboard:
         preset_combo = ttk.Combobox(
             identity_controls,
             textvariable=self.queue_preset_var,
-            values=("tier1-triage", "tier2-investigation", "containment", "review-closed", "unassigned", "needs-attention", "my-queue", "custom"),
+            values=("tier1-triage", "tier2-investigation", "containment", "review-closed", "unassigned", "needs-attention", "handoff", "my-queue", "custom"),
             state="readonly",
             width=18,
         )
@@ -856,6 +863,9 @@ class SocDashboard:
         if preset_name == "needs-attention":
             stale_rows = cast(list[dict[str, Any]], cast(dict[str, Any], dashboard["triage"]).get("stale_open_alerts") or [])
             return [self.manager.get_alert(str(item["alert_id"])) for item in stale_rows if item.get("alert_id")]
+        if preset_name == "handoff":
+            stale_rows = cast(list[dict[str, Any]], cast(dict[str, Any], dashboard["triage"]).get("assigned_stale_alerts") or [])
+            return [self.manager.get_alert(str(item["alert_id"])) for item in stale_rows if item.get("alert_id")]
         return list(self.manager.query_alerts(**self._alert_query_kwargs()))
 
     def _case_rows_for_view(self, dashboard: dict[str, Any]) -> list[Any]:
@@ -863,6 +873,9 @@ class SocDashboard:
         if preset_name == "needs-attention":
             cases = [item for item in self.manager.list_cases() if item.status is not SocCaseStatus.closed]
             return sorted(cases, key=lambda item: item.updated_at)[:25]
+        if preset_name == "handoff":
+            stale_cases = cast(list[dict[str, Any]], cast(dict[str, Any], dashboard["triage"]).get("stale_active_cases") or [])
+            return [self.manager.get_case(str(item["case_id"])) for item in stale_cases if item.get("case_id")]
         return list(self.manager.query_cases(**self._case_query_kwargs()))
 
     @staticmethod
