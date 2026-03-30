@@ -68,6 +68,13 @@ class SocDashboard:
             "case_status": "closed",
             "case_sort": "updated_desc",
         },
+        "my-queue": {
+            "alert_severity": "all",
+            "alert_link_state": "all",
+            "alert_sort": "updated_desc",
+            "case_status": "all",
+            "case_sort": "updated_desc",
+        },
     }
 
     def __init__(self, manager: SecurityOperationsManager | None = None):
@@ -132,7 +139,7 @@ class SocDashboard:
         preset_combo = ttk.Combobox(
             identity_controls,
             textvariable=self.queue_preset_var,
-            values=("tier1-triage", "tier2-investigation", "containment", "review-closed", "custom"),
+            values=("tier1-triage", "tier2-investigation", "containment", "review-closed", "my-queue", "custom"),
             state="readonly",
             width=18,
         )
@@ -715,10 +722,14 @@ class SocDashboard:
     def _alert_query_kwargs(self) -> dict[str, Any]:
         severity = self._parse_severity(self.alert_severity_var.get())
         linked_case_state = self.alert_link_state_var.get()
+        assignee = "unassigned"
+        preset_name = getattr(getattr(self, "queue_preset_var", None), "get", lambda: "tier1-triage")()
+        if preset_name == "my-queue":
+            assignee = self._current_analyst_identity() or "unassigned"
         return {
             "status": SocAlertStatus.open,
             "severity": severity,
-            "assignee": "unassigned",
+            "assignee": assignee,
             "linked_case_state": None if linked_case_state == "all" else linked_case_state,
             "sort": self.alert_sort_var.get() or "severity_desc",
             "limit": 25,
@@ -726,11 +737,15 @@ class SocDashboard:
 
     def _case_query_kwargs(self) -> dict[str, Any]:
         status_value = self.case_status_var.get()
-        return {
+        query: dict[str, Any] = {
             "status": self._parse_case_status(status_value),
             "sort": self.case_sort_var.get() or "updated_desc",
             "limit": 25,
         }
+        preset_name = getattr(getattr(self, "queue_preset_var", None), "get", lambda: "tier1-triage")()
+        if preset_name == "my-queue":
+            query["assignee"] = self._current_analyst_identity() or "unassigned"
+        return query
 
     @staticmethod
     def _selected_tree_item_id(tree: Any) -> str | None:

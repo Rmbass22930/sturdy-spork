@@ -48,6 +48,7 @@ def test_alert_query_kwargs_use_unassigned_open_alert_defaults() -> None:
 
 def test_case_query_kwargs_allow_all_statuses() -> None:
     dashboard = SocDashboard.__new__(SocDashboard)
+    dashboard.queue_preset_var = type("Var", (), {"get": lambda self: "tier1-triage"})()
     dashboard.case_status_var = type("Var", (), {"get": lambda self: "all"})()
     dashboard.case_sort_var = type("Var", (), {"get": lambda self: "updated_desc"})()
 
@@ -67,6 +68,18 @@ def test_preset_values_for_tier2_investigation() -> None:
         "alert_sort": "updated_desc",
         "case_status": "investigating",
         "case_sort": "severity_desc",
+    }
+
+
+def test_preset_values_for_my_queue() -> None:
+    preset = SocDashboard._preset_values("my-queue")
+
+    assert preset == {
+        "alert_severity": "all",
+        "alert_link_state": "all",
+        "alert_sort": "updated_desc",
+        "case_status": "all",
+        "case_sort": "updated_desc",
     }
 
 
@@ -99,6 +112,32 @@ def test_apply_queue_preset_updates_filter_variables_and_refreshes() -> None:
     assert dashboard.case_status_var.get() == "contained"
     assert dashboard.case_sort_var.get() == "updated_desc"
     assert refresh_calls == ["refresh"]
+
+
+def test_alert_query_kwargs_use_analyst_identity_for_my_queue() -> None:
+    dashboard = SocDashboard.__new__(SocDashboard)
+    dashboard.queue_preset_var = type("Var", (), {"get": lambda self: "my-queue"})()
+    dashboard.alert_severity_var = type("Var", (), {"get": lambda self: "all"})()
+    dashboard.alert_link_state_var = type("Var", (), {"get": lambda self: "all"})()
+    dashboard.alert_sort_var = type("Var", (), {"get": lambda self: "updated_desc"})()
+    dashboard.analyst_identity_var = type("Var", (), {"get": lambda self: "tier2-analyst"})()
+
+    kwargs = dashboard._alert_query_kwargs()
+
+    assert kwargs["assignee"] == "tier2-analyst"
+    assert kwargs["linked_case_state"] is None
+
+
+def test_case_query_kwargs_use_analyst_identity_for_my_queue() -> None:
+    dashboard = SocDashboard.__new__(SocDashboard)
+    dashboard.queue_preset_var = type("Var", (), {"get": lambda self: "my-queue"})()
+    dashboard.case_status_var = type("Var", (), {"get": lambda self: "all"})()
+    dashboard.case_sort_var = type("Var", (), {"get": lambda self: "updated_desc"})()
+    dashboard.analyst_identity_var = type("Var", (), {"get": lambda self: "tier2-analyst"})()
+
+    kwargs = dashboard._case_query_kwargs()
+
+    assert kwargs["assignee"] == "tier2-analyst"
 
 
 def test_case_status_parser_understands_investigating() -> None:
