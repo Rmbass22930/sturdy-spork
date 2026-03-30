@@ -51,6 +51,7 @@ MANIFEST_URL_ENV = "SECURITY_GATEWAY_DEPENDENCY_MANIFEST_URL"
 DEFAULT_DEPENDENCY_TIMEOUT_SECONDS = 300
 LOCKED_FILE_RETRY_ATTEMPTS = 3
 LOCKED_FILE_RETRY_DELAY_SECONDS = 0.5
+GUIDE_AUTO_CLOSE_SECONDS = 30
 
 
 def center_window(root: Any, width: int, height: int) -> None:
@@ -472,6 +473,66 @@ def cleanup_stale_mei_directories(
     return removed
 
 
+def _foreground_window_pid() -> Optional[int]:
+    try:
+        hwnd = ctypes.windll.user32.GetForegroundWindow()  # type: ignore[attr-defined]
+        if not hwnd:
+            return None
+        pid = ctypes.c_ulong()
+        ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))  # type: ignore[attr-defined]
+        return int(pid.value) or None
+    except Exception:
+        return None
+
+
+def _launch_guide_process(guide: Path) -> Optional[int]:
+    command = (
+        f"$p = Start-Process -FilePath {_ps_quote(str(guide))} -PassThru; "
+        "if ($p) { $p.Id }"
+    )
+    result = subprocess.run(
+        [resolve_powershell_executable(), "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    output = (result.stdout or "").strip()
+    return int(output) if output.isdigit() else None
+
+
+def _schedule_guide_auto_close(pid: Optional[int], *, timeout_seconds: int, reporter: InstallReporter) -> None:
+    if pid is None:
+        reporter.info(
+            "Installation guide will stay open until you close it because the viewer did not expose a dedicated process."
+        )
+        return
+    reporter.info(
+        f"Installation guide will auto-close after {timeout_seconds} seconds unless you click into it to keep it open."
+    )
+
+    def _worker() -> None:
+        interacted = False
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            if _foreground_window_pid() == pid:
+                interacted = True
+                break
+            time.sleep(0.5)
+        if interacted:
+            reporter.info("Installation guide was clicked. Leaving it open.")
+            return
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    threading.Thread(target=_worker, name="guide-auto-close", daemon=True).start()
+
+
 def download_file(
     url: str,
     description: str,
@@ -775,8 +836,9 @@ def show_install_guide(override_url: Optional[str] = None, reporter: Optional[In
             guide = materialize_external_resource(guide)
     reporter.info(f"Opening installation guide: {guide}")
     opened = False
+    guide_pid: Optional[int] = None
     try:
-        os.startfile(guide)  # type: ignore[attr-defined]
+        guide_pid = _launch_guide_process(guide)
         opened = True
     except OSError as exc:
         reporter.info(f"Unable to open guide automatically (no default PDF app?): {exc}")
@@ -787,9 +849,12 @@ def show_install_guide(override_url: Optional[str] = None, reporter: Optional[In
             reporter.info(f"Also failed to open File Explorer: {explorer_exc}")
         reporter.info("If you do not have a PDF reader installed, install one (e.g., Edge, Acrobat) and open the guide manually.")
     if opened:
+        _schedule_guide_auto_close(guide_pid, reporter=reporter, timeout_seconds=GUIDE_AUTO_CLOSE_SECONDS)
+        reporter.info("If you want a paper copy, use your PDF viewer's Print command while the guide is open.")
         reporter.info("Installation guide opened. Setup will continue immediately.")
     else:
         reporter.info(f"Guide path: {guide}")
+        reporter.info("If you want a paper copy, open the guide manually and print it from your PDF viewer.")
         reporter.info("Setup will continue immediately.")
 
 

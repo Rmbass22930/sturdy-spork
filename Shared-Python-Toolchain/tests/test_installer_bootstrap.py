@@ -238,12 +238,24 @@ def test_main_wraps_rollback_failures(monkeypatch, tmp_path: Path) -> None:
 def test_show_install_guide_does_not_wait_for_input(monkeypatch, tmp_path: Path, capsys) -> None:
     guide_path = tmp_path / "INSTALL_GUIDE.pdf"
     guide_path.write_text("pdf", encoding="utf-8")
+    scheduled: list[int | None] = []
+
+    def fake_schedule(pid: int | None, reporter: object, timeout_seconds: int = 30) -> None:
+        scheduled.append(pid)
+        getattr(reporter, "info")(
+            f"Installation guide will auto-close after {timeout_seconds} seconds unless you click into it to keep it open."
+        )
+
     monkeypatch.setattr(installer, "resolve_resource", lambda rel: guide_path)
-    monkeypatch.setattr(installer.os, "startfile", lambda path: None, raising=False)
+    monkeypatch.setattr(installer, "_launch_guide_process", lambda path: 1234)
+    monkeypatch.setattr(installer, "_schedule_guide_auto_close", fake_schedule)
 
     installer.show_install_guide()
     output = capsys.readouterr().out
 
+    assert scheduled == [1234]
+    assert "auto-close after 30 seconds unless you click into it to keep it open" in output
+    assert "If you want a paper copy" in output
     assert "Setup will continue immediately." in output
 
 
@@ -252,6 +264,13 @@ def test_show_install_guide_materializes_frozen_resource(monkeypatch, tmp_path: 
     guide_path.write_text("pdf", encoding="utf-8")
     docs_dir = tmp_path / "stable-docs"
     opened: list[Path] = []
+    scheduled: list[int | None] = []
+
+    def fake_schedule(pid: int | None, reporter: object, timeout_seconds: int = 30) -> None:
+        scheduled.append(pid)
+        getattr(reporter, "info")(
+            f"Installation guide will auto-close after {timeout_seconds} seconds unless you click into it to keep it open."
+        )
 
     def fake_materialize(path: Path, target_dir: Path | None = None) -> Path:
         docs_dir.mkdir(parents=True, exist_ok=True)
@@ -261,13 +280,21 @@ def test_show_install_guide_materializes_frozen_resource(monkeypatch, tmp_path: 
 
     monkeypatch.setattr(installer, "resolve_resource", lambda rel: guide_path)
     monkeypatch.setattr(installer, "materialize_external_resource", fake_materialize)
-    monkeypatch.setattr(installer.os, "startfile", lambda path: opened.append(Path(path)), raising=False)
+    def fake_launch(path: Path) -> int:
+        opened.append(Path(path))
+        return 5678
+
+    monkeypatch.setattr(installer, "_launch_guide_process", fake_launch)
+    monkeypatch.setattr(installer, "_schedule_guide_auto_close", fake_schedule)
     monkeypatch.setattr(installer.sys, "_MEIPASS", str(tmp_path), raising=False)
 
     installer.show_install_guide()
     output = capsys.readouterr().out
 
     assert opened == [docs_dir / "INSTALL_GUIDE.pdf"]
+    assert scheduled == [5678]
+    assert "auto-close after 30 seconds unless you click into it to keep it open" in output
+    assert "If you want a paper copy" in output
     assert "Setup will continue immediately." in output
 
 
