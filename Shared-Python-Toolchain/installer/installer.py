@@ -41,7 +41,8 @@ PATH_BACKUP_NAME = "user_path_backup.txt"
 SYSTEM_DATA_DIR = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "SecurityGateway"
 USER_DATA_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "SecurityGateway"
 REPORTS_DIR = USER_DATA_DIR / "reports"
-TASK_NAME = "SecurityGatewayAutomation"
+TASK_NAME = "SecurityGatewayMonitor"
+LEGACY_TASK_NAMES = ("SecurityGatewayAutomation",)
 PAYLOAD_URL_ENV = "SECURITY_GATEWAY_PAYLOAD_URL"
 PAYLOAD_SHA_ENV = "SECURITY_GATEWAY_PAYLOAD_SHA256"
 GUIDE_URL_ENV = "SECURITY_GATEWAY_GUIDE_URL"
@@ -612,34 +613,34 @@ def _ps_quote(value: str) -> str:
 
 
 def register_automation_task(exe_path: Path) -> None:
-    ps_script = f"""
-$ErrorActionPreference = 'Stop'
-$action = New-ScheduledTaskAction -Execute {_ps_quote(str(exe_path))} -Argument 'automation-run'
-$trigger = New-ScheduledTaskTrigger -AtLogOn
-$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Highest
-$existing = Get-ScheduledTask -TaskName {_ps_quote(TASK_NAME)} -ErrorAction SilentlyContinue
-if ($existing) {{
-    Unregister-ScheduledTask -TaskName {_ps_quote(TASK_NAME)} -Confirm:$false
-}}
-Register-ScheduledTask -TaskName {_ps_quote(TASK_NAME)} -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
-"""
+    unregister_automation_task()
+    task_command = f'"{exe_path}" automation-run'
     subprocess.run(
-        [resolve_powershell_executable(), "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_script],
+        [
+            "schtasks",
+            "/Create",
+            "/TN",
+            TASK_NAME,
+            "/SC",
+            "ONLOGON",
+            "/TR",
+            task_command,
+            "/RL",
+            "HIGHEST",
+            "/F",
+        ],
         check=True,
     )
 
 
 def unregister_automation_task() -> None:
-    ps_script = f"""
-$task = Get-ScheduledTask -TaskName {_ps_quote(TASK_NAME)} -ErrorAction SilentlyContinue
-if ($task) {{
-    Unregister-ScheduledTask -TaskName {_ps_quote(TASK_NAME)} -Confirm:$false
-}}
-"""
-    subprocess.run(
-        [resolve_powershell_executable(), "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_script],
-        check=True,
-    )
+    for task_name in (TASK_NAME, *LEGACY_TASK_NAMES):
+        subprocess.run(
+            ["schtasks", "/Delete", "/TN", task_name, "/F"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
 
 
 def write_uninstall_script(installed_path: Path, path_backup_file: Path) -> Path:

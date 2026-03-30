@@ -76,6 +76,33 @@ def test_create_shortcut_returns_created_paths(tmp_path: Path) -> None:
     assert "automation-run" not in command[-1]
 
 
+def test_task_name_is_monitor_and_uninstall_script_uses_it(tmp_path: Path) -> None:
+    installed_path = tmp_path / "SecurityGateway.exe"
+    backup_file = tmp_path / "user_path_backup.txt"
+
+    assert installer.TASK_NAME == "SecurityGatewayMonitor"
+
+    script_path = installer.write_uninstall_script(installed_path, backup_file)
+    script = script_path.read_text(encoding="utf-8")
+
+    assert 'TaskName = "SecurityGatewayMonitor"' in script
+
+
+def test_register_automation_task_uses_schtasks(monkeypatch, tmp_path: Path) -> None:
+    exe_path = tmp_path / "SecurityGateway.exe"
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(installer, "unregister_automation_task", lambda: calls.append(["unregister"]))
+    monkeypatch.setattr(installer.subprocess, "run", lambda args, check: calls.append(args))
+
+    installer.register_automation_task(exe_path)
+
+    assert calls[0] == ["unregister"]
+    assert calls[1][:6] == ["schtasks", "/Create", "/TN", "SecurityGatewayMonitor", "/SC", "ONLOGON"]
+    assert calls[1][-3:] == ["/RL", "HIGHEST", "/F"]
+    assert calls[1][calls[1].index("/TR") + 1] == f'"{exe_path}" automation-run'
+
+
 def test_copy_binary_retries_after_locked_file_error(tmp_path: Path, monkeypatch) -> None:
     src = tmp_path / "SecurityGateway.exe"
     dest_dir = tmp_path / "install"
