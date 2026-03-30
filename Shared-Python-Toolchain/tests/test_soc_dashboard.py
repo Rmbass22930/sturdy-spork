@@ -244,6 +244,42 @@ def test_clear_activity_focus_clears_both_selections_and_resets_detail() -> None
     assert captured == [None]
 
 
+def test_select_tree_row_at_pointer_selects_and_focuses_row() -> None:
+    tree = type(
+        "Tree",
+        (),
+        {
+            "identify_row": lambda self, y: "row-7" if y == 12 else "",
+            "selection_set": lambda self, value: setattr(self, "selected", value),
+            "focus": lambda self, value: setattr(self, "focused", value),
+        },
+    )()
+    event = type("Event", (), {"y": 12})()
+
+    row_id = SocDashboard._select_tree_row_at_pointer(tree, event)
+
+    assert row_id == "row-7"
+    assert getattr(tree, "selected") == "row-7"
+    assert getattr(tree, "focused") == "row-7"
+
+
+def test_select_tree_row_at_pointer_returns_none_when_no_row() -> None:
+    tree = type(
+        "Tree",
+        (),
+        {
+            "identify_row": lambda self, y: "",
+            "selection_set": lambda self, value: setattr(self, "selected", value),
+        },
+    )()
+    event = type("Event", (), {"y": 99})()
+
+    row_id = SocDashboard._select_tree_row_at_pointer(tree, event)
+
+    assert row_id is None
+    assert not hasattr(tree, "selected")
+
+
 def test_format_summary_records_limits_output() -> None:
     rows = [
         {"alert_id": f"alert-{index}", "status": "open", "severity": "high", "title": f"Alert {index}"}

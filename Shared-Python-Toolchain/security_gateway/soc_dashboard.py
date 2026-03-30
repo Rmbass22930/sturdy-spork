@@ -252,6 +252,8 @@ class SocDashboard:
         )
         self.correlation_tree.bind("<<TreeviewSelect>>", lambda _event: self._refresh_correlation_detail())
         self.correlation_tree.bind("<Double-1>", lambda _event: self._open_selected_correlation())
+        self.correlation_tree.bind("<Return>", lambda _event: self.open_selected_correlation_action())
+        self.correlation_tree.bind("<Button-3>", self._show_correlation_context_menu)
         self.event_tree = self._build_tree(
             body,
             row=1,
@@ -262,6 +264,8 @@ class SocDashboard:
         )
         self.event_tree.bind("<<TreeviewSelect>>", lambda _event: self._refresh_recent_event_detail())
         self.event_tree.bind("<Double-1>", lambda _event: self._open_selected_recent_event())
+        self.event_tree.bind("<Return>", lambda _event: self.open_selected_recent_event_action())
+        self.event_tree.bind("<Button-3>", self._show_recent_event_context_menu)
         ops_frame = ttk.LabelFrame(body, text="Ownership, Aging And Activity", padding=(10, 10), style="SOC.TLabelframe")
         ops_frame.grid(row=1, column=2, sticky="nsew", padx=(8, 0), pady=(8, 0))
         ops_frame.columnconfigure(0, weight=1)
@@ -1257,6 +1261,34 @@ class SocDashboard:
             self._show_info_dialog("Recent Events", "Select an event row to open its event workflow.")
             return
         self._open_selected_recent_event()
+
+    def _show_correlation_context_menu(self, event: Any) -> None:
+        if self._select_tree_row_at_pointer(self.correlation_tree, event) is None or tk is None:
+            return
+        menu = tk.Menu(self.root, tearoff=0)
+        menu.add_command(label="Open Selected Correlation", command=self.open_selected_correlation_action)
+        menu.add_separator()
+        menu.add_command(label="Clear Activity Focus", command=self.clear_activity_focus)
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _show_recent_event_context_menu(self, event: Any) -> None:
+        if self._select_tree_row_at_pointer(self.event_tree, event) is None or tk is None:
+            return
+        menu = tk.Menu(self.root, tearoff=0)
+        menu.add_command(label="Open Selected Event", command=self.open_selected_recent_event_action)
+        menu.add_separator()
+        menu.add_command(label="Clear Activity Focus", command=self.clear_activity_focus)
+        menu.tk_popup(event.x_root, event.y_root)
+
+    @staticmethod
+    def _select_tree_row_at_pointer(tree: Any, event: Any) -> str | None:
+        row_id = tree.identify_row(event.y)
+        if not row_id:
+            return None
+        tree.selection_set(row_id)
+        if hasattr(tree, "focus"):
+            tree.focus(row_id)
+        return str(row_id)
 
     def clear_activity_focus(self) -> None:
         if hasattr(self, "correlation_tree"):
