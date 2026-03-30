@@ -917,7 +917,7 @@ class SocDashboard:
             if selected_alert is None:
                 self._show_info_dialog("Case Linked Activity", self._format_case_linked_activity(case_payload, linked_alerts, source_events))
                 return
-            self._show_info_dialog("Alert Details", self._format_alert_detail(selected_alert))
+            self._pivot_from_alert(selected_alert)
             return
         if choice == "events":
             selected_event = self._select_summary_record("event", source_events, title="Source Events")
@@ -1094,15 +1094,52 @@ class SocDashboard:
             if selected_alert is None:
                 self._show_info_dialog("Related Alerts", self._format_summary_records("alert", related_alerts, limit=30))
                 return
-            self._show_info_dialog("Alert Details", self._format_alert_detail(selected_alert))
+            self._pivot_from_alert(selected_alert)
         elif choice == "cases":
             selected_case = self._select_summary_record("case", related_cases, title="Related Cases")
             if selected_case is None:
                 self._show_info_dialog("Related Cases", self._format_summary_records("case", related_cases, limit=30))
                 return
-            self._show_info_dialog("Case Details", self._format_case_detail(selected_case))
+            self._pivot_from_case(selected_case)
         else:
             self._show_info_dialog("Event Details", self._format_summary_records("event", [event_payload], limit=1))
+
+    def _pivot_from_alert(self, alert_payload: dict[str, Any]) -> None:
+        source_events = self._resolve_source_events(alert_payload)
+        linked_case_id = str(alert_payload.get("linked_case_id") or "")
+        linked_case = self.case_rows_by_id.get(linked_case_id) if linked_case_id else None
+        choice = self._choose_alert_pivot(alert_payload, source_events=source_events, linked_case=linked_case)
+        if choice == "events":
+            selected_event = self._select_summary_record("event", source_events, title="Source Events")
+            if selected_event is None:
+                self._show_info_dialog("Alert Details", self._format_alert_detail(alert_payload))
+                return
+            self._pivot_from_event(selected_event)
+            return
+        if choice == "case" and linked_case is not None:
+            self._pivot_from_case(linked_case)
+            return
+        self._show_info_dialog("Alert Details", self._format_alert_detail(alert_payload))
+
+    def _pivot_from_case(self, case_payload: dict[str, Any]) -> None:
+        linked_alerts = self._resolve_linked_alerts(case_payload)
+        source_events = self._resolve_case_source_events(case_payload)
+        choice = self._choose_case_activity_pivot(case_payload, linked_alerts=linked_alerts, source_events=source_events)
+        if choice == "alerts":
+            selected_alert = self._select_summary_record("alert", linked_alerts, title="Linked Alerts")
+            if selected_alert is None:
+                self._show_info_dialog("Case Linked Activity", self._format_case_linked_activity(case_payload, linked_alerts, source_events))
+                return
+            self._pivot_from_alert(selected_alert)
+            return
+        if choice == "events":
+            selected_event = self._select_summary_record("event", source_events, title="Source Events")
+            if selected_event is None:
+                self._show_info_dialog("Case Linked Activity", self._format_case_linked_activity(case_payload, linked_alerts, source_events))
+                return
+            self._pivot_from_event(selected_event)
+            return
+        self._show_info_dialog("Case Details", self._format_case_detail(case_payload))
 
     def _show_all_alerts_summary_drilldown(self) -> None:
         self._navigate_summary_view(
@@ -1283,6 +1320,54 @@ class SocDashboard:
         if related_cases:
             tk.Button(controls, text="Open Related Cases", command=lambda: set_choice("cases"), width=18).pack(side="left", padx=(8, 0))
         tk.Button(controls, text="Event Details", command=lambda: set_choice("details"), width=14).pack(side="right")
+        dialog.bind("<Escape>", lambda _event: set_choice("details"))
+        self.root.wait_window(dialog)
+        return choice
+
+    def _choose_alert_pivot(
+        self,
+        alert_payload: dict[str, Any],
+        *,
+        source_events: Sequence[dict[str, Any]],
+        linked_case: dict[str, Any] | None,
+    ) -> str:
+        has_linked_case = linked_case is not None
+        if not source_events and not has_linked_case:
+            return "details"
+        if tk is None or not hasattr(self, "root"):
+            return "events" if source_events else "case"
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Alert Actions")
+        dialog.configure(bg="#eef4ff")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        _center_window(dialog, 620, 260)
+        dialog.minsize(540, 220)
+        choice = "details"
+        alert_id = str(alert_payload.get("alert_id") or "-")
+        title = str(alert_payload.get("title") or "-")
+        summary = (
+            f"Alert: {alert_id}\n"
+            f"Title: {title}\n\n"
+            f"Source events: {len(source_events)}\n"
+            f"Linked case: {'yes' if has_linked_case else 'no'}"
+        )
+        tk.Label(dialog, text=summary, bg="#eef4ff", fg="#24364a", justify="left", anchor="w", padx=16, pady=16).pack(fill="both", expand=True)
+
+        controls = tk.Frame(dialog, bg="#eef4ff", padx=16, pady=12)
+        controls.pack(fill="x")
+
+        def set_choice(value: str) -> None:
+            nonlocal choice
+            choice = value
+            dialog.destroy()
+
+        if source_events:
+            tk.Button(controls, text="Open Source Events", command=lambda: set_choice("events"), width=18).pack(side="left")
+        if has_linked_case:
+            tk.Button(controls, text="Open Linked Case", command=lambda: set_choice("case"), width=18).pack(side="left", padx=(8, 0))
+        tk.Button(controls, text="Alert Details", command=lambda: set_choice("details"), width=14).pack(side="right")
         dialog.bind("<Escape>", lambda _event: set_choice("details"))
         self.root.wait_window(dialog)
         return choice
