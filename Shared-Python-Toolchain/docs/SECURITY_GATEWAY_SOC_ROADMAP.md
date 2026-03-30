@@ -26,6 +26,7 @@ Security Gateway is not a drop-in replacement for Security Onion Pro. The practi
 - Correlation alerts for repeated tracker-block activity
 - Correlation alerts for endpoints that combine posture problems with risky access outcomes
 - Dashboard API summarizing queue state, severity/status counts, active cases, unassigned alerts, and recent correlations
+- Desktop analyst queue presets for tier-1 triage, tier-2 investigation, containment, and review views
 
 ## Phase 3
 - Durable background jobs for event ingestion and alert routing

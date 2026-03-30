@@ -38,6 +38,38 @@ def _center_window(root: Any, width: int, height: int) -> None:
 
 
 class SocDashboard:
+    QUEUE_PRESETS: dict[str, dict[str, str]] = {
+        "custom": {},
+        "tier1-triage": {
+            "alert_severity": "all",
+            "alert_link_state": "unlinked",
+            "alert_sort": "severity_desc",
+            "case_status": "all",
+            "case_sort": "updated_desc",
+        },
+        "tier2-investigation": {
+            "alert_severity": "high",
+            "alert_link_state": "linked",
+            "alert_sort": "updated_desc",
+            "case_status": "investigating",
+            "case_sort": "severity_desc",
+        },
+        "containment": {
+            "alert_severity": "critical",
+            "alert_link_state": "all",
+            "alert_sort": "severity_desc",
+            "case_status": "contained",
+            "case_sort": "updated_desc",
+        },
+        "review-closed": {
+            "alert_severity": "all",
+            "alert_link_state": "all",
+            "alert_sort": "updated_desc",
+            "case_status": "closed",
+            "case_sort": "updated_desc",
+        },
+    }
+
     def __init__(self, manager: SecurityOperationsManager | None = None):
         if tk is None or ttk is None:
             raise RuntimeError("Tk SOC dashboard is unavailable on this machine.")
@@ -53,6 +85,7 @@ class SocDashboard:
         self.root.configure(bg="#eef4ff")
         _center_window(self.root, 1420, 900)
         self.root.minsize(1180, 720)
+        self.queue_preset_var = tk.StringVar(value="tier1-triage")
         self.alert_severity_var = tk.StringVar(value="all")
         self.alert_link_state_var = tk.StringVar(value="unlinked")
         self.alert_sort_var = tk.StringVar(value="severity_desc")
@@ -95,9 +128,20 @@ class SocDashboard:
         ttk.Label(header, textvariable=self.status_var, style="SOC.Sub.TLabel").grid(row=1, column=0, sticky="w", pady=(6, 0))
         identity_controls = ttk.Frame(header, style="SOC.TFrame")
         identity_controls.grid(row=0, column=1, rowspan=2, sticky="e")
-        ttk.Label(identity_controls, text="Analyst", style="SOC.TLabel").grid(row=0, column=0, sticky="e", padx=(0, 6))
-        ttk.Entry(identity_controls, textvariable=self.analyst_identity_var, width=18).grid(row=0, column=1, sticky="e", padx=(0, 12))
-        ttk.Button(identity_controls, text="Refresh", command=self.refresh).grid(row=0, column=2, sticky="e")
+        ttk.Label(identity_controls, text="Queue View", style="SOC.TLabel").grid(row=0, column=0, sticky="e", padx=(0, 6))
+        preset_combo = ttk.Combobox(
+            identity_controls,
+            textvariable=self.queue_preset_var,
+            values=("tier1-triage", "tier2-investigation", "containment", "review-closed", "custom"),
+            state="readonly",
+            width=18,
+        )
+        preset_combo.grid(row=0, column=1, sticky="e", padx=(0, 12))
+        preset_combo.bind("<<ComboboxSelected>>", lambda _event: self.apply_queue_preset())
+        ttk.Label(identity_controls, text="Analyst", style="SOC.TLabel").grid(row=0, column=2, sticky="e", padx=(0, 6))
+        ttk.Entry(identity_controls, textvariable=self.analyst_identity_var, width=18).grid(row=0, column=3, sticky="e", padx=(0, 12))
+        ttk.Button(identity_controls, text="Apply View", command=self.apply_queue_preset).grid(row=0, column=4, sticky="e", padx=(0, 8))
+        ttk.Button(identity_controls, text="Refresh", command=self.refresh).grid(row=0, column=5, sticky="e")
 
         summary = ttk.Frame(self.root, padding=(18, 0, 18, 12), style="SOC.TFrame")
         summary.grid(row=1, column=0, sticky="ew")
@@ -365,6 +409,17 @@ class SocDashboard:
             sticky="w",
             padx=(8, 0),
         )
+
+    def apply_queue_preset(self) -> None:
+        preset_name = self.queue_preset_var.get() or "custom"
+        preset = self._preset_values(preset_name)
+        if preset:
+            self.alert_severity_var.set(preset["alert_severity"])
+            self.alert_link_state_var.set(preset["alert_link_state"])
+            self.alert_sort_var.set(preset["alert_sort"])
+            self.case_status_var.set(preset["case_status"])
+            self.case_sort_var.set(preset["case_sort"])
+        self.refresh()
 
     def refresh(self) -> None:
         dashboard = cast(dict[str, Any], self.manager.dashboard())
@@ -755,6 +810,10 @@ class SocDashboard:
     def _current_analyst_identity(self) -> str | None:
         value = self.analyst_identity_var.get().strip()
         return value or None
+
+    @classmethod
+    def _preset_values(cls, preset_name: str) -> dict[str, str]:
+        return dict(cls.QUEUE_PRESETS.get((preset_name or "custom").strip().lower(), {}))
 
     @staticmethod
     def _parse_severity(value: str) -> SocSeverity | None:

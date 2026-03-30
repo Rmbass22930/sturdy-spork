@@ -1,3 +1,5 @@
+from typing import Any, cast
+
 from security_gateway.soc_dashboard import SocDashboard
 from security_gateway.models import SocAlertStatus, SocCaseStatus, SocSeverity
 
@@ -54,6 +56,49 @@ def test_case_query_kwargs_allow_all_statuses() -> None:
     assert kwargs["status"] is None
     assert kwargs["sort"] == "updated_desc"
     assert kwargs["limit"] == 25
+
+
+def test_preset_values_for_tier2_investigation() -> None:
+    preset = SocDashboard._preset_values("tier2-investigation")
+
+    assert preset == {
+        "alert_severity": "high",
+        "alert_link_state": "linked",
+        "alert_sort": "updated_desc",
+        "case_status": "investigating",
+        "case_sort": "severity_desc",
+    }
+
+
+def test_apply_queue_preset_updates_filter_variables_and_refreshes() -> None:
+    class Var:
+        def __init__(self, value: str):
+            self.value = value
+
+        def get(self) -> str:
+            return self.value
+
+        def set(self, value: str) -> None:
+            self.value = value
+
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.queue_preset_var = Var("containment")
+    dashboard.alert_severity_var = Var("all")
+    dashboard.alert_link_state_var = Var("unlinked")
+    dashboard.alert_sort_var = Var("severity_desc")
+    dashboard.case_status_var = Var("all")
+    dashboard.case_sort_var = Var("updated_desc")
+    refresh_calls: list[str] = []
+    dashboard.refresh = lambda: refresh_calls.append("refresh")
+
+    dashboard.apply_queue_preset()
+
+    assert dashboard.alert_severity_var.get() == "critical"
+    assert dashboard.alert_link_state_var.get() == "all"
+    assert dashboard.alert_sort_var.get() == "severity_desc"
+    assert dashboard.case_status_var.get() == "contained"
+    assert dashboard.case_sort_var.get() == "updated_desc"
+    assert refresh_calls == ["refresh"]
 
 
 def test_case_status_parser_understands_investigating() -> None:
