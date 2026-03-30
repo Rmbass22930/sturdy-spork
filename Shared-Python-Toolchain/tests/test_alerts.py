@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from security_gateway.alerts import AlertEvent, AlertLevel, AlertManager
 
 
@@ -74,3 +76,23 @@ def test_invalid_webhook_configuration_fails_closed(monkeypatch):
 
     assert manager._http_client is None  # pylint: disable=protected-access
     assert "disabled" in captured["args"][0].lower()
+
+
+def test_set_toast_enabled_persists_preference(tmp_path: Path):
+    preference_path = tmp_path / "alert_preferences.json"
+    manager = AlertManager(webhook_url=None, enable_toast=False, preference_path=preference_path)
+
+    manager.set_toast_enabled(True)
+
+    assert manager.is_toast_enabled() is True
+    assert preference_path.exists()
+    assert '"enable_toast": true' in preference_path.read_text(encoding="utf-8").lower()
+
+
+def test_is_toast_enabled_prefers_saved_preference(tmp_path: Path):
+    preference_path = tmp_path / "alert_preferences.json"
+    preference_path.write_text('{"enable_toast": true}', encoding="utf-8")
+
+    manager = AlertManager(webhook_url=None, enable_toast=False, preference_path=preference_path)
+
+    assert manager.is_toast_enabled() is True

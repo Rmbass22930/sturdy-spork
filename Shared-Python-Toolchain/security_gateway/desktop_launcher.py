@@ -13,6 +13,24 @@ except ImportError:  # pragma: no cover - frozen entrypoint fallback
     from security_gateway.config import get_runtime_data_dir
 
 
+def _alert_popup_state() -> bool:
+    try:
+        from .alerts import alert_manager
+    except ImportError:  # pragma: no cover - frozen entrypoint fallback
+        from security_gateway.alerts import alert_manager
+    return bool(alert_manager.is_toast_enabled())
+
+
+def _toggle_alert_popups() -> bool:
+    try:
+        from .alerts import alert_manager
+    except ImportError:  # pragma: no cover - frozen entrypoint fallback
+        from security_gateway.alerts import alert_manager
+    next_state = not alert_manager.is_toast_enabled()
+    alert_manager.set_toast_enabled(next_state)
+    return next_state
+
+
 def _center_window(root: Any, width: int, height: int) -> None:
     screen_width = int(root.winfo_screenwidth())
     screen_height = int(root.winfo_screenheight())
@@ -99,6 +117,7 @@ def main() -> int:
     root.configure(bg="#eef4ff")
     root.resizable(False, False)
     _center_window(root, 620, 420)
+    popup_status_var = tk.StringVar(value=f"Popup alerts: {'On' if _alert_popup_state() else 'Off'}")
 
     def run_action(action: str) -> None:
         try:
@@ -111,6 +130,9 @@ def main() -> int:
                 _open_install_folder()
             elif action == "uninstall":
                 _launch_uninstaller()
+            elif action == "toggle-alert-popups":
+                popup_status_var.set(f"Popup alerts: {'On' if _toggle_alert_popups() else 'Off'}")
+                return
             elif action == "exit":
                 root.destroy()
                 return
@@ -122,6 +144,8 @@ def main() -> int:
     menu_bar = tk.Menu(root)
     tools_menu = tk.Menu(menu_bar, tearoff=False)
     tools_menu.add_command(label="SOC Dashboard", command=lambda: run_action("soc-dashboard"))
+    tools_menu.add_separator()
+    tools_menu.add_command(label="Toggle Popup Alerts", command=lambda: run_action("toggle-alert-popups"))
     tools_menu.add_separator()
     tools_menu.add_command(label="Open Reports Folder", command=lambda: run_action("reports"))
     tools_menu.add_command(label="Open Install Folder", command=lambda: run_action("install-folder"))
@@ -150,9 +174,19 @@ def main() -> int:
         bg="#eef4ff",
         fg="#2f3e52",
     ).pack(fill="x", pady=(0, 20))
+    tk.Label(
+        frame,
+        textvariable=popup_status_var,
+        font=("Segoe UI", 10, "bold"),
+        justify="left",
+        anchor="w",
+        bg="#eef4ff",
+        fg="#8a1538",
+    ).pack(fill="x", pady=(0, 14))
 
     button_specs = [
         ("SOC Dashboard", "#7c3aed", "white", "soc-dashboard"),
+        ("Toggle Popup Alerts", "#b45309", "white", "toggle-alert-popups"),
         ("Open Reports Folder", "#1f6feb", "white", "reports"),
         ("Open Install Folder", "#2d6a4f", "white", "install-folder"),
         ("Run Uninstaller", "#b44c2f", "white", "uninstall"),

@@ -2,18 +2,20 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import socket
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from enum import Enum
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
 import httpx
 
-from .config import settings
+from .config import get_runtime_data_dir, settings
 
 IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 
@@ -42,9 +44,15 @@ def _resolve_powershell_executable() -> str:
 
 
 class AlertManager:
-    def __init__(self, webhook_url: Optional[str] = None, enable_toast: Optional[bool] = None):
+    def __init__(
+        self,
+        webhook_url: Optional[str] = None,
+        enable_toast: Optional[bool] = None,
+        preference_path: Path | None = None,
+    ):
         self.webhook_url = webhook_url or settings.alert_webhook_url
         self.enable_toast = settings.alert_enable_toast if enable_toast is None else enable_toast
+        self._preference_path = preference_path or (get_runtime_data_dir() / "alert_preferences.json")
         self._http_client = None
         self._webhook_error: str | None = None
         if self.webhook_url:
@@ -77,8 +85,20 @@ class AlertManager:
                 print(f"Failed to send webhook alert: {exc}", file=sys.stderr)
         elif self._webhook_error:
             print(f"Webhook alert delivery disabled: {self._webhook_error}", file=sys.stderr)
-        if self.enable_toast:
+        if self.is_toast_enabled():
             self._toast(payload)
+
+    def is_toast_enabled(self) -> bool:
+        preferences = self._load_preferences()
+        if "enable_toast" in preferences:
+            return bool(preferences["enable_toast"])
+        return bool(self.enable_toast)
+
+    def set_toast_enabled(self, enabled: bool) -> None:
+        self.enable_toast = enabled
+        preferences = self._load_preferences()
+        preferences["enable_toast"] = enabled
+        self._save_preferences(preferences)
 
     def _toast(self, payload: Dict[str, Any]) -> None:
         title = self._escape_powershell_single_quoted(f"SecurityGateway: {payload['title']}")
@@ -110,6 +130,19 @@ class AlertManager:
     def close(self) -> None:
         if self._http_client:
             self._http_client.close()
+
+    def _load_preferences(self) -> Dict[str, Any]:
+        if not self._preference_path.exists():
+            return {}
+        try:
+            payload = json.loads(self._preference_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _save_preferences(self, payload: Dict[str, Any]) -> None:
+        self._preference_path.parent.mkdir(parents=True, exist_ok=True)
+        self._preference_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     @staticmethod
     def _validate_webhook_url(url: str) -> None:
