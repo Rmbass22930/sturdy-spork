@@ -93,6 +93,15 @@ class Settings(BaseSettings):
     network_monitor_state_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "network_monitor_state.json"))
     network_monitor_repeat_threshold: int = 3
     network_monitor_sensitive_ports: List[int] = Field(default_factory=lambda: [22, 23, 135, 139, 445, 3389, 5900, 5985, 5986])
+    packet_monitor_enabled: bool = True
+    packet_monitor_every_ticks: int = 2
+    packet_monitor_state_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "packet_monitor_state.json"))
+    packet_monitor_sample_seconds: float = 2.0
+    packet_monitor_min_packet_count: int = 5
+    packet_monitor_anomaly_multiplier: float = 2.0
+    packet_monitor_learning_samples: int = 3
+    packet_monitor_capture_bytes: int = 128
+    packet_monitor_sensitive_ports: List[int] = Field(default_factory=lambda: [22, 23, 135, 139, 445, 3389, 5900, 5985, 5986])
     automation_tracker_feed_refresh_enabled: bool = False
     automation_tracker_feed_refresh_every_ticks: int = 12
     automation_malware_feed_refresh_enabled: bool = False

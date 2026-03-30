@@ -36,6 +36,7 @@ from .dns import SecureDNSResolver
 from .endpoint import EndpointTelemetryService, MalwareScanner
 from .host_monitor import HostMonitor
 from .network_monitor import NetworkMonitor
+from .packet_monitor import PacketMonitor
 from .ip_controls import IPBlocklistManager
 from .models import (
     AccessDecision,
@@ -138,6 +139,15 @@ network_monitor = NetworkMonitor(
     state_path=settings.network_monitor_state_path,
     suspicious_repeat_threshold=settings.network_monitor_repeat_threshold,
     sensitive_ports=settings.network_monitor_sensitive_ports,
+)
+packet_monitor = PacketMonitor(
+    state_path=settings.packet_monitor_state_path,
+    sample_seconds=settings.packet_monitor_sample_seconds,
+    min_packet_count=settings.packet_monitor_min_packet_count,
+    anomaly_multiplier=settings.packet_monitor_anomaly_multiplier,
+    learning_samples=settings.packet_monitor_learning_samples,
+    pkt_size=settings.packet_monitor_capture_bytes,
+    sensitive_ports=settings.packet_monitor_sensitive_ports,
 )
 
 
@@ -296,6 +306,27 @@ def _record_network_monitor_finding(finding: dict[str, object]) -> None:
     )
 
 
+def _record_packet_monitor_finding(finding: dict[str, object]) -> None:
+    raw_tags = finding.get("tags")
+    tags = [str(item) for item in raw_tags] if isinstance(raw_tags, list) else []
+    severity_name = "low" if bool(finding.get("resolved")) else str(finding.get("severity", "medium"))
+    soc_manager.ingest_event(
+        SocEventIngest(
+            event_type="packet.monitor.recovered" if bool(finding.get("resolved")) else "packet.monitor.finding",
+            source="security_gateway",
+            severity=SocSeverity(severity_name),
+            title=str(finding.get("title", "Packet monitor finding")),
+            summary=str(finding.get("summary", "")),
+            details={
+                "key": finding.get("key"),
+                "resolved": bool(finding.get("resolved")),
+                "details": finding.get("details", {}),
+            },
+            tags=tags,
+        )
+    )
+
+
 automation = AutomationSupervisor(
     vault=vault,
     proxy=proxy,
@@ -318,6 +349,10 @@ automation = AutomationSupervisor(
     network_monitor_enabled=settings.network_monitor_enabled,
     network_monitor_every_ticks=settings.network_monitor_every_ticks,
     network_monitor_callback=_record_network_monitor_finding,
+    packet_monitor=packet_monitor,
+    packet_monitor_enabled=settings.packet_monitor_enabled,
+    packet_monitor_every_ticks=settings.packet_monitor_every_ticks,
+    packet_monitor_callback=_record_packet_monitor_finding,
 )
 
 
