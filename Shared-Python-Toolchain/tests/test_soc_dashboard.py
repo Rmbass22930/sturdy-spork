@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 from security_gateway.soc_dashboard import SocDashboard
@@ -186,6 +187,54 @@ def test_refresh_workload_assignee_options_updates_combo_values() -> None:
 
     assert dashboard.workload_assignee_combo.values == ("all", "tier1", "tier2")
     assert dashboard.workload_assignee_var.value == "all"
+
+
+def test_record_matches_age_bucket() -> None:
+    now = datetime.now(UTC)
+    assert SocDashboard._record_matches_age_bucket((now - timedelta(hours=2)).isoformat(), "0-4h")
+    assert SocDashboard._record_matches_age_bucket((now - timedelta(hours=12)).isoformat(), "4-24h")
+    assert SocDashboard._record_matches_age_bucket((now - timedelta(hours=36)).isoformat(), "24-72h")
+    assert SocDashboard._record_matches_age_bucket((now - timedelta(hours=96)).isoformat(), "72h+")
+
+
+def test_age_bucket_alert_rows_respect_bucket_and_assignee() -> None:
+    now = datetime.now(UTC)
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.workload_assignee_var = type("Var", (), {"get": lambda self: "tier1"})()
+    dashboard.all_alert_rows_by_id = {
+        "alert-a": {
+            "alert_id": "alert-a",
+            "status": "open",
+            "assignee": "tier1",
+            "updated_at": (now - timedelta(hours=30)).isoformat(),
+            "severity": "high",
+            "title": "Old alert",
+        },
+        "alert-b": {
+            "alert_id": "alert-b",
+            "status": "open",
+            "assignee": "tier2",
+            "updated_at": (now - timedelta(hours=30)).isoformat(),
+            "severity": "high",
+            "title": "Other alert",
+        },
+    }
+
+    rows = dashboard._age_bucket_alert_rows("24-72h")
+
+    assert [row["alert_id"] for row in rows] == ["alert-a"]
+
+
+def test_format_age_bucket_records_limits_output() -> None:
+    rows = [
+        {"alert_id": f"alert-{index}", "severity": "high", "status": "open", "title": f"Alert {index}"}
+        for index in range(25)
+    ]
+
+    text = SocDashboard._format_age_bucket_records("alert", "72h+", rows)
+
+    assert "Alerts in 72h+ (25):" in text
+    assert "...and 5 more" in text
 
 
 def test_alert_query_kwargs_use_unassigned_open_alert_defaults() -> None:

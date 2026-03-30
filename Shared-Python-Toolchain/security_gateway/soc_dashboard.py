@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, cast
 
@@ -121,6 +122,8 @@ class SocDashboard:
         self.case_sort_var = tk.StringVar(value="updated_desc")
         self.analyst_identity_var = tk.StringVar(value="local-analyst")
         self.workload_assignee_var = tk.StringVar(value="all")
+        self.alert_age_bucket_var = tk.StringVar(value="all")
+        self.case_age_bucket_var = tk.StringVar(value="all")
         self.alert_rows_by_id: dict[str, dict[str, Any]] = {}
         self.case_rows_by_id: dict[str, dict[str, Any]] = {}
         self.event_rows_by_id: dict[str, dict[str, Any]] = {}
@@ -272,14 +275,36 @@ class SocDashboard:
             width=18,
         )
         self.workload_assignee_combo.grid(row=0, column=1, sticky="w", padx=(0, 12))
+        ttk.Label(ops_controls, text="Alert Age", style="SOC.TLabel").grid(row=0, column=2, sticky="w", padx=(0, 6))
+        ttk.Combobox(
+            ops_controls,
+            textvariable=self.alert_age_bucket_var,
+            values=("all", "0-4h", "4-24h", "24-72h", "72h+"),
+            state="readonly",
+            width=10,
+        ).grid(row=0, column=3, sticky="w", padx=(0, 12))
+        ttk.Label(ops_controls, text="Case Age", style="SOC.TLabel").grid(row=0, column=4, sticky="w", padx=(0, 6))
+        ttk.Combobox(
+            ops_controls,
+            textvariable=self.case_age_bucket_var,
+            values=("all", "0-4h", "4-24h", "24-72h", "72h+"),
+            state="readonly",
+            width=10,
+        ).grid(row=0, column=5, sticky="w", padx=(0, 12))
         ttk.Button(ops_controls, text="Acknowledge Stale Alerts", command=self.acknowledge_stale_alerts).grid(
-            row=0, column=2, sticky="w"
+            row=0, column=6, sticky="w"
         )
         ttk.Button(ops_controls, text="Reassign Stale Alerts", command=self.reassign_stale_alerts).grid(
-            row=0, column=3, sticky="w", padx=(8, 0)
+            row=0, column=7, sticky="w", padx=(8, 0)
         )
         ttk.Button(ops_controls, text="Reassign Stale Cases", command=self.reassign_stale_cases).grid(
-            row=0, column=4, sticky="w", padx=(8, 0)
+            row=0, column=8, sticky="w", padx=(8, 0)
+        )
+        ttk.Button(ops_controls, text="View Alert Bucket", command=self.view_alert_age_bucket).grid(
+            row=0, column=9, sticky="w", padx=(12, 0)
+        )
+        ttk.Button(ops_controls, text="View Case Bucket", command=self.view_case_age_bucket).grid(
+            row=0, column=10, sticky="w", padx=(8, 0)
         )
         self.ops_detail_text = tk.Text(
             ops_frame,
@@ -750,6 +775,18 @@ class SocDashboard:
             messagebox.showinfo("Stale Cases Reassigned", f"Reassigned {len(stale_case_ids)} stale cases.")
         self.refresh()
 
+    def view_alert_age_bucket(self) -> None:
+        bucket = self.alert_age_bucket_var.get().strip() or "all"
+        rows = self._age_bucket_alert_rows(bucket)
+        if messagebox is not None:
+            messagebox.showinfo("Alert Aging Bucket", self._format_age_bucket_records("alert", bucket, rows))
+
+    def view_case_age_bucket(self) -> None:
+        bucket = self.case_age_bucket_var.get().strip() or "all"
+        rows = self._age_bucket_case_rows(bucket)
+        if messagebox is not None:
+            messagebox.showinfo("Case Aging Bucket", self._format_age_bucket_records("case", bucket, rows))
+
     def view_case_linked_activity(self) -> None:
         case_id = self._selected_tree_item_id(self.case_tree)
         if case_id is None:
@@ -964,6 +1001,26 @@ class SocDashboard:
             return None
         return value
 
+    def _age_bucket_alert_rows(self, bucket: str) -> list[dict[str, Any]]:
+        assignee = self._selected_workload_assignee()
+        rows = list(self.all_alert_rows_by_id.values())
+        rows = [row for row in rows if row.get("status") == SocAlertStatus.open.value]
+        if assignee is not None:
+            rows = [row for row in rows if str(row.get("assignee") or "") == assignee]
+        if bucket == "all":
+            return rows
+        return [row for row in rows if self._record_matches_age_bucket(str(row.get("updated_at") or ""), bucket)]
+
+    def _age_bucket_case_rows(self, bucket: str) -> list[dict[str, Any]]:
+        assignee = self._selected_workload_assignee()
+        rows = list(self.case_rows_by_id.values())
+        rows = [row for row in rows if row.get("status") != SocCaseStatus.closed.value]
+        if assignee is not None:
+            rows = [row for row in rows if str(row.get("assignee") or "") == assignee]
+        if bucket == "all":
+            return rows
+        return [row for row in rows if self._record_matches_age_bucket(str(row.get("updated_at") or ""), bucket)]
+
     def _stale_alert_ids(self) -> list[str]:
         triage = cast(dict[str, list[dict[str, Any]]], self._latest_dashboard.get("triage") or {})
         rows = cast(list[dict[str, Any]], triage.get("assigned_stale_alerts") or [])
@@ -999,6 +1056,41 @@ class SocDashboard:
         self.workload_assignee_combo.configure(values=tuple(deduped))
         if current not in deduped:
             self.workload_assignee_var.set("all")
+
+    @staticmethod
+    def _record_matches_age_bucket(updated_at: str, bucket: str) -> bool:
+        if not updated_at:
+            return False
+        try:
+            timestamp = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        age = datetime.now(timestamp.tzinfo or UTC) - timestamp
+        if bucket == "0-4h":
+            return age < timedelta(hours=4)
+        if bucket == "4-24h":
+            return timedelta(hours=4) <= age < timedelta(hours=24)
+        if bucket == "24-72h":
+            return timedelta(hours=24) <= age < timedelta(hours=72)
+        if bucket == "72h+":
+            return age >= timedelta(hours=72)
+        return True
+
+    @staticmethod
+    def _format_age_bucket_records(kind: str, bucket: str, rows: Sequence[dict[str, Any]]) -> str:
+        if not rows:
+            return f"No {kind}s matched the {bucket} bucket."
+        lines = [f"{kind.title()}s in {bucket} ({len(rows)}):", ""]
+        for row in rows[:20]:
+            lines.append(
+                f"- {row.get(f'{kind}_id', row.get('alert_id', row.get('case_id', '-')))}: "
+                f"{row.get('severity', '-')} | {row.get('status', '-')} | {row.get('title', '-')}"
+            )
+        remaining = len(rows) - min(len(rows), 20)
+        if remaining > 0:
+            lines.append("")
+            lines.append(f"...and {remaining} more")
+        return "\n".join(lines)
 
     @classmethod
     def _preset_values(cls, preset_name: str) -> dict[str, str]:
