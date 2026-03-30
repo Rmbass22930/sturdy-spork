@@ -59,6 +59,7 @@ class SocDashboard:
         self.analyst_identity_var = tk.StringVar(value="local-analyst")
         self.alert_rows_by_id: dict[str, dict[str, Any]] = {}
         self.case_rows_by_id: dict[str, dict[str, Any]] = {}
+        self.event_rows_by_id: dict[str, dict[str, Any]] = {}
         self._build_ui()
         self.refresh()
 
@@ -268,15 +269,21 @@ class SocDashboard:
         )
         ttk.Button(controls, text="Close", command=self.close_selected_alert).grid(row=0, column=9, sticky="w", padx=(8, 0))
         ttk.Button(controls, text="Add Note", command=self.add_alert_note).grid(row=0, column=10, sticky="w", padx=(8, 0))
-        ttk.Button(controls, text="Link To Selected Case", command=self.link_alert_to_selected_case).grid(
+        ttk.Button(controls, text="View Source Events", command=self.view_alert_source_events).grid(
             row=0,
             column=11,
+            sticky="w",
+            padx=(8, 0),
+        )
+        ttk.Button(controls, text="Link To Selected Case", command=self.link_alert_to_selected_case).grid(
+            row=0,
+            column=12,
             sticky="w",
             padx=(12, 0),
         )
         ttk.Button(controls, text="Promote To New Case", command=self.promote_selected_alert).grid(
             row=0,
-            column=12,
+            column=13,
             sticky="w",
             padx=(8, 0),
         )
@@ -324,6 +331,7 @@ class SocDashboard:
         triage = cast(dict[str, list[dict[str, Any]]], dashboard["triage"])
         alert_rows = self.manager.query_alerts(**self._alert_query_kwargs())
         case_rows = self.manager.query_cases(**self._case_query_kwargs())
+        all_events = self.manager.list_events(limit=500)
         for key, value in self.summary_vars.items():
             value.set(str(summary.get(key, 0)))
         self.status_var.set(self._format_status_line(dashboard))
@@ -341,6 +349,7 @@ class SocDashboard:
             item_id_key="case_id",
         )
         self.case_rows_by_id = {item.case_id: item.model_dump(mode="json") for item in case_rows}
+        self.event_rows_by_id = {item.event_id: item.model_dump(mode="json") for item in all_events}
         self._refresh_alert_detail()
         self._refresh_case_detail()
         self._populate_tree(
@@ -450,6 +459,24 @@ class SocDashboard:
             title="Add Alert Note",
             prompt="Enter a note for the selected alert:",
         )
+
+    def view_alert_source_events(self) -> None:
+        alert_id = self._selected_tree_item_id(self.alert_tree)
+        if alert_id is None:
+            if messagebox is not None:
+                messagebox.showwarning("No Alert Selected", "Select an alert before viewing source events.")
+            return
+        alert_payload = self.alert_rows_by_id.get(alert_id)
+        if alert_payload is None:
+            if messagebox is not None:
+                messagebox.showwarning("Alert Unavailable", "The selected alert is no longer available in the current view.")
+            return
+        source_events = self._resolve_source_events(alert_payload)
+        if messagebox is not None:
+            messagebox.showinfo(
+                "Source Events",
+                self._format_source_events(alert_payload, source_events),
+            )
 
     def add_case_note(self) -> None:
         self._prompt_case_update(
@@ -678,6 +705,15 @@ class SocDashboard:
             return
         self._set_alert_detail_text(self._format_alert_detail(alert_payload))
 
+    def _resolve_source_events(self, alert_payload: dict[str, Any]) -> list[dict[str, Any]]:
+        source_event_ids = cast(list[str], alert_payload.get("source_event_ids") or [])
+        return [
+            event
+            for event_id in source_event_ids
+            for event in [self.event_rows_by_id.get(event_id)]
+            if event is not None
+        ]
+
     def _refresh_case_detail(self) -> None:
         case_id = self._selected_tree_item_id(self.case_tree)
         if case_id is None:
@@ -721,6 +757,31 @@ class SocDashboard:
             f"Summary:\n{alert_payload.get('summary', '-')}\n\n"
             f"Notes:\n{note_lines}"
         )
+
+    @staticmethod
+    def _format_source_events(alert_payload: dict[str, Any], source_events: Sequence[dict[str, Any]]) -> str:
+        lines = [
+            f"Alert: {alert_payload.get('alert_id', '-')}",
+            f"Title: {alert_payload.get('title', '-')}",
+            "",
+        ]
+        if not source_events:
+            lines.append("No source events were found for this alert.")
+            return "\n".join(lines)
+
+        for event in source_events:
+            lines.extend(
+                [
+                    f"Event: {event.get('event_id', '-')}",
+                    f"Type: {event.get('event_type', '-')}",
+                    f"Severity: {event.get('severity', '-')}",
+                    f"Created: {event.get('created_at', '-')}",
+                    f"Title: {event.get('title', '-')}",
+                    f"Summary: {event.get('summary', '-')}",
+                    "",
+                ]
+            )
+        return "\n".join(lines).rstrip()
 
     @staticmethod
     def _format_case_detail(case_payload: dict[str, Any]) -> str:

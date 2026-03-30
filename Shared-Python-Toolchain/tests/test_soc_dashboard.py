@@ -201,6 +201,34 @@ def test_format_alert_detail_includes_assignment_and_actor_fields() -> None:
     assert "- Initial triage complete." in text
 
 
+def test_format_source_events_includes_underlying_event_context() -> None:
+    text = SocDashboard._format_source_events(
+        {"alert_id": "alert-123", "title": "Repeated tracker activity"},
+        [
+            {
+                "event_id": "evt-1",
+                "event_type": "privacy.tracker_block",
+                "severity": "high",
+                "created_at": "2026-03-29T19:00:00+00:00",
+                "title": "Tracker blocked",
+                "summary": "Blocked beacon.example.test",
+            }
+        ],
+    )
+    assert "Alert: alert-123" in text
+    assert "Event: evt-1" in text
+    assert "Type: privacy.tracker_block" in text
+    assert "Summary: Blocked beacon.example.test" in text
+
+
+def test_format_source_events_handles_missing_rows() -> None:
+    text = SocDashboard._format_source_events(
+        {"alert_id": "alert-456", "title": "Missing event linkage"},
+        [],
+    )
+    assert "No source events were found for this alert." in text
+
+
 def test_format_case_detail_handles_empty_lists() -> None:
     text = SocDashboard._format_case_detail(
         {
