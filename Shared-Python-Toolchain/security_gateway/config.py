@@ -105,6 +105,34 @@ class Settings(BaseSettings):
     packet_monitor_learning_samples: int = 3
     packet_monitor_capture_bytes: int = 128
     packet_monitor_sensitive_ports: List[int] = Field(default_factory=lambda: [22, 23, 135, 139, 445, 3389, 5900, 5985, 5986])
+    stream_monitor_enabled: bool = True
+    stream_monitor_every_ticks: int = 3
+    stream_monitor_state_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "stream_monitor_state.json"))
+    stream_monitor_max_age_minutes: float = 30.0
+    stream_monitor_max_files_per_tick: int = 8
+    stream_monitor_scan_timeout_seconds: float = 90.0
+    stream_monitor_artifact_roots: List[str] = Field(
+        default_factory=lambda: [
+            str(Path.home() / "Downloads"),
+            str(Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Temp"),
+        ]
+    )
+    stream_monitor_suspicious_extensions: List[str] = Field(
+        default_factory=lambda: [
+            ".exe",
+            ".msi",
+            ".dll",
+            ".ps1",
+            ".bat",
+            ".cmd",
+            ".vbs",
+            ".js",
+            ".jar",
+            ".scr",
+            ".zip",
+            ".iso",
+        ]
+    )
     automation_tracker_feed_refresh_enabled: bool = False
     automation_tracker_feed_refresh_every_ticks: int = 12
     automation_malware_feed_refresh_enabled: bool = False

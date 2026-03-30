@@ -14,6 +14,7 @@ from .network_monitor import NetworkMonitor
 from .packet_monitor import PacketMonitor
 from .pam import VaultClient
 from .soc import SecurityOperationsManager
+from .stream_monitor import StreamArtifactMonitor
 from .tor import OutboundProxy
 from .tracker_intel import TrackerIntel
 from .models import SocEventIngest, SocSeverity
@@ -94,6 +95,14 @@ def build_runtime_supervisor() -> AutomationSupervisor:
         pkt_size=settings.packet_monitor_capture_bytes,
         sensitive_ports=settings.packet_monitor_sensitive_ports,
     )
+    stream_monitor = StreamArtifactMonitor(
+        state_path=settings.stream_monitor_state_path,
+        artifact_roots=settings.stream_monitor_artifact_roots,
+        suspicious_extensions=settings.stream_monitor_suspicious_extensions,
+        max_age_minutes=settings.stream_monitor_max_age_minutes,
+        max_files_per_tick=settings.stream_monitor_max_files_per_tick,
+        scan_timeout_seconds=settings.stream_monitor_scan_timeout_seconds,
+    )
 
     def _record_host_finding(finding: dict[str, object]) -> None:
         raw_tags = finding.get("tags")
@@ -155,6 +164,30 @@ def build_runtime_supervisor() -> AutomationSupervisor:
             )
         )
 
+    def _record_stream_finding(finding: dict[str, object]) -> None:
+        raw_tags = finding.get("tags")
+        tags = [str(item) for item in raw_tags] if isinstance(raw_tags, list) else []
+        severity_name = "low" if bool(finding.get("resolved")) else str(finding.get("severity", "medium"))
+        raw_details = finding.get("details")
+        details = raw_details if isinstance(raw_details, dict) else {}
+        artifact_path = details.get("artifact_path")
+        soc_manager.ingest_event(
+            SocEventIngest(
+                event_type="stream.monitor.recovered" if bool(finding.get("resolved")) else "stream.monitor.finding",
+                source="security_gateway",
+                severity=SocSeverity(severity_name),
+                title=str(finding.get("title", "Stream monitor finding")),
+                summary=str(finding.get("summary", "")),
+                details={
+                    "key": finding.get("key"),
+                    "resolved": bool(finding.get("resolved")),
+                    "details": details,
+                },
+                artifacts=[str(artifact_path)] if artifact_path else [],
+                tags=tags,
+            )
+        )
+
     _seed_offline_feeds(tracker_intel, scanner)
     return AutomationSupervisor(
         vault=vault,
@@ -183,6 +216,10 @@ def build_runtime_supervisor() -> AutomationSupervisor:
         packet_monitor_enabled=settings.packet_monitor_enabled,
         packet_monitor_every_ticks=settings.packet_monitor_every_ticks,
         packet_monitor_callback=_record_packet_finding,
+        stream_monitor=stream_monitor,
+        stream_monitor_enabled=settings.stream_monitor_enabled,
+        stream_monitor_every_ticks=settings.stream_monitor_every_ticks,
+        stream_monitor_callback=_record_stream_finding,
     )
 
 
