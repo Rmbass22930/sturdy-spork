@@ -354,6 +354,7 @@ def test_main_uses_console_flow_when_not_frozen(monkeypatch) -> None:
         return 0
 
     monkeypatch.delattr(installer.sys, "frozen", raising=False)
+    monkeypatch.setattr(installer, "ensure_frozen_installer_elevation", lambda argv=None: None)
     monkeypatch.setattr(installer, "parse_args", lambda argv=None: args)
     monkeypatch.setattr(installer, "perform_install", fake_perform_install)
 
@@ -369,6 +370,7 @@ def test_main_uses_tk_ui_when_frozen(monkeypatch) -> None:
     args = installer.parse_args([])
 
     monkeypatch.setattr(installer.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(installer, "ensure_frozen_installer_elevation", lambda argv=None: None)
     monkeypatch.setattr(installer, "parse_args", lambda argv=None: args)
     monkeypatch.setattr(installer, "run_installer_ui", lambda parsed_args: 17)
 
@@ -386,6 +388,7 @@ def test_main_console_flag_overrides_frozen_ui(monkeypatch) -> None:
         return 0
 
     monkeypatch.setattr(installer.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(installer, "ensure_frozen_installer_elevation", lambda argv=None: None)
     monkeypatch.setattr(installer, "parse_args", lambda argv=None: args)
     monkeypatch.setattr(installer, "perform_install", fake_perform_install)
 
@@ -394,3 +397,35 @@ def test_main_console_flag_overrides_frozen_ui(monkeypatch) -> None:
     assert result == 0
     assert len(perform_calls) == 1
     assert perform_calls[0][0] is args
+
+
+def test_ensure_frozen_installer_elevation_relaunches_as_admin(monkeypatch) -> None:
+    shell32 = mock.Mock()
+    shell32.IsUserAnAdmin.return_value = False
+    shell32.ShellExecuteW.return_value = 42
+
+    monkeypatch.setattr(installer.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(installer.sys, "executable", r"C:\Temp\SecurityGatewayInstaller.exe")
+    monkeypatch.setattr(installer.ctypes, "windll", mock.Mock(shell32=shell32))
+
+    with pytest.raises(SystemExit, match="0"):
+        installer.ensure_frozen_installer_elevation(["--console", "--skip-dependencies"])
+
+    shell32.ShellExecuteW.assert_called_once()
+    call = shell32.ShellExecuteW.call_args.args
+    assert call[1] == "runas"
+    assert call[2] == r"C:\Temp\SecurityGatewayInstaller.exe"
+    assert "--console" in call[3]
+
+
+def test_ensure_frozen_installer_elevation_raises_when_relaunch_fails(monkeypatch) -> None:
+    shell32 = mock.Mock()
+    shell32.IsUserAnAdmin.return_value = False
+    shell32.ShellExecuteW.return_value = 31
+
+    monkeypatch.setattr(installer.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(installer.sys, "executable", r"C:\Temp\SecurityGatewayInstaller.exe")
+    monkeypatch.setattr(installer.ctypes, "windll", mock.Mock(shell32=shell32))
+
+    with pytest.raises(PermissionError, match="Please run this installer as Administrator."):
+        installer.ensure_frozen_installer_elevation([])

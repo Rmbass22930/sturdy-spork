@@ -1,13 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-import os
-
-runtime_root = os.path.join(
-    os.environ.get("TEMP", os.path.expanduser("~")),
-    "SecurityGatewayRuntime",
-    "_runtime",
-)
-
 a = Analysis(
     ['security_gateway\\desktop_launcher.py'],
     pathex=[],
@@ -35,7 +27,6 @@ exe = EXE(
     strip=False,
     upx=True,
     upx_exclude=[],
-    runtime_tmpdir=runtime_root,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,

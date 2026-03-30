@@ -6,6 +6,7 @@ import ctypes
 import hashlib
 import json
 import os
+import subprocess as std_subprocess
 import queue
 import shutil
 import subprocess
@@ -374,6 +375,27 @@ def resolve_powershell_executable() -> str:
 def ensure_admin() -> None:
     if not ctypes.windll.shell32.IsUserAnAdmin():  # type: ignore[attr-defined]
         raise PermissionError("Please run this installer as Administrator.")
+
+
+def ensure_frozen_installer_elevation(argv: Optional[list[str]] = None) -> None:
+    if not getattr(sys, "frozen", False):
+        return
+    if ctypes.windll.shell32.IsUserAnAdmin():  # type: ignore[attr-defined]
+        return
+    raw_args = list(sys.argv[1:] if argv is None else argv)
+    executable = sys.executable
+    parameters = std_subprocess.list2cmdline(raw_args) if raw_args else ""
+    result = ctypes.windll.shell32.ShellExecuteW(  # type: ignore[attr-defined]
+        None,
+        "runas",
+        executable,
+        parameters,
+        None,
+        1,
+    )
+    if int(result) <= 32:
+        raise PermissionError("Please run this installer as Administrator.")
+    raise SystemExit(0)
 
 
 def resolve_resource(rel_path: Path) -> Path:
@@ -929,6 +951,7 @@ def run_installer_ui(args: argparse.Namespace) -> int:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    ensure_frozen_installer_elevation(argv)
     args = parse_args(argv)
     if should_use_installer_ui(args):
         return run_installer_ui(args)
