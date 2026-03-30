@@ -120,6 +120,7 @@ class SocDashboard:
         self.case_status_var = tk.StringVar(value="all")
         self.case_sort_var = tk.StringVar(value="updated_desc")
         self.analyst_identity_var = tk.StringVar(value="local-analyst")
+        self.workload_assignee_var = tk.StringVar(value="all")
         self.alert_rows_by_id: dict[str, dict[str, Any]] = {}
         self.case_rows_by_id: dict[str, dict[str, Any]] = {}
         self.event_rows_by_id: dict[str, dict[str, Any]] = {}
@@ -262,14 +263,23 @@ class SocDashboard:
         ops_frame.rowconfigure(1, weight=1)
         ops_controls = ttk.Frame(ops_frame, style="SOC.TFrame")
         ops_controls.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        ttk.Label(ops_controls, text="Assignee", style="SOC.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        self.workload_assignee_combo = ttk.Combobox(
+            ops_controls,
+            textvariable=self.workload_assignee_var,
+            values=("all",),
+            state="readonly",
+            width=18,
+        )
+        self.workload_assignee_combo.grid(row=0, column=1, sticky="w", padx=(0, 12))
         ttk.Button(ops_controls, text="Acknowledge Stale Alerts", command=self.acknowledge_stale_alerts).grid(
-            row=0, column=0, sticky="w"
+            row=0, column=2, sticky="w"
         )
         ttk.Button(ops_controls, text="Reassign Stale Alerts", command=self.reassign_stale_alerts).grid(
-            row=0, column=1, sticky="w", padx=(8, 0)
+            row=0, column=3, sticky="w", padx=(8, 0)
         )
         ttk.Button(ops_controls, text="Reassign Stale Cases", command=self.reassign_stale_cases).grid(
-            row=0, column=2, sticky="w", padx=(8, 0)
+            row=0, column=4, sticky="w", padx=(8, 0)
         )
         self.ops_detail_text = tk.Text(
             ops_frame,
@@ -555,6 +565,7 @@ class SocDashboard:
             cast(list[dict[str, Any]], summary["recent_events"]),
             lambda item: (item["event_type"], item["severity"], item["title"], item["created_at"]),
         )
+        self._refresh_workload_assignee_options(dashboard)
         self._set_ops_detail_text(self._format_workload_detail(dashboard))
 
     def _populate_tree(
@@ -947,15 +958,47 @@ class SocDashboard:
         value = self.analyst_identity_var.get().strip()
         return value or None
 
+    def _selected_workload_assignee(self) -> str | None:
+        value = self.workload_assignee_var.get().strip()
+        if not value or value == "all":
+            return None
+        return value
+
     def _stale_alert_ids(self) -> list[str]:
         triage = cast(dict[str, list[dict[str, Any]]], self._latest_dashboard.get("triage") or {})
         rows = cast(list[dict[str, Any]], triage.get("assigned_stale_alerts") or [])
-        return [str(item["alert_id"]) for item in rows if item.get("alert_id")]
+        assignee = self._selected_workload_assignee()
+        return [
+            str(item["alert_id"])
+            for item in rows
+            if item.get("alert_id") and (assignee is None or str(item.get("assignee") or "") == assignee)
+        ]
 
     def _stale_case_ids(self) -> list[str]:
         triage = cast(dict[str, list[dict[str, Any]]], self._latest_dashboard.get("triage") or {})
         rows = cast(list[dict[str, Any]], triage.get("stale_active_cases") or [])
-        return [str(item["case_id"]) for item in rows if item.get("case_id")]
+        assignee = self._selected_workload_assignee()
+        return [
+            str(item["case_id"])
+            for item in rows
+            if item.get("case_id") and (assignee is None or str(item.get("assignee") or "") == assignee)
+        ]
+
+    def _refresh_workload_assignee_options(self, dashboard: dict[str, Any]) -> None:
+        assignee_workload = cast(list[dict[str, Any]], dashboard.get("assignee_workload") or [])
+        values = ["all"] + [str(item["assignee"]) for item in assignee_workload if item.get("assignee")]
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            key = value.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(value)
+        current = self.workload_assignee_var.get().strip() or "all"
+        self.workload_assignee_combo.configure(values=tuple(deduped))
+        if current not in deduped:
+            self.workload_assignee_var.set("all")
 
     @classmethod
     def _preset_values(cls, preset_name: str) -> dict[str, str]:
