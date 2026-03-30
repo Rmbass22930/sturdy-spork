@@ -24,12 +24,14 @@ from typing import Any, List, Optional
 
 tk: ModuleType | None
 ttk: ModuleType | None
+messagebox: Any
 try:
     import tkinter as tk
-    from tkinter import ttk
+    from tkinter import messagebox, ttk
 except Exception:  # pragma: no cover
     tk = None
     ttk = None
+    messagebox = None
 
 INSTALL_DIR = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "SecurityGateway"
 RESOURCE_RELATIVE = Path("payload") / "SecurityGateway.exe"
@@ -533,6 +535,35 @@ def _schedule_guide_auto_close(pid: Optional[int], *, timeout_seconds: int, repo
     threading.Thread(target=_worker, name="guide-auto-close", daemon=True).start()
 
 
+def _offer_to_print_install_guide(guide: Path, reporter: InstallReporter) -> None:
+    reporter.info("You can print the installation guide now if you want a paper copy.")
+    if messagebox is None or tk is None:
+        reporter.info("Open the guide in your PDF viewer and use Print if you want a paper copy.")
+        return
+    try:
+        prompt_root = tk.Tk()
+        prompt_root.withdraw()
+        should_print = bool(
+            messagebox.askyesno(
+                "Print Guide",
+                "Do you want to print the installation guide now?",
+                parent=prompt_root,
+            )
+        )
+        prompt_root.destroy()
+    except Exception:
+        reporter.info("Open the guide in your PDF viewer and use Print if you want a paper copy.")
+        return
+    if not should_print:
+        return
+    try:
+        os.startfile(str(guide), "print")  # type: ignore[attr-defined]
+        reporter.info("Sent the installation guide to the default printer.")
+    except Exception as exc:
+        reporter.info(f"Unable to print the installation guide automatically: {exc}")
+        reporter.info("Use your PDF viewer's Print command if you still want a paper copy.")
+
+
 def download_file(
     url: str,
     description: str,
@@ -850,7 +881,7 @@ def show_install_guide(override_url: Optional[str] = None, reporter: Optional[In
         reporter.info("If you do not have a PDF reader installed, install one (e.g., Edge, Acrobat) and open the guide manually.")
     if opened:
         _schedule_guide_auto_close(guide_pid, reporter=reporter, timeout_seconds=GUIDE_AUTO_CLOSE_SECONDS)
-        reporter.info("If you want a paper copy, use your PDF viewer's Print command while the guide is open.")
+        _offer_to_print_install_guide(guide, reporter)
         reporter.info("Installation guide opened. Setup will continue immediately.")
     else:
         reporter.info(f"Guide path: {guide}")
