@@ -59,6 +59,75 @@ def test_format_workload_detail_includes_assignees_and_aging() -> None:
     assert "- 24-72h: 7" in text
 
 
+def test_stale_id_helpers_read_latest_dashboard_triage() -> None:
+    dashboard = SocDashboard.__new__(SocDashboard)
+    dashboard._latest_dashboard = {
+        "triage": {
+            "assigned_stale_alerts": [{"alert_id": "alert-a"}, {"alert_id": "alert-b"}],
+            "stale_active_cases": [{"case_id": "case-a"}, {"case_id": "case-b"}],
+        }
+    }
+
+    assert dashboard._stale_alert_ids() == ["alert-a", "alert-b"]
+    assert dashboard._stale_case_ids() == ["case-a", "case-b"]
+
+
+def test_acknowledge_stale_alerts_updates_all_ids() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard._latest_dashboard = {"triage": {"assigned_stale_alerts": [{"alert_id": "alert-a"}, {"alert_id": "alert-b"}]}}
+    dashboard._current_analyst_identity = lambda: "tier2-analyst"
+    payloads: list[tuple[str, Any]] = []
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {"update_alert": lambda self, alert_id, payload: payloads.append((alert_id, payload))},
+    )()
+    dashboard.refresh = lambda: None
+    import security_gateway.soc_dashboard as soc_dashboard_module
+
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        dashboard.acknowledge_stale_alerts()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert [alert_id for alert_id, _payload in payloads] == ["alert-a", "alert-b"]
+    assert all(payload.status is SocAlertStatus.acknowledged for _alert_id, payload in payloads)
+
+
+def test_reassign_stale_cases_updates_all_ids() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard._latest_dashboard = {"triage": {"stale_active_cases": [{"case_id": "case-a"}, {"case_id": "case-b"}]}}
+    payloads: list[tuple[str, Any]] = []
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {"update_case": lambda self, case_id, payload: payloads.append((case_id, payload))},
+    )()
+    dashboard.refresh = lambda: None
+    dashboard.root = object()
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+
+    original_simpledialog = soc_dashboard_module.simpledialog
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.simpledialog = cast(Any, type(
+            "SimpleDialog",
+            (),
+            {"askstring": staticmethod(lambda *args, **kwargs: "handoff-queue")},
+        )())
+        soc_dashboard_module.messagebox = cast(Any, None)
+        dashboard.reassign_stale_cases()
+    finally:
+        soc_dashboard_module.simpledialog = original_simpledialog
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert [case_id for case_id, _payload in payloads] == ["case-a", "case-b"]
+    assert all(payload.assignee == "handoff-queue" for _case_id, payload in payloads)
+
+
 def test_alert_query_kwargs_use_unassigned_open_alert_defaults() -> None:
     dashboard = SocDashboard.__new__(SocDashboard)
     dashboard.alert_severity_var = type("Var", (), {"get": lambda self: "high"})()

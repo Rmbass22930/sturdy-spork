@@ -125,6 +125,7 @@ class SocDashboard:
         self.event_rows_by_id: dict[str, dict[str, Any]] = {}
         self.all_alert_rows_by_id: dict[str, dict[str, Any]] = {}
         self.host_rows_by_key: dict[str, dict[str, Any]] = {}
+        self._latest_dashboard: dict[str, Any] = {}
         self._build_ui()
         self.refresh()
 
@@ -258,7 +259,18 @@ class SocDashboard:
         ops_frame = ttk.LabelFrame(body, text="Ownership And Aging", padding=(10, 10), style="SOC.TLabelframe")
         ops_frame.grid(row=1, column=2, sticky="nsew", padx=(8, 0), pady=(8, 0))
         ops_frame.columnconfigure(0, weight=1)
-        ops_frame.rowconfigure(0, weight=1)
+        ops_frame.rowconfigure(1, weight=1)
+        ops_controls = ttk.Frame(ops_frame, style="SOC.TFrame")
+        ops_controls.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        ttk.Button(ops_controls, text="Acknowledge Stale Alerts", command=self.acknowledge_stale_alerts).grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Button(ops_controls, text="Reassign Stale Alerts", command=self.reassign_stale_alerts).grid(
+            row=0, column=1, sticky="w", padx=(8, 0)
+        )
+        ttk.Button(ops_controls, text="Reassign Stale Cases", command=self.reassign_stale_cases).grid(
+            row=0, column=2, sticky="w", padx=(8, 0)
+        )
         self.ops_detail_text = tk.Text(
             ops_frame,
             height=14,
@@ -270,7 +282,7 @@ class SocDashboard:
             padx=10,
             pady=10,
         )
-        self.ops_detail_text.grid(row=0, column=0, sticky="nsew")
+        self.ops_detail_text.grid(row=1, column=0, sticky="nsew")
         self.ops_detail_text.configure(state="disabled")
         detail_row = ttk.Frame(body, style="SOC.TFrame")
         detail_row.grid(row=2, column=0, columnspan=3, sticky="nsew", pady=(8, 0))
@@ -472,6 +484,7 @@ class SocDashboard:
 
     def refresh(self) -> None:
         dashboard = cast(dict[str, Any], self.manager.dashboard())
+        self._latest_dashboard = dashboard
         summary = cast(dict[str, Any], dashboard["summary"])
         workload = cast(dict[str, Any], dashboard.get("workload") or {})
         triage = cast(dict[str, list[dict[str, Any]]], dashboard["triage"])
@@ -667,6 +680,64 @@ class SocDashboard:
             title="Add Case Observable",
             prompt="Enter an observable for the selected case:",
         )
+
+    def acknowledge_stale_alerts(self) -> None:
+        stale_alert_ids = self._stale_alert_ids()
+        if not stale_alert_ids:
+            if messagebox is not None:
+                messagebox.showinfo("No Stale Alerts", "There are no assigned stale alerts to acknowledge.")
+            return
+        actor = self._current_analyst_identity()
+        for alert_id in stale_alert_ids:
+            payload = self._build_alert_update_payload(field="status", value="acknowledged", acted_by=actor)
+            self.manager.update_alert(alert_id, payload)
+        if messagebox is not None:
+            messagebox.showinfo("Stale Alerts Updated", f"Acknowledged {len(stale_alert_ids)} stale alerts.")
+        self.refresh()
+
+    def reassign_stale_alerts(self) -> None:
+        stale_alert_ids = self._stale_alert_ids()
+        if not stale_alert_ids:
+            if messagebox is not None:
+                messagebox.showinfo("No Stale Alerts", "There are no assigned stale alerts to reassign.")
+            return
+        if simpledialog is None:
+            return
+        assignee = simpledialog.askstring(
+            "Reassign Stale Alerts",
+            "Enter the analyst or queue for the stale alerts:",
+            parent=self.root,
+        )
+        if assignee is None or not assignee.strip():
+            return
+        for alert_id in stale_alert_ids:
+            payload = self._build_alert_update_payload(field="assignee", value=assignee.strip())
+            self.manager.update_alert(alert_id, payload)
+        if messagebox is not None:
+            messagebox.showinfo("Stale Alerts Reassigned", f"Reassigned {len(stale_alert_ids)} stale alerts.")
+        self.refresh()
+
+    def reassign_stale_cases(self) -> None:
+        stale_case_ids = self._stale_case_ids()
+        if not stale_case_ids:
+            if messagebox is not None:
+                messagebox.showinfo("No Stale Cases", "There are no stale active cases to reassign.")
+            return
+        if simpledialog is None:
+            return
+        assignee = simpledialog.askstring(
+            "Reassign Stale Cases",
+            "Enter the analyst or queue for the stale cases:",
+            parent=self.root,
+        )
+        if assignee is None or not assignee.strip():
+            return
+        for case_id in stale_case_ids:
+            payload = self._build_case_update_payload(field="assignee", value=assignee.strip())
+            self.manager.update_case(case_id, payload)
+        if messagebox is not None:
+            messagebox.showinfo("Stale Cases Reassigned", f"Reassigned {len(stale_case_ids)} stale cases.")
+        self.refresh()
 
     def view_case_linked_activity(self) -> None:
         case_id = self._selected_tree_item_id(self.case_tree)
@@ -875,6 +946,16 @@ class SocDashboard:
     def _current_analyst_identity(self) -> str | None:
         value = self.analyst_identity_var.get().strip()
         return value or None
+
+    def _stale_alert_ids(self) -> list[str]:
+        triage = cast(dict[str, list[dict[str, Any]]], self._latest_dashboard.get("triage") or {})
+        rows = cast(list[dict[str, Any]], triage.get("assigned_stale_alerts") or [])
+        return [str(item["alert_id"]) for item in rows if item.get("alert_id")]
+
+    def _stale_case_ids(self) -> list[str]:
+        triage = cast(dict[str, list[dict[str, Any]]], self._latest_dashboard.get("triage") or {})
+        rows = cast(list[dict[str, Any]], triage.get("stale_active_cases") or [])
+        return [str(item["case_id"]) for item in rows if item.get("case_id")]
 
     @classmethod
     def _preset_values(cls, preset_name: str) -> dict[str, str]:
