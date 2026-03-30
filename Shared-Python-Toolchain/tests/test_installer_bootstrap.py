@@ -1,5 +1,7 @@
+import os
 import sys
 import importlib.util
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 from unittest import mock
@@ -193,6 +195,48 @@ def test_show_install_guide_materializes_frozen_resource(monkeypatch, tmp_path: 
 
     assert opened == [docs_dir / "INSTALL_GUIDE.pdf"]
     assert "Setup will continue immediately." in output
+
+
+def test_cleanup_stale_mei_directories_removes_only_stale_entries(tmp_path: Path) -> None:
+    stale_dir = tmp_path / "_MEIold"
+    recent_dir = tmp_path / "_MEIrecent"
+    other_dir = tmp_path / "other"
+    stale_dir.mkdir()
+    recent_dir.mkdir()
+    other_dir.mkdir()
+
+    stale_time = (datetime.now(UTC) - timedelta(minutes=30)).timestamp()
+    recent_time = (datetime.now(UTC) - timedelta(minutes=2)).timestamp()
+    os.utime(stale_dir, (stale_time, stale_time))
+    os.utime(recent_dir, (recent_time, recent_time))
+
+    removed = installer.cleanup_stale_mei_directories(temp_root=tmp_path, stale_after_minutes=10)
+
+    assert stale_dir in removed
+    assert not stale_dir.exists()
+    assert recent_dir.exists()
+    assert other_dir.exists()
+
+
+def test_cleanup_stale_mei_directories_skips_active_dir(tmp_path: Path) -> None:
+    active_dir = tmp_path / "_MEIactive"
+    stale_dir = tmp_path / "_MEIstale"
+    active_dir.mkdir()
+    stale_dir.mkdir()
+
+    old_time = (datetime.now(UTC) - timedelta(minutes=30)).timestamp()
+    os.utime(active_dir, (old_time, old_time))
+    os.utime(stale_dir, (old_time, old_time))
+
+    removed = installer.cleanup_stale_mei_directories(
+        temp_root=tmp_path,
+        active_dir=active_dir,
+        stale_after_minutes=10,
+    )
+
+    assert stale_dir in removed
+    assert active_dir not in removed
+    assert active_dir.exists()
 
 
 def test_main_skips_dependencies_when_requested(monkeypatch, tmp_path: Path) -> None:

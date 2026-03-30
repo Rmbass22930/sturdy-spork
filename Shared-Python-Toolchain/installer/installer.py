@@ -15,6 +15,7 @@ import tempfile
 import threading
 import urllib.parse
 import urllib.request
+from datetime import UTC, datetime, timedelta
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
@@ -430,6 +431,41 @@ def materialize_external_resource(path: Path, *, target_dir: Optional[Path] = No
     destination = destination_root / path.name
     shutil.copy2(path, destination)
     return destination
+
+
+def cleanup_stale_mei_directories(
+    *,
+    temp_root: Optional[Path] = None,
+    active_dir: Optional[Path] = None,
+    stale_after_minutes: int = 10,
+) -> list[Path]:
+    root = temp_root or Path(tempfile.gettempdir())
+    if not root.exists():
+        return []
+    active_resolved = active_dir.resolve() if active_dir is not None and active_dir.exists() else None
+    cutoff = datetime.now(UTC) - timedelta(minutes=stale_after_minutes)
+    removed: list[Path] = []
+    for candidate in root.iterdir():
+        if not candidate.is_dir() or not candidate.name.startswith("_MEI"):
+            continue
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            resolved = candidate
+        if active_resolved is not None and resolved == active_resolved:
+            continue
+        try:
+            modified_at = datetime.fromtimestamp(candidate.stat().st_mtime, UTC)
+        except OSError:
+            continue
+        if modified_at > cutoff:
+            continue
+        try:
+            shutil.rmtree(candidate)
+        except OSError:
+            continue
+        removed.append(candidate)
+    return removed
 
 
 def download_file(
@@ -977,6 +1013,9 @@ def run_installer_ui(args: argparse.Namespace) -> int:
 def main(argv: Optional[list[str]] = None) -> int:
     ensure_frozen_installer_elevation(argv)
     args = parse_args(argv)
+    if getattr(sys, "frozen", False):
+        active_dir = Path(getattr(sys, "_MEIPASS")) if hasattr(sys, "_MEIPASS") else None
+        cleanup_stale_mei_directories(active_dir=active_dir)
     if should_use_installer_ui(args):
         return run_installer_ui(args)
     return perform_install(args, reporter=InstallReporter())
