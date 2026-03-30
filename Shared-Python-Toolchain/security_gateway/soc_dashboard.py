@@ -173,7 +173,7 @@ class SocDashboard:
 
         summary = ttk.Frame(self.root, padding=(18, 0, 18, 12), style="SOC.TFrame")
         summary.grid(row=1, column=0, sticky="ew")
-        for index in range(6):
+        for index in range(8):
             summary.columnconfigure(index, weight=1)
         self.summary_vars = {
             "events_total": tk.StringVar(value="0"),
@@ -182,6 +182,8 @@ class SocDashboard:
             "cases_total": tk.StringVar(value="0"),
             "open_cases": tk.StringVar(value="0"),
             "host_findings": tk.StringVar(value="0"),
+            "stale_assigned_alerts": tk.StringVar(value="0"),
+            "stale_active_cases": tk.StringVar(value="0"),
         }
         cards = [
             ("Events", "events_total", "#dbeafe"),
@@ -190,6 +192,8 @@ class SocDashboard:
             ("Cases", "cases_total", "#d1fae5"),
             ("Open Cases", "open_cases", "#ddd6fe"),
             ("Host Findings", "host_findings", "#fee2e2"),
+            ("Stale Assigned Alerts", "stale_assigned_alerts", "#fde2e2"),
+            ("Stale Active Cases", "stale_active_cases", "#ede9fe"),
         ]
         for column, (label, key, bg) in enumerate(cards):
             card = tk.Frame(summary, bg=bg, bd=0, highlightthickness=0, padx=14, pady=14)
@@ -452,6 +456,7 @@ class SocDashboard:
     def refresh(self) -> None:
         dashboard = cast(dict[str, Any], self.manager.dashboard())
         summary = cast(dict[str, Any], dashboard["summary"])
+        workload = cast(dict[str, Any], dashboard.get("workload") or {})
         triage = cast(dict[str, list[dict[str, Any]]], dashboard["triage"])
         host_state = self._load_host_monitor_state()
         host_findings = cast(list[dict[str, Any]], host_state.get("active_findings") or [])
@@ -462,6 +467,8 @@ class SocDashboard:
         for key, value in self.summary_vars.items():
             if key == "host_findings":
                 value.set(str(len(host_findings)))
+            elif key in workload:
+                value.set(str(workload.get(key, 0)))
             else:
                 value.set(str(summary.get(key, 0)))
         self.status_var.set(self._format_status_line(dashboard, host_findings_count=len(host_findings)))
@@ -895,12 +902,15 @@ class SocDashboard:
     @staticmethod
     def _format_status_line(dashboard: dict[str, Any], *, host_findings_count: int = 0) -> str:
         summary = dashboard["summary"]
+        workload = cast(dict[str, Any], dashboard.get("workload") or {})
         top_event_types = dashboard.get("top_event_types") or {}
         most_common = ", ".join(f"{name}: {count}" for name, count in list(top_event_types.items())[:3]) or "none"
         return (
             f"Open alerts: {summary['open_alerts']} | "
             f"Open cases: {summary['open_cases']} | "
             f"Host findings: {host_findings_count} | "
+            f"Stale assigned alerts: {workload.get('stale_assigned_alerts', 0)} | "
+            f"Stale active cases: {workload.get('stale_active_cases', 0)} | "
             f"Top event types: {most_common}"
         )
 

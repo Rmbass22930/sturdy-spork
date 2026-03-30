@@ -7,6 +7,7 @@ from security_gateway.models import SocAlertStatus, SocCaseStatus, SocSeverity
 def test_format_status_line_includes_open_workloads_and_top_events() -> None:
     dashboard = {
         "summary": {"open_alerts": 3, "open_cases": 2},
+        "workload": {"stale_assigned_alerts": 1, "stale_active_cases": 4},
         "top_event_types": {"policy.access_decision": 4, "privacy.tracker_block": 3},
     }
 
@@ -15,6 +16,8 @@ def test_format_status_line_includes_open_workloads_and_top_events() -> None:
     assert "Open alerts: 3" in line
     assert "Open cases: 2" in line
     assert "Host findings: 2" in line
+    assert "Stale assigned alerts: 1" in line
+    assert "Stale active cases: 4" in line
     assert "policy.access_decision: 4" in line
     assert "privacy.tracker_block: 3" in line
 
@@ -22,6 +25,7 @@ def test_format_status_line_includes_open_workloads_and_top_events() -> None:
 def test_format_status_line_handles_empty_event_types() -> None:
     dashboard = {
         "summary": {"open_alerts": 0, "open_cases": 0},
+        "workload": {},
         "top_event_types": {},
     }
 

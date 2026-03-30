@@ -444,6 +444,18 @@ class SecurityOperationsManager:
             "alert_status": dict(alert_status),
             "case_status": dict(case_status),
             "top_event_types": dict(event_types.most_common(10)),
+            "workload": {
+                "stale_assigned_alerts": sum(
+                    1
+                    for item in alerts
+                    if item.status is SocAlertStatus.open and item.updated_at < stale_cutoff and item.assignee
+                ),
+                "stale_active_cases": sum(
+                    1
+                    for item in cases
+                    if item.status is not SocCaseStatus.closed and item.updated_at < stale_cutoff
+                ),
+            },
             "triage": {
                 "unassigned_alerts": [
                     item.model_dump(mode="json")
