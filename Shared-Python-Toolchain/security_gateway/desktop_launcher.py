@@ -71,7 +71,7 @@ def main() -> int:
     root.title("Security Gateway")
     root.configure(bg="#eef4ff")
     root.resizable(False, False)
-    _center_window(root, 470, 290)
+    _center_window(root, 620, 420)
 
     def run_action(action: str) -> None:
         try:
@@ -104,25 +104,25 @@ def main() -> int:
     menu_bar.add_cascade(label="Tools", menu=tools_menu)
     root.config(menu=menu_bar)
 
-    frame = tk.Frame(root, padx=22, pady=22, bg="#eef4ff")
+    frame = tk.Frame(root, padx=28, pady=28, bg="#eef4ff")
     frame.pack(fill="both", expand=True)
 
     tk.Label(
         frame,
         text="Security Gateway Tools",
-        font=("Segoe UI", 14, "bold"),
+        font=("Segoe UI", 18, "bold"),
         bg="#eef4ff",
         fg="#13315c",
-    ).pack(fill="x", pady=(0, 8))
+    ).pack(fill="x", pady=(0, 10))
     tk.Label(
         frame,
-        text="Use the Tools menu or the buttons below.",
-        font=("Segoe UI", 10, "bold"),
+        text="Use the Tools menu or the buttons below to open dashboards, reports, and maintenance actions.",
+        font=("Segoe UI", 11, "bold"),
         justify="left",
         anchor="w",
         bg="#eef4ff",
         fg="#2f3e52",
-    ).pack(fill="x", pady=(0, 16))
+    ).pack(fill="x", pady=(0, 20))
 
     button_specs = [
         ("SOC Dashboard", "#7c3aed", "white", "soc-dashboard"),
@@ -138,17 +138,17 @@ def main() -> int:
         tk.Button(
             frame,
             text=text,
-            width=32,
-            font=("Segoe UI", 10, "bold"),
+            width=38,
+            font=("Segoe UI", 11, "bold"),
             bg=bg,
             fg=fg,
             activebackground=bg,
             activeforeground=fg,
             relief="flat",
-            padx=8,
-            pady=8,
+            padx=12,
+            pady=10,
             command=_make_action_callback(action),
-        ).pack(pady=5)
+        ).pack(pady=7)
 
     root.mainloop()
     return 0
