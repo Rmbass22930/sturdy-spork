@@ -20,6 +20,7 @@ from security_gateway.automation import AutomationSupervisor, run_forever
 from security_gateway.config import settings
 from security_gateway.dns import SecureDNSResolver
 from security_gateway.endpoint import MalwareScanner
+from security_gateway.host_monitor import HostMonitor
 from security_gateway.ip_controls import IPBlocklistManager
 from security_gateway.models import AccessRequest
 from security_gateway.pam import VaultClient
@@ -72,6 +73,11 @@ tracker_intel = TrackerIntel(
     replace_ratio_floor=settings.tracker_feed_replace_ratio_floor,
     verify_tls=settings.tracker_feed_verify_tls,
     ca_bundle_path=settings.tracker_feed_ca_bundle_path,
+)
+host_monitor = HostMonitor(
+    state_path=settings.host_monitor_state_path,
+    system_drive=settings.host_monitor_system_drive,
+    disk_free_percent_threshold=settings.host_monitor_disk_free_percent_threshold,
 )
 
 
@@ -253,6 +259,9 @@ def automation_run() -> None:
         malware_feed_refresh_every_ticks=settings.automation_malware_feed_refresh_every_ticks,
         malware_rule_feed_refresh_enabled=settings.automation_malware_rule_feed_refresh_enabled,
         malware_rule_feed_refresh_every_ticks=settings.automation_malware_rule_feed_refresh_every_ticks,
+        host_monitor=host_monitor,
+        host_monitor_enabled=settings.host_monitor_enabled,
+        host_monitor_every_ticks=settings.host_monitor_every_ticks,
     )
     print("Starting automation supervisor. Press Ctrl+C to stop.")
     run_forever(supervisor)

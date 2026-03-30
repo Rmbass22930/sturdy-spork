@@ -34,6 +34,7 @@ from .automation import AutomationSupervisor
 from .config import settings
 from .dns import SecureDNSResolver
 from .endpoint import EndpointTelemetryService, MalwareScanner
+from .host_monitor import HostMonitor
 from .ip_controls import IPBlocklistManager
 from .models import (
     AccessDecision,
@@ -127,20 +128,10 @@ tracker_intel = TrackerIntel(
     verify_tls=settings.tracker_feed_verify_tls,
     ca_bundle_path=settings.tracker_feed_ca_bundle_path,
 )
-automation = AutomationSupervisor(
-    vault=vault,
-    proxy=proxy,
-    audit_logger=audit_logger,
-    alert_manager=alert_manager,
-    tracker_intel=tracker_intel,
-    malware_scanner=scanner,
-    interval_seconds=settings.automation_interval_seconds,
-    tracker_feed_refresh_enabled=settings.automation_tracker_feed_refresh_enabled,
-    tracker_feed_refresh_every_ticks=settings.automation_tracker_feed_refresh_every_ticks,
-    malware_feed_refresh_enabled=settings.automation_malware_feed_refresh_enabled,
-    malware_feed_refresh_every_ticks=settings.automation_malware_feed_refresh_every_ticks,
-    malware_rule_feed_refresh_enabled=settings.automation_malware_rule_feed_refresh_enabled,
-    malware_rule_feed_refresh_every_ticks=settings.automation_malware_rule_feed_refresh_every_ticks,
+host_monitor = HostMonitor(
+    state_path=settings.host_monitor_state_path,
+    system_drive=settings.host_monitor_system_drive,
+    disk_free_percent_threshold=settings.host_monitor_disk_free_percent_threshold,
 )
 
 
@@ -259,6 +250,44 @@ def _record_soc_event(
         )
     )
     return result.event, result.alert
+
+
+def _record_host_monitor_finding(finding: dict[str, object]) -> None:
+    raw_tags = finding.get("tags")
+    tags = [str(item) for item in raw_tags] if isinstance(raw_tags, list) else []
+    _record_soc_event(
+        event_type="host.monitor.recovered" if bool(finding.get("resolved")) else "host.monitor.finding",
+        severity=SocSeverity.low if bool(finding.get("resolved")) else SocSeverity(str(finding.get("severity", "medium"))),
+        title=str(finding.get("title", "Host monitor finding")),
+        summary=str(finding.get("summary", "")),
+        details={
+            "key": finding.get("key"),
+            "resolved": bool(finding.get("resolved")),
+            "details": finding.get("details", {}),
+        },
+        tags=tags,
+    )
+
+
+automation = AutomationSupervisor(
+    vault=vault,
+    proxy=proxy,
+    audit_logger=audit_logger,
+    alert_manager=alert_manager,
+    tracker_intel=tracker_intel,
+    malware_scanner=scanner,
+    interval_seconds=settings.automation_interval_seconds,
+    tracker_feed_refresh_enabled=settings.automation_tracker_feed_refresh_enabled,
+    tracker_feed_refresh_every_ticks=settings.automation_tracker_feed_refresh_every_ticks,
+    malware_feed_refresh_enabled=settings.automation_malware_feed_refresh_enabled,
+    malware_feed_refresh_every_ticks=settings.automation_malware_feed_refresh_every_ticks,
+    malware_rule_feed_refresh_enabled=settings.automation_malware_rule_feed_refresh_enabled,
+    malware_rule_feed_refresh_every_ticks=settings.automation_malware_rule_feed_refresh_every_ticks,
+    host_monitor=host_monitor,
+    host_monitor_enabled=settings.host_monitor_enabled,
+    host_monitor_every_ticks=settings.host_monitor_every_ticks,
+    host_monitor_callback=_record_host_monitor_finding,
+)
 
 
 @asynccontextmanager

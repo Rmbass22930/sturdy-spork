@@ -9,9 +9,11 @@ from typing import Any
 
 try:
     from .config import get_runtime_data_dir
+    from .monitor_runtime import run_background_monitor
     from .soc_dashboard import run_soc_dashboard
 except ImportError:  # pragma: no cover - frozen entrypoint fallback
     from security_gateway.config import get_runtime_data_dir
+    from security_gateway.monitor_runtime import run_background_monitor
     from security_gateway.soc_dashboard import run_soc_dashboard
 
 
@@ -76,6 +78,9 @@ def main() -> int:
     from tkinter import messagebox
 
     _ensure_runtime_directories()
+    if len(sys.argv) > 1 and sys.argv[1] == "automation-run":
+        run_background_monitor()
+        return 0
 
     root = tk.Tk()
     root.title("Security Gateway")

@@ -72,6 +72,29 @@ class DummyMalwareScanner:
         }
 
 
+class DummyHostMonitor:
+    def __init__(self):
+        self.run_calls = 0
+
+    def run_check(self):
+        self.run_calls += 1
+        return {
+            "active_findings": [{"key": "firewall-disabled"}],
+            "emitted_findings": [
+                {
+                    "key": "firewall-disabled",
+                    "severity": "critical",
+                    "title": "Windows firewall profile disabled",
+                    "summary": "One or more firewall profiles are disabled.",
+                    "details": {"disabled_profiles": ["public"]},
+                    "tags": ["host", "firewall"],
+                    "resolved": False,
+                }
+            ],
+            "resolved_findings": [],
+        }
+
+
 def test_perform_tasks_records_metrics():
     vault = DummyVault()
     proxy = DummyProxy()
@@ -191,3 +214,31 @@ def test_malware_rule_feed_refresh_runs_on_configured_tick():
     assert status["enabled"] is True
     assert status["last_result"] == "success"
     assert any(event == "automation.malware_rule_feed_refresh" for event, _ in audit.events)
+
+
+def test_host_monitor_runs_and_dispatches_findings():
+    vault = DummyVault()
+    proxy = DummyProxy()
+    audit = DummyAudit()
+    alerts = DummyAlerts()
+    host_monitor = DummyHostMonitor()
+    forwarded_findings = []
+    supervisor = AutomationSupervisor(
+        vault=vault,
+        proxy=proxy,
+        audit_logger=audit,
+        alert_manager=alerts,
+        host_monitor=host_monitor,
+        host_monitor_enabled=True,
+        host_monitor_callback=forwarded_findings.append,
+        interval_seconds=0.1,
+    )
+
+    supervisor.perform_tasks()
+
+    assert host_monitor.run_calls == 1
+    assert forwarded_findings[0]["key"] == "firewall-disabled"
+    assert alerts.events[0].title == "Windows firewall profile disabled"
+    status = supervisor.status()["host_monitor"]
+    assert status["enabled"] is True
+    assert status["last_result"] == "success"

@@ -81,6 +81,13 @@ class Settings(BaseSettings):
     max_risk_score: float = 75.0
     totp_window: int = 1
     automation_interval_seconds: float = 300.0
+    host_monitor_enabled: bool = True
+    host_monitor_every_ticks: int = 1
+    host_monitor_state_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "host_monitor_state.json"))
+    host_monitor_disk_free_percent_threshold: float = 10.0
+    host_monitor_system_drive: str = Field(
+        default_factory=lambda: os.environ.get("SystemDrive", str(Path.home().anchor or "C:")).rstrip("\\/")
+    )
     automation_tracker_feed_refresh_enabled: bool = False
     automation_tracker_feed_refresh_every_ticks: int = 12
     automation_malware_feed_refresh_enabled: bool = False

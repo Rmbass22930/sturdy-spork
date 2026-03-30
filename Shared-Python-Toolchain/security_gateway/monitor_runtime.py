@@ -1,0 +1,120 @@
+"""Runtime entrypoint for the installed Security Gateway background monitor."""
+from __future__ import annotations
+
+from pathlib import Path
+
+from .alerts import alert_manager
+from .audit import AuditLogger
+from .automation import AutomationSupervisor, run_forever
+from .config import settings
+from .endpoint import MalwareScanner
+from .host_monitor import HostMonitor
+from .pam import VaultClient
+from .soc import SecurityOperationsManager
+from .tor import OutboundProxy
+from .tracker_intel import TrackerIntel
+from .models import SocEventIngest, SocSeverity
+
+
+def _seed_offline_feeds(tracker_intel: TrackerIntel, scanner: MalwareScanner) -> None:
+    if settings.tracker_offline_seed_path and not Path(settings.tracker_feed_cache_path).exists():
+        tracker_intel.import_feed_cache(settings.tracker_offline_seed_path)
+    if settings.malware_offline_hash_seed_path and not Path(settings.malware_feed_cache_path).exists():
+        scanner.import_feed_cache(settings.malware_offline_hash_seed_path)
+    if settings.malware_offline_rule_seed_path and not Path(settings.malware_rule_feed_cache_path).exists():
+        scanner.import_rule_feed_cache(settings.malware_offline_rule_seed_path)
+
+
+def build_runtime_supervisor() -> AutomationSupervisor:
+    audit_logger = AuditLogger(settings.audit_log_path)
+    vault = VaultClient(audit_logger=audit_logger)
+    proxy = OutboundProxy()
+    tracker_intel = TrackerIntel(
+        extra_domains_path=settings.tracker_domain_list_path,
+        feed_cache_path=settings.tracker_feed_cache_path,
+        feed_urls=settings.tracker_feed_urls,
+        stale_after_hours=settings.tracker_feed_stale_hours,
+        disabled_feed_urls=settings.tracker_feed_disabled_urls,
+        min_domains_per_source=settings.tracker_feed_min_domains_per_source,
+        min_total_domains=settings.tracker_feed_min_total_domains,
+        replace_ratio_floor=settings.tracker_feed_replace_ratio_floor,
+        verify_tls=settings.tracker_feed_verify_tls,
+        ca_bundle_path=settings.tracker_feed_ca_bundle_path,
+    )
+    scanner = MalwareScanner(
+        feed_cache_path=settings.malware_feed_cache_path,
+        feed_urls=settings.malware_feed_urls,
+        stale_after_hours=settings.malware_feed_stale_hours,
+        disabled_feed_urls=settings.malware_feed_disabled_urls,
+        min_hashes_per_source=settings.malware_feed_min_hashes_per_source,
+        min_total_hashes=settings.malware_feed_min_total_hashes,
+        replace_ratio_floor=settings.malware_feed_replace_ratio_floor,
+        verify_tls=settings.malware_feed_verify_tls,
+        ca_bundle_path=settings.malware_feed_ca_bundle_path,
+        rule_feed_cache_path=settings.malware_rule_feed_cache_path,
+        rule_feed_urls=settings.malware_rule_feed_urls,
+        rule_feed_stale_after_hours=settings.malware_rule_feed_stale_hours,
+        disabled_rule_feed_urls=settings.malware_rule_feed_disabled_urls,
+        min_rules_per_source=settings.malware_rule_feed_min_rules_per_source,
+        min_total_rules=settings.malware_rule_feed_min_total_rules,
+        rule_replace_ratio_floor=settings.malware_rule_feed_replace_ratio_floor,
+        rule_feed_verify_tls=settings.malware_rule_feed_verify_tls,
+        rule_feed_ca_bundle_path=settings.malware_rule_feed_ca_bundle_path,
+    )
+    soc_manager = SecurityOperationsManager(
+        event_log_path=settings.soc_event_log_path,
+        alert_store_path=settings.soc_alert_store_path,
+        case_store_path=settings.soc_case_store_path,
+        audit_logger=audit_logger,
+        alert_manager=alert_manager,
+    )
+    host_monitor = HostMonitor(
+        state_path=settings.host_monitor_state_path,
+        system_drive=settings.host_monitor_system_drive,
+        disk_free_percent_threshold=settings.host_monitor_disk_free_percent_threshold,
+    )
+
+    def _record_host_finding(finding: dict[str, object]) -> None:
+        raw_tags = finding.get("tags")
+        tags = [str(item) for item in raw_tags] if isinstance(raw_tags, list) else []
+        severity_name = "low" if bool(finding.get("resolved")) else str(finding.get("severity", "medium"))
+        soc_manager.ingest_event(
+            SocEventIngest(
+                event_type="host.monitor.recovered" if bool(finding.get("resolved")) else "host.monitor.finding",
+                source="security_gateway",
+                severity=SocSeverity(severity_name),
+                title=str(finding.get("title", "Host monitor finding")),
+                summary=str(finding.get("summary", "")),
+                details={
+                    "key": finding.get("key"),
+                    "resolved": bool(finding.get("resolved")),
+                    "details": finding.get("details", {}),
+                },
+                tags=tags,
+            )
+        )
+
+    _seed_offline_feeds(tracker_intel, scanner)
+    return AutomationSupervisor(
+        vault=vault,
+        proxy=proxy,
+        audit_logger=audit_logger,
+        alert_manager=alert_manager,
+        tracker_intel=tracker_intel,
+        malware_scanner=scanner,
+        interval_seconds=settings.automation_interval_seconds,
+        tracker_feed_refresh_enabled=settings.automation_tracker_feed_refresh_enabled,
+        tracker_feed_refresh_every_ticks=settings.automation_tracker_feed_refresh_every_ticks,
+        malware_feed_refresh_enabled=settings.automation_malware_feed_refresh_enabled,
+        malware_feed_refresh_every_ticks=settings.automation_malware_feed_refresh_every_ticks,
+        malware_rule_feed_refresh_enabled=settings.automation_malware_rule_feed_refresh_enabled,
+        malware_rule_feed_refresh_every_ticks=settings.automation_malware_rule_feed_refresh_every_ticks,
+        host_monitor=host_monitor,
+        host_monitor_enabled=settings.host_monitor_enabled,
+        host_monitor_every_ticks=settings.host_monitor_every_ticks,
+        host_monitor_callback=_record_host_finding,
+    )
+
+
+def run_background_monitor() -> None:
+    run_forever(build_runtime_supervisor())
