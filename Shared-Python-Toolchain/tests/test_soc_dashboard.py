@@ -60,6 +60,139 @@ def test_format_workload_detail_includes_assignees_and_aging() -> None:
     assert "- 24-72h: 7" in text
 
 
+def test_format_correlation_detail_includes_rule_and_linked_case() -> None:
+    text = SocDashboard._format_correlation_detail(
+        {
+            "alert_id": "alert-1",
+            "title": "Repeated tracker activity",
+            "status": "open",
+            "severity": "high",
+            "category": "correlation",
+            "correlation_rule": "tracker_burst",
+            "linked_case_id": "case-9",
+            "assignee": "tier1",
+            "source_event_ids": ["evt-1", "evt-2"],
+            "summary": "Tracker burst detected.",
+        }
+    )
+
+    assert "Correlation Alert: alert-1" in text
+    assert "Correlation Rule: tracker_burst" in text
+    assert "Linked Case: case-9" in text
+    assert "Source Events: 2" in text
+
+
+def test_format_recent_event_detail_includes_monitor_evidence() -> None:
+    text = SocDashboard._format_recent_event_detail(
+        {
+            "event_id": "evt-1",
+            "event_type": "network.suspicious_ip_detected",
+            "severity": "high",
+            "created_at": "2026-03-30T01:00:00+00:00",
+            "title": "Suspicious inbound IP",
+            "summary": "Repeated inbound hits on a sensitive port.",
+            "details": {
+                "abnormal_reason": "repeated sensitive-port hits",
+                "evidence": {
+                    "retention_mode": "compact",
+                    "sample_count": 1,
+                    "sample_connections": [
+                        {"remote_ip": "203.0.113.7", "local_port": 443, "state": "ESTABLISHED"},
+                    ],
+                },
+            },
+        }
+    )
+
+    assert "Event: evt-1" in text
+    assert "Type: network.suspicious_ip_detected" in text
+    assert "Repeated inbound hits on a sensitive port." in text
+    assert "Compact Evidence:" in text
+    assert "repeated sensitive-port hits" in text
+
+
+def test_refresh_activity_detail_appends_selected_activity() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    captured: list[str] = []
+    dashboard._latest_dashboard = {"assignee_workload": [], "aging_buckets": {}}
+    dashboard._set_ops_detail_text = lambda text: captured.append(text)
+
+    dashboard._refresh_activity_detail("Selected correlation details")
+
+    assert captured
+    assert "Selected Activity:" in captured[-1]
+    assert "Selected correlation details" in captured[-1]
+
+
+def test_refresh_correlation_detail_uses_selected_row_and_clears_event_selection() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    captured: list[str | None] = []
+    dashboard.correlation_tree = type("Tree", (), {"selection": lambda self: ("alert-1",)})()
+    dashboard.event_tree = type(
+        "Tree",
+        (),
+        {
+            "selection": lambda self: ("evt-1",),
+            "selection_remove": lambda self, value: setattr(self, "removed", value),
+        },
+    )()
+    dashboard.correlation_rows_by_id = {
+        "alert-1": {
+            "alert_id": "alert-1",
+            "title": "Repeated tracker activity",
+            "status": "open",
+            "severity": "high",
+            "category": "correlation",
+            "correlation_rule": "tracker_burst",
+            "linked_case_id": "case-9",
+            "assignee": "tier1",
+            "source_event_ids": ["evt-1"],
+            "summary": "Tracker burst detected.",
+        }
+    }
+    dashboard._refresh_activity_detail = lambda text: captured.append(text)
+
+    dashboard._refresh_correlation_detail()
+
+    assert captured
+    assert captured[-1] is not None
+    assert "Correlation Alert: alert-1" in cast(str, captured[-1])
+    assert getattr(dashboard.event_tree, "removed") == ("evt-1",)
+
+
+def test_refresh_recent_event_detail_uses_selected_row_and_clears_correlation_selection() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    captured: list[str | None] = []
+    dashboard.event_tree = type("Tree", (), {"selection": lambda self: ("evt-1",)})()
+    dashboard.correlation_tree = type(
+        "Tree",
+        (),
+        {
+            "selection": lambda self: ("alert-1",),
+            "selection_remove": lambda self, value: setattr(self, "removed", value),
+        },
+    )()
+    dashboard.event_rows_by_id = {
+        "evt-1": {
+            "event_id": "evt-1",
+            "event_type": "network.suspicious_ip_detected",
+            "severity": "high",
+            "created_at": "2026-03-30T01:00:00+00:00",
+            "title": "Suspicious inbound IP",
+            "summary": "Repeated inbound hits on a sensitive port.",
+            "details": {},
+        }
+    }
+    dashboard._refresh_activity_detail = lambda text: captured.append(text)
+
+    dashboard._refresh_recent_event_detail()
+
+    assert captured
+    assert captured[-1] is not None
+    assert "Event: evt-1" in cast(str, captured[-1])
+    assert getattr(dashboard.correlation_tree, "removed") == ("alert-1",)
+
+
 def test_format_summary_records_limits_output() -> None:
     rows = [
         {"alert_id": f"alert-{index}", "status": "open", "severity": "high", "title": f"Alert {index}"}

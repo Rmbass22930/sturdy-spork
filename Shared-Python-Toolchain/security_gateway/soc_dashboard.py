@@ -250,7 +250,8 @@ class SocDashboard:
             columns=("rule", "severity", "title", "events"),
             headings={"rule": "Rule", "severity": "Severity", "title": "Title", "events": "Events"},
         )
-        self.correlation_tree.bind("<<TreeviewSelect>>", lambda _event: self._open_selected_correlation())
+        self.correlation_tree.bind("<<TreeviewSelect>>", lambda _event: self._refresh_correlation_detail())
+        self.correlation_tree.bind("<Double-1>", lambda _event: self._open_selected_correlation())
         self.event_tree = self._build_tree(
             body,
             row=1,
@@ -259,8 +260,9 @@ class SocDashboard:
             columns=("type", "severity", "title", "created"),
             headings={"type": "Type", "severity": "Severity", "title": "Title", "created": "Created"},
         )
-        self.event_tree.bind("<<TreeviewSelect>>", lambda _event: self._open_selected_recent_event())
-        ops_frame = ttk.LabelFrame(body, text="Ownership And Aging", padding=(10, 10), style="SOC.TLabelframe")
+        self.event_tree.bind("<<TreeviewSelect>>", lambda _event: self._refresh_recent_event_detail())
+        self.event_tree.bind("<Double-1>", lambda _event: self._open_selected_recent_event())
+        ops_frame = ttk.LabelFrame(body, text="Ownership, Aging And Activity", padding=(10, 10), style="SOC.TLabelframe")
         ops_frame.grid(row=1, column=2, sticky="nsew", padx=(8, 0), pady=(8, 0))
         ops_frame.columnconfigure(0, weight=1)
         ops_frame.rowconfigure(1, weight=1)
@@ -628,6 +630,7 @@ class SocDashboard:
         )
         self._refresh_workload_assignee_options(dashboard)
         self._set_ops_detail_text(self._format_workload_detail(dashboard))
+        self._refresh_correlation_detail()
 
     def _populate_tree(
         self,
@@ -1190,6 +1193,32 @@ class SocDashboard:
             self.host_tree.selection_set(self.host_tree.get_children()[0])
             self._refresh_host_detail()
 
+    def _refresh_correlation_detail(self) -> None:
+        alert_id = self._selected_tree_item_id(self.correlation_tree)
+        if alert_id is None:
+            self._refresh_activity_detail(None)
+            return
+        correlation_payload = self.correlation_rows_by_id.get(alert_id)
+        if correlation_payload is None:
+            self._refresh_activity_detail("Selected correlation is no longer available.")
+            return
+        if hasattr(self, "event_tree"):
+            self.event_tree.selection_remove(self.event_tree.selection())
+        self._refresh_activity_detail(self._format_correlation_detail(correlation_payload))
+
+    def _refresh_recent_event_detail(self) -> None:
+        event_id = self._selected_tree_item_id(self.event_tree)
+        if event_id is None:
+            self._refresh_activity_detail(None)
+            return
+        event_payload = self.event_rows_by_id.get(event_id)
+        if event_payload is None:
+            self._refresh_activity_detail("Selected recent event is no longer available.")
+            return
+        if hasattr(self, "correlation_tree"):
+            self.correlation_tree.selection_remove(self.correlation_tree.selection())
+        self._refresh_activity_detail(self._format_recent_event_detail(event_payload))
+
     def _open_selected_correlation(self) -> None:
         alert_id = self._selected_tree_item_id(self.correlation_tree)
         if alert_id is None:
@@ -1207,6 +1236,13 @@ class SocDashboard:
         if event_payload is None:
             return
         self._pivot_from_event(event_payload)
+
+    def _refresh_activity_detail(self, activity_text: str | None) -> None:
+        base = self._format_workload_detail(self._latest_dashboard) if getattr(self, "_latest_dashboard", None) else "No workload data loaded."
+        if activity_text:
+            self._set_ops_detail_text(f"{base}\n\nSelected Activity:\n{activity_text}")
+            return
+        self._set_ops_detail_text(base)
 
     def _show_stale_alerts_summary_drilldown(self) -> None:
         self._navigate_summary_view(preset_name="handoff", focus_target="alerts")
@@ -1978,6 +2014,40 @@ class SocDashboard:
         self.ops_detail_text.delete("1.0", "end")
         self.ops_detail_text.insert("1.0", text)
         self.ops_detail_text.configure(state="disabled")
+
+    @staticmethod
+    def _format_correlation_detail(correlation_payload: dict[str, Any]) -> str:
+        source_event_ids = correlation_payload.get("source_event_ids") or []
+        return (
+            f"Correlation Alert: {correlation_payload.get('alert_id', '-')}\n"
+            f"Title: {correlation_payload.get('title', '-')}\n"
+            f"Status: {correlation_payload.get('status', '-')}\n"
+            f"Severity: {correlation_payload.get('severity', '-')}\n"
+            f"Category: {correlation_payload.get('category', '-')}\n"
+            f"Correlation Rule: {correlation_payload.get('correlation_rule') or '-'}\n"
+            f"Linked Case: {correlation_payload.get('linked_case_id') or '-'}\n"
+            f"Assignee: {correlation_payload.get('assignee') or '-'}\n"
+            f"Source Events: {len(source_event_ids)}\n\n"
+            f"Summary:\n{correlation_payload.get('summary', '-')}"
+        )
+
+    @staticmethod
+    def _format_recent_event_detail(event_payload: dict[str, Any]) -> str:
+        raw_details = event_payload.get("details")
+        event_details = cast(dict[str, Any], raw_details) if isinstance(raw_details, dict) else {}
+        evidence_block = SocDashboard._format_monitor_evidence_block(event_details)
+        parts = [
+            f"Event: {event_payload.get('event_id', '-')}",
+            f"Type: {event_payload.get('event_type', '-')}",
+            f"Severity: {event_payload.get('severity', '-')}",
+            f"Created: {event_payload.get('created_at', '-')}",
+            f"Title: {event_payload.get('title', '-')}",
+            "",
+            f"Summary:\n{event_payload.get('summary', '-')}",
+        ]
+        if evidence_block:
+            parts.extend(["", evidence_block])
+        return "\n".join(parts)
 
     @staticmethod
     def _format_alert_detail(alert_payload: dict[str, Any]) -> str:
