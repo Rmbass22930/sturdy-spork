@@ -229,6 +229,44 @@ def test_format_source_events_handles_missing_rows() -> None:
     assert "No source events were found for this alert." in text
 
 
+def test_format_case_linked_activity_includes_alerts_and_events() -> None:
+    text = SocDashboard._format_case_linked_activity(
+        {"case_id": "case-123", "title": "Investigate repeated tracker activity"},
+        [
+            {
+                "alert_id": "alert-1",
+                "severity": "high",
+                "status": "acknowledged",
+                "title": "Repeated tracker activity",
+            }
+        ],
+        [
+            {
+                "event_id": "evt-1",
+                "event_type": "privacy.tracker_block",
+                "severity": "high",
+                "title": "Tracker blocked",
+            }
+        ],
+    )
+    assert "Case: case-123" in text
+    assert "Linked Alerts:" in text
+    assert "- alert-1: high | acknowledged | Repeated tracker activity" in text
+    assert "Source Events:" in text
+    assert "- evt-1: privacy.tracker_block | high | Tracker blocked" in text
+
+
+def test_format_case_linked_activity_handles_empty_state() -> None:
+    text = SocDashboard._format_case_linked_activity(
+        {"case_id": "case-456", "title": "Empty case"},
+        [],
+        [],
+    )
+    assert "Linked Alerts:" in text
+    assert "Source Events:" in text
+    assert text.count("- none") == 2
+
+
 def test_format_case_detail_handles_empty_lists() -> None:
     text = SocDashboard._format_case_detail(
         {

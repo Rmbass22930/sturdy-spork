@@ -60,6 +60,7 @@ class SocDashboard:
         self.alert_rows_by_id: dict[str, dict[str, Any]] = {}
         self.case_rows_by_id: dict[str, dict[str, Any]] = {}
         self.event_rows_by_id: dict[str, dict[str, Any]] = {}
+        self.all_alert_rows_by_id: dict[str, dict[str, Any]] = {}
         self._build_ui()
         self.refresh()
 
@@ -318,9 +319,15 @@ class SocDashboard:
         ttk.Button(controls, text="Contained", command=self.mark_case_contained).grid(row=0, column=7, sticky="w", padx=(8, 0))
         ttk.Button(controls, text="Close", command=self.close_selected_case).grid(row=0, column=8, sticky="w", padx=(8, 0))
         ttk.Button(controls, text="Add Note", command=self.add_case_note).grid(row=0, column=9, sticky="w", padx=(12, 0))
-        ttk.Button(controls, text="Add Observable", command=self.add_case_observable).grid(
+        ttk.Button(controls, text="View Linked Activity", command=self.view_case_linked_activity).grid(
             row=0,
             column=10,
+            sticky="w",
+            padx=(8, 0),
+        )
+        ttk.Button(controls, text="Add Observable", command=self.add_case_observable).grid(
+            row=0,
+            column=11,
             sticky="w",
             padx=(8, 0),
         )
@@ -332,6 +339,7 @@ class SocDashboard:
         alert_rows = self.manager.query_alerts(**self._alert_query_kwargs())
         case_rows = self.manager.query_cases(**self._case_query_kwargs())
         all_events = self.manager.list_events(limit=500)
+        all_alerts = self.manager.list_alerts()
         for key, value in self.summary_vars.items():
             value.set(str(summary.get(key, 0)))
         self.status_var.set(self._format_status_line(dashboard))
@@ -342,6 +350,7 @@ class SocDashboard:
             item_id_key="alert_id",
         )
         self.alert_rows_by_id = {item.alert_id: item.model_dump(mode="json") for item in alert_rows}
+        self.all_alert_rows_by_id = {item.alert_id: item.model_dump(mode="json") for item in all_alerts}
         self._populate_tree(
             self.case_tree,
             [item.model_dump(mode="json") for item in case_rows],
@@ -491,6 +500,25 @@ class SocDashboard:
             title="Add Case Observable",
             prompt="Enter an observable for the selected case:",
         )
+
+    def view_case_linked_activity(self) -> None:
+        case_id = self._selected_tree_item_id(self.case_tree)
+        if case_id is None:
+            if messagebox is not None:
+                messagebox.showwarning("No Case Selected", "Select a case before viewing linked activity.")
+            return
+        case_payload = self.case_rows_by_id.get(case_id)
+        if case_payload is None:
+            if messagebox is not None:
+                messagebox.showwarning("Case Unavailable", "The selected case is no longer available in the current view.")
+            return
+        linked_alerts = self._resolve_linked_alerts(case_payload)
+        source_events = self._resolve_case_source_events(case_payload)
+        if messagebox is not None:
+            messagebox.showinfo(
+                "Case Linked Activity",
+                self._format_case_linked_activity(case_payload, linked_alerts, source_events),
+            )
 
     def assign_selected_case(self) -> None:
         case_id = self._selected_tree_item_id(self.case_tree)
@@ -714,6 +742,24 @@ class SocDashboard:
             if event is not None
         ]
 
+    def _resolve_linked_alerts(self, case_payload: dict[str, Any]) -> list[dict[str, Any]]:
+        linked_alert_ids = cast(list[str], case_payload.get("linked_alert_ids") or [])
+        return [
+            alert
+            for alert_id in linked_alert_ids
+            for alert in [self.all_alert_rows_by_id.get(alert_id)]
+            if alert is not None
+        ]
+
+    def _resolve_case_source_events(self, case_payload: dict[str, Any]) -> list[dict[str, Any]]:
+        source_event_ids = cast(list[str], case_payload.get("source_event_ids") or [])
+        return [
+            event
+            for event_id in source_event_ids
+            for event in [self.event_rows_by_id.get(event_id)]
+            if event is not None
+        ]
+
     def _refresh_case_detail(self) -> None:
         case_id = self._selected_tree_item_id(self.case_tree)
         if case_id is None:
@@ -782,6 +828,36 @@ class SocDashboard:
                 ]
             )
         return "\n".join(lines).rstrip()
+
+    @staticmethod
+    def _format_case_linked_activity(
+        case_payload: dict[str, Any],
+        linked_alerts: Sequence[dict[str, Any]],
+        source_events: Sequence[dict[str, Any]],
+    ) -> str:
+        lines = [
+            f"Case: {case_payload.get('case_id', '-')}",
+            f"Title: {case_payload.get('title', '-')}",
+            "",
+            "Linked Alerts:",
+        ]
+        if linked_alerts:
+            for alert in linked_alerts:
+                lines.append(
+                    f"- {alert.get('alert_id', '-')}: {alert.get('severity', '-')} | {alert.get('status', '-')} | {alert.get('title', '-')}"
+                )
+        else:
+            lines.append("- none")
+
+        lines.extend(["", "Source Events:"])
+        if source_events:
+            for event in source_events:
+                lines.append(
+                    f"- {event.get('event_id', '-')}: {event.get('event_type', '-')} | {event.get('severity', '-')} | {event.get('title', '-')}"
+                )
+        else:
+            lines.append("- none")
+        return "\n".join(lines)
 
     @staticmethod
     def _format_case_detail(case_payload: dict[str, Any]) -> str:

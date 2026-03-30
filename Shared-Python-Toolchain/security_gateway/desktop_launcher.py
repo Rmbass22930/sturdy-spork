@@ -7,7 +7,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .soc_dashboard import run_soc_dashboard
+try:
+    from .soc_dashboard import run_soc_dashboard
+except ImportError:  # pragma: no cover - frozen entrypoint fallback
+    from security_gateway.soc_dashboard import run_soc_dashboard
 
 
 def _center_window(root: Any, width: int, height: int) -> None:
