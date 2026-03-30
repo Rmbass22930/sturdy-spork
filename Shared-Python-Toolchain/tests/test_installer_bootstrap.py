@@ -225,6 +225,30 @@ def test_install_external_dependencies_can_skip_on_failure(monkeypatch) -> None:
     assert "winget timed out" in (results[0].detail or "")
 
 
+def test_install_external_dependencies_auto_skip_optional_failure(monkeypatch) -> None:
+    dep = installer.ExternalDependency(name="Cloudflare WARP", optional=True, winget_id="Cloudflare.WARP")
+    prompts: list[tuple[object, str]] = []
+
+    def fake_prompt(dependency: object, message: str) -> str:
+        prompts.append((dependency, message))
+        return "abort"
+
+    monkeypatch.setattr(
+        installer,
+        "install_dependency",
+        lambda dependency: (_ for _ in ()).throw(RuntimeError("winget timed out")),
+    )
+    monkeypatch.setattr(installer, "prompt_dependency_failure", fake_prompt)
+
+    results = installer.install_external_dependencies([dep])
+
+    assert prompts == []
+    assert len(results) == 1
+    assert results[0].status == "skipped"
+    assert results[0].method == "optional"
+    assert "winget timed out" in (results[0].detail or "")
+
+
 def test_install_external_dependencies_retries_before_success(monkeypatch) -> None:
     dep = installer.ExternalDependency(name="Cloudflare WARP", winget_id="Cloudflare.WARP")
     calls = {"count": 0}

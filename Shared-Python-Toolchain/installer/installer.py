@@ -59,6 +59,7 @@ def center_window(root: Any, width: int, height: int) -> None:
 @dataclass
 class ExternalDependency:
     name: str
+    optional: bool = False
     download_url: Optional[str] = None
     sha256: Optional[str] = None
     installer_args: Optional[List[str]] = None
@@ -737,6 +738,7 @@ def load_dependency_manifest(path: Optional[Path]) -> List[ExternalDependency]:
         dependencies.append(
             ExternalDependency(
                 name=entry["name"],
+                optional=entry.get("optional", False),
                 download_url=entry.get("url"),
                 sha256=entry.get("sha256"),
                 installer_args=entry.get("installer_args"),
@@ -766,6 +768,18 @@ def install_external_dependencies(
                 results.append(install_dependency(dep))
                 break
             except Exception as exc:  # noqa: BLE001
+                if dep.optional:
+                    reporter.info(f"- Skipping optional dependency {dep.name}: {exc}")
+                    results.append(
+                        DependencyInstallResult(
+                            name=dep.name,
+                            status="skipped",
+                            method="optional",
+                            target=dep.winget_id or dep.download_url,
+                            detail=str(exc),
+                        )
+                    )
+                    break
                 action = reporter.dependency_failure(dep, str(exc))
                 if action == "retry":
                     continue
