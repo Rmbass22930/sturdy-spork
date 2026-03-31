@@ -23,10 +23,16 @@ from .models import (
     SocAlertPromoteCaseRequest,
     SocAlertStatus,
     SocAlertUpdate,
+    SocCaseCreate,
     SocCaseStatus,
     SocCaseUpdate,
+    SocDetectionRuleUpdate,
+    SocNetworkEvidenceCaseRequest,
+    SocPacketSessionCaseRequest,
     SocSeverity,
 )
+from .network_monitor import NetworkMonitor
+from .packet_monitor import PacketMonitor
 from .soc import SecurityOperationsManager
 from .tracker_intel import TrackerIntel
 
@@ -121,6 +127,23 @@ class SocDashboard:
             replace_ratio_floor=settings.tracker_feed_replace_ratio_floor,
             verify_tls=settings.tracker_feed_verify_tls,
             ca_bundle_path=settings.tracker_feed_ca_bundle_path,
+        )
+        self.packet_monitor = PacketMonitor(
+            state_path=settings.packet_monitor_state_path,
+            sample_seconds=settings.packet_monitor_sample_seconds,
+            min_packet_count=settings.packet_monitor_min_packet_count,
+            anomaly_multiplier=settings.packet_monitor_anomaly_multiplier,
+            learning_samples=settings.packet_monitor_learning_samples,
+            pkt_size=settings.packet_monitor_capture_bytes,
+            sensitive_ports=settings.packet_monitor_sensitive_ports,
+        )
+        self.network_monitor = NetworkMonitor(
+            state_path=settings.network_monitor_state_path,
+            suspicious_repeat_threshold=settings.network_monitor_repeat_threshold,
+            dos_hit_threshold=settings.network_monitor_dos_hit_threshold,
+            dos_syn_threshold=settings.network_monitor_dos_syn_threshold,
+            dos_port_span_threshold=settings.network_monitor_dos_port_span_threshold,
+            sensitive_ports=settings.network_monitor_sensitive_ports,
         )
         self.root = tk.Tk()
         self.root.title("Security Gateway SOC Dashboard")
@@ -351,6 +374,36 @@ class SocDashboard:
         )
         ttk.Button(ops_controls, text="Tracker Feed Details", command=self.show_tracker_feed_details).grid(
             row=1, column=13, columnspan=2, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="View Packet Sessions", command=self.view_packet_sessions).grid(
+            row=2, column=9, columnspan=2, sticky="w", padx=(12, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="View Network Evidence", command=self.view_network_evidence).grid(
+            row=2, column=11, columnspan=2, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="Promote Network Evidence", command=self.promote_network_evidence_to_case).grid(
+            row=2, column=13, columnspan=2, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="Promote Packet Session", command=self.promote_packet_session_to_case).grid(
+            row=2, column=15, columnspan=2, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="View Detection Rules", command=self.view_detection_rules).grid(
+            row=2, column=17, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="View Packet Correlations", command=self.view_packet_overlap_correlations).grid(
+            row=2, column=18, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="Toggle Detection Rule", command=self.toggle_detection_rule).grid(
+            row=2, column=19, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="Update Detection Param", command=self.update_detection_rule_parameter).grid(
+            row=2, column=20, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="View Rule Alerts", command=self.view_detection_rule_alerts).grid(
+            row=2, column=21, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="View Rule Evidence", command=self.view_detection_rule_evidence).grid(
+            row=2, column=22, sticky="w", padx=(8, 0), pady=(8, 0)
         )
         ttk.Button(ops_controls, text="Open Selected Correlation", command=self.open_selected_correlation_action).grid(
             row=1, column=0, columnspan=3, sticky="w", pady=(8, 0)
@@ -631,6 +684,17 @@ class SocDashboard:
         workload = cast(dict[str, Any], dashboard.get("workload") or {})
         triage = cast(dict[str, list[dict[str, Any]]], dashboard["triage"])
         dashboard["tracker_feed_status"] = self.tracker_intel.feed_status()
+        packet_sessions = self._collect_packet_sessions()
+        network_observations = self.network_monitor.list_recent_observations(limit=100)
+        dashboard["packet_session_status"] = {
+            "session_count": len(packet_sessions),
+            "recent_sessions": packet_sessions[:10],
+        }
+        dashboard["network_evidence_status"] = {
+            "observation_count": len(network_observations),
+            "recent_observations": network_observations[:10],
+            "combined_evidence": self._collect_network_evidence(packet_sessions=packet_sessions, observations=network_observations)[:10],
+        }
         host_state = self._load_host_monitor_state()
         host_findings = cast(list[dict[str, Any]], host_state.get("active_findings") or [])
         alert_rows = self._alert_rows_for_view(dashboard)
@@ -770,21 +834,21 @@ class SocDashboard:
         self._refresh_case_detail()
 
     def assign_selected_alert(self) -> None:
-        alert_id = self._selected_tree_item_id(self.alert_tree)
-        if alert_id is None:
-            if messagebox is not None:
-                messagebox.showwarning("No Alert Selected", "Select an alert before assigning it.")
-            return
-        if simpledialog is None:
-            return
-        assignee = simpledialog.askstring("Assign Alert", "Enter the analyst or queue for the selected alert:", parent=self.root)
-        if assignee is None or not assignee.strip():
-            return
-        payload = self._build_alert_update_payload(field="assignee", value=assignee.strip(), acted_by=self._current_analyst_identity())
-        self.manager.update_alert(alert_id, payload)
-        self.refresh()
-        self.alert_tree.selection_set(alert_id)
-        self._refresh_alert_detail()
+        self._prompt_selected_record_update(
+            tree=self.alert_tree,
+            rows_by_id=self.alert_rows_by_id,
+            missing_selection_title="No Alert Selected",
+            missing_selection_message="Select an alert before assigning it.",
+            missing_record_title="Alert Unavailable",
+            missing_record_message="The selected alert is no longer available in the current view.",
+            prompt_title="Assign Alert",
+            prompt_message="Enter the analyst or queue for the selected alert:",
+            apply_update=lambda alert_id, value, _payload: self.manager.update_alert(
+                alert_id,
+                self._build_alert_update_payload(field="assignee", value=value, acted_by=self._current_analyst_identity()),
+            ),
+            refresh_detail=self._refresh_alert_detail,
+        )
 
     def acknowledge_selected_alert(self) -> None:
         self._apply_alert_status("acknowledged", "Alert Acknowledged")
@@ -800,22 +864,23 @@ class SocDashboard:
         )
 
     def view_alert_source_events(self) -> None:
-        alert_id = self._selected_tree_item_id(self.alert_tree)
-        if alert_id is None:
-            if messagebox is not None:
-                messagebox.showwarning("No Alert Selected", "Select an alert before viewing source events.")
-            return
-        alert_payload = self.alert_rows_by_id.get(alert_id)
-        if alert_payload is None:
-            if messagebox is not None:
-                messagebox.showwarning("Alert Unavailable", "The selected alert is no longer available in the current view.")
-            return
-        source_events = self._resolve_source_events(alert_payload)
-        selected = self._select_summary_record("event", source_events, title="Source Events")
+        selected = self._require_selected_record(
+            tree=self.alert_tree,
+            rows_by_id=self.alert_rows_by_id,
+            missing_selection_title="No Alert Selected",
+            missing_selection_message="Select an alert before viewing source events.",
+            missing_record_title="Alert Unavailable",
+            missing_record_message="The selected alert is no longer available in the current view.",
+        )
         if selected is None:
+            return
+        _alert_id, alert_payload = selected
+        source_events = self._resolve_source_events(alert_payload)
+        selected_event = self._select_summary_record("event", source_events, title="Source Events")
+        if selected_event is None:
             self._show_info_dialog("Source Events", self._format_source_events(alert_payload, source_events))
             return
-        self._pivot_from_event(selected)
+        self._pivot_from_event(selected_event)
 
     def add_case_note(self) -> None:
         self._prompt_case_update(
@@ -833,61 +898,50 @@ class SocDashboard:
 
     def acknowledge_stale_alerts(self) -> None:
         stale_alert_ids = self._stale_alert_ids()
-        if not stale_alert_ids:
-            if messagebox is not None:
-                messagebox.showinfo("No Stale Alerts", "There are no assigned stale alerts to acknowledge.")
-            return
         actor = self._current_analyst_identity()
-        for alert_id in stale_alert_ids:
-            payload = self._build_alert_update_payload(field="status", value="acknowledged", acted_by=actor)
-            self.manager.update_alert(alert_id, payload)
-        if messagebox is not None:
-            messagebox.showinfo("Stale Alerts Updated", f"Acknowledged {len(stale_alert_ids)} stale alerts.")
-        self.refresh()
+        self._apply_bulk_record_updates(
+            record_ids=stale_alert_ids,
+            empty_title="No Stale Alerts",
+            empty_message="There are no assigned stale alerts to acknowledge.",
+            apply_update=lambda alert_id: self.manager.update_alert(
+                alert_id,
+                self._build_alert_update_payload(field="status", value="acknowledged", acted_by=actor),
+            ),
+            success_title="Stale Alerts Updated",
+            success_message=lambda count: f"Acknowledged {count} stale alerts.",
+        )
 
     def reassign_stale_alerts(self) -> None:
         stale_alert_ids = self._stale_alert_ids()
-        if not stale_alert_ids:
-            if messagebox is not None:
-                messagebox.showinfo("No Stale Alerts", "There are no assigned stale alerts to reassign.")
-            return
-        if simpledialog is None:
-            return
-        assignee = simpledialog.askstring(
-            "Reassign Stale Alerts",
-            "Enter the analyst or queue for the stale alerts:",
-            parent=self.root,
+        self._prompt_bulk_assignee_update(
+            record_ids=stale_alert_ids,
+            empty_title="No Stale Alerts",
+            empty_message="There are no assigned stale alerts to reassign.",
+            prompt_title="Reassign Stale Alerts",
+            prompt_message="Enter the analyst or queue for the stale alerts:",
+            apply_update=lambda alert_id, assignee: self.manager.update_alert(
+                alert_id,
+                self._build_alert_update_payload(field="assignee", value=assignee),
+            ),
+            success_title="Stale Alerts Reassigned",
+            success_message=lambda count: f"Reassigned {count} stale alerts.",
         )
-        if assignee is None or not assignee.strip():
-            return
-        for alert_id in stale_alert_ids:
-            payload = self._build_alert_update_payload(field="assignee", value=assignee.strip())
-            self.manager.update_alert(alert_id, payload)
-        if messagebox is not None:
-            messagebox.showinfo("Stale Alerts Reassigned", f"Reassigned {len(stale_alert_ids)} stale alerts.")
-        self.refresh()
 
     def reassign_stale_cases(self) -> None:
         stale_case_ids = self._stale_case_ids()
-        if not stale_case_ids:
-            if messagebox is not None:
-                messagebox.showinfo("No Stale Cases", "There are no stale active cases to reassign.")
-            return
-        if simpledialog is None:
-            return
-        assignee = simpledialog.askstring(
-            "Reassign Stale Cases",
-            "Enter the analyst or queue for the stale cases:",
-            parent=self.root,
+        self._prompt_bulk_assignee_update(
+            record_ids=stale_case_ids,
+            empty_title="No Stale Cases",
+            empty_message="There are no stale active cases to reassign.",
+            prompt_title="Reassign Stale Cases",
+            prompt_message="Enter the analyst or queue for the stale cases:",
+            apply_update=lambda case_id, assignee: self.manager.update_case(
+                case_id,
+                self._build_case_update_payload(field="assignee", value=assignee),
+            ),
+            success_title="Stale Cases Reassigned",
+            success_message=lambda count: f"Reassigned {count} stale cases.",
         )
-        if assignee is None or not assignee.strip():
-            return
-        for case_id in stale_case_ids:
-            payload = self._build_case_update_payload(field="assignee", value=assignee.strip())
-            self.manager.update_case(case_id, payload)
-        if messagebox is not None:
-            messagebox.showinfo("Stale Cases Reassigned", f"Reassigned {len(stale_case_ids)} stale cases.")
-        self.refresh()
 
     def view_alert_age_bucket(self) -> None:
         bucket = self.alert_age_bucket_var.get().strip() or "all"
@@ -911,20 +965,19 @@ class SocDashboard:
         rows = self._select_age_bucket_rows("alert", bucket, rows, id_key="alert_id")
         if not rows:
             return
-        if simpledialog is None:
-            return
-        assignee = simpledialog.askstring("Assign Alert Bucket", "Enter the analyst or queue for the selected alert bucket:", parent=self.root)
-        if assignee is None or not assignee.strip():
-            return
-        for row in rows:
-            alert_id = str(row.get("alert_id") or "")
-            if not alert_id:
-                continue
-            payload = self._build_alert_update_payload(field="assignee", value=assignee.strip())
-            self.manager.update_alert(alert_id, payload)
-        if messagebox is not None:
-            messagebox.showinfo("Alert Bucket Assigned", f"Assigned {len(rows)} alerts from the selected rows.")
-        self.refresh()
+        self._prompt_bulk_assignee_update(
+            record_ids=[str(row.get("alert_id") or "") for row in rows],
+            empty_title="No Alerts",
+            empty_message="No alerts matched the selected age bucket.",
+            prompt_title="Assign Alert Bucket",
+            prompt_message="Enter the analyst or queue for the selected alert bucket:",
+            apply_update=lambda alert_id, assignee: self.manager.update_alert(
+                alert_id,
+                self._build_alert_update_payload(field="assignee", value=assignee),
+            ),
+            success_title="Alert Bucket Assigned",
+            success_message=lambda count: f"Assigned {count} alerts from the selected rows.",
+        )
 
     def promote_alert_age_bucket(self) -> None:
         bucket = self.alert_age_bucket_var.get().strip() or "all"
@@ -936,28 +989,13 @@ class SocDashboard:
         rows = self._select_age_bucket_rows("alert", bucket, rows, id_key="alert_id")
         if not rows:
             return
-        case_id = self._selected_tree_item_id(self.case_tree)
-        if case_id is None:
-            if messagebox is not None:
-                messagebox.showwarning("No Case Selected", "Select a case before promoting the alert bucket.")
-            return
-        actor = self._current_analyst_identity()
-        promoted = 0
-        for row in rows:
-            alert_id = str(row.get("alert_id") or "")
-            if not alert_id:
-                continue
-            alert = self.manager.get_alert(alert_id)
-            self.manager.promote_alert_to_case(
-                alert_id,
-                payload=self._build_promote_payload(alert, acted_by=actor, existing_case_id=case_id),
-            )
-            promoted += 1
-        if messagebox is not None:
-            messagebox.showinfo("Alert Bucket Promoted", f"Linked {promoted} alerts into case {case_id}.")
-        self.refresh()
-        self.case_tree.selection_set(case_id)
-        self._refresh_case_detail()
+        self._promote_alert_rows_to_selected_case(
+            rows=rows,
+            missing_case_title="No Case Selected",
+            missing_case_message="Select a case before promoting the alert bucket.",
+            success_title="Alert Bucket Promoted",
+            success_message=lambda promoted, case_id: f"Linked {promoted} alerts into case {case_id}.",
+        )
 
     def assign_case_age_bucket(self) -> None:
         bucket = self.case_age_bucket_var.get().strip() or "all"
@@ -969,32 +1007,32 @@ class SocDashboard:
         rows = self._select_age_bucket_rows("case", bucket, rows, id_key="case_id")
         if not rows:
             return
-        if simpledialog is None:
-            return
-        assignee = simpledialog.askstring("Assign Case Bucket", "Enter the analyst or queue for the selected case bucket:", parent=self.root)
-        if assignee is None or not assignee.strip():
-            return
-        for row in rows:
-            case_id = str(row.get("case_id") or "")
-            if not case_id:
-                continue
-            payload = self._build_case_update_payload(field="assignee", value=assignee.strip())
-            self.manager.update_case(case_id, payload)
-        if messagebox is not None:
-            messagebox.showinfo("Case Bucket Assigned", f"Assigned {len(rows)} cases from the selected rows.")
-        self.refresh()
+        self._prompt_bulk_assignee_update(
+            record_ids=[str(row.get("case_id") or "") for row in rows],
+            empty_title="No Cases",
+            empty_message="No cases matched the selected age bucket.",
+            prompt_title="Assign Case Bucket",
+            prompt_message="Enter the analyst or queue for the selected case bucket:",
+            apply_update=lambda case_id, assignee: self.manager.update_case(
+                case_id,
+                self._build_case_update_payload(field="assignee", value=assignee),
+            ),
+            success_title="Case Bucket Assigned",
+            success_message=lambda count: f"Assigned {count} cases from the selected rows.",
+        )
 
     def view_case_linked_activity(self) -> None:
-        case_id = self._selected_tree_item_id(self.case_tree)
-        if case_id is None:
-            if messagebox is not None:
-                messagebox.showwarning("No Case Selected", "Select a case before viewing linked activity.")
+        selected = self._require_selected_record(
+            tree=self.case_tree,
+            rows_by_id=self.case_rows_by_id,
+            missing_selection_title="No Case Selected",
+            missing_selection_message="Select a case before viewing linked activity.",
+            missing_record_title="Case Unavailable",
+            missing_record_message="The selected case is no longer available in the current view.",
+        )
+        if selected is None:
             return
-        case_payload = self.case_rows_by_id.get(case_id)
-        if case_payload is None:
-            if messagebox is not None:
-                messagebox.showwarning("Case Unavailable", "The selected case is no longer available in the current view.")
-            return
+        _case_id, case_payload = selected
         linked_alerts = self._resolve_linked_alerts(case_payload)
         source_events = self._resolve_case_source_events(case_payload)
         choice = self._choose_case_activity_pivot(case_payload, linked_alerts=linked_alerts, source_events=source_events)
@@ -1015,16 +1053,17 @@ class SocDashboard:
         self._show_info_dialog("Case Linked Activity", self._format_case_linked_activity(case_payload, linked_alerts, source_events))
 
     def view_host_related_activity(self) -> None:
-        finding_key = self._selected_tree_item_id(self.host_tree)
-        if finding_key is None:
-            if messagebox is not None:
-                messagebox.showwarning("No Host Finding Selected", "Select a host finding before viewing related activity.")
+        selected = self._require_selected_record(
+            tree=self.host_tree,
+            rows_by_id=self.host_rows_by_key,
+            missing_selection_title="No Host Finding Selected",
+            missing_selection_message="Select a host finding before viewing related activity.",
+            missing_record_title="Host Finding Unavailable",
+            missing_record_message="The selected host finding is no longer available.",
+        )
+        if selected is None:
             return
-        finding_payload = self.host_rows_by_key.get(finding_key)
-        if finding_payload is None:
-            if messagebox is not None:
-                messagebox.showwarning("Host Finding Unavailable", "The selected host finding is no longer available.")
-            return
+        _finding_key, finding_payload = selected
         related_events = self._resolve_host_events(finding_payload)
         if not related_events:
             self._show_info_dialog("Host Finding Activity", self._format_host_detail(finding_payload))
@@ -1036,21 +1075,21 @@ class SocDashboard:
         self._pivot_from_event(selected_event)
 
     def assign_selected_case(self) -> None:
-        case_id = self._selected_tree_item_id(self.case_tree)
-        if case_id is None:
-            if messagebox is not None:
-                messagebox.showwarning("No Case Selected", "Select a case before assigning it.")
-            return
-        if simpledialog is None:
-            return
-        assignee = simpledialog.askstring("Assign Case", "Enter the analyst or queue for the selected case:", parent=self.root)
-        if assignee is None or not assignee.strip():
-            return
-        payload = self._build_case_update_payload(field="assignee", value=assignee.strip())
-        self.manager.update_case(case_id, payload)
-        self.refresh()
-        self.case_tree.selection_set(case_id)
-        self._refresh_case_detail()
+        self._prompt_selected_record_update(
+            tree=self.case_tree,
+            rows_by_id=self.case_rows_by_id,
+            missing_selection_title="No Case Selected",
+            missing_selection_message="Select a case before assigning it.",
+            missing_record_title="Case Unavailable",
+            missing_record_message="The selected case is no longer available in the current view.",
+            prompt_title="Assign Case",
+            prompt_message="Enter the analyst or queue for the selected case:",
+            apply_update=lambda case_id, value, _payload: self.manager.update_case(
+                case_id,
+                self._build_case_update_payload(field="assignee", value=value),
+            ),
+            refresh_detail=self._refresh_case_detail,
+        )
 
     def mark_case_investigating(self) -> None:
         self._apply_case_status("investigating", "Case Updated")
@@ -1062,56 +1101,63 @@ class SocDashboard:
         self._apply_case_status("closed", "Case Updated")
 
     def _apply_alert_status(self, status_value: str, title: str) -> None:
-        alert_id = self._selected_tree_item_id(self.alert_tree)
-        if alert_id is None:
-            if messagebox is not None:
-                messagebox.showwarning("No Alert Selected", "Select an alert before applying a status update.")
-            return
-        payload = self._build_alert_update_payload(
-            field="status",
-            value=status_value,
-            acted_by=self._current_analyst_identity(),
+        self._apply_selected_record_update(
+            tree=self.alert_tree,
+            rows_by_id=self.alert_rows_by_id,
+            missing_selection_title="No Alert Selected",
+            missing_selection_message="Select an alert before applying a status update.",
+            missing_record_title="Alert Unavailable",
+            missing_record_message="The selected alert is no longer available in the current view.",
+            update=lambda alert_id, _payload: self.manager.update_alert(
+                alert_id,
+                self._build_alert_update_payload(
+                    field="status",
+                    value=status_value,
+                    acted_by=self._current_analyst_identity(),
+                ),
+            ),
+            refresh_detail=self._refresh_alert_detail,
+            success_title=title,
+            success_message=lambda alert_id: f"Updated alert {alert_id} to {status_value}.",
         )
-        self.manager.update_alert(alert_id, payload)
-        if messagebox is not None:
-            messagebox.showinfo(title, f"Updated alert {alert_id} to {status_value}.")
-        self.refresh()
-        self._refresh_alert_detail()
 
     def _prompt_alert_update(self, *, field: str, title: str, prompt: str) -> None:
-        alert_id = self._selected_tree_item_id(self.alert_tree)
-        if alert_id is None:
-            if messagebox is not None:
-                messagebox.showwarning("No Alert Selected", "Select an alert before applying an update.")
-            return
-        if simpledialog is None:
-            return
-        value = simpledialog.askstring(title, prompt, parent=self.root)
-        if value is None or not value.strip():
-            return
-        payload = self._build_alert_update_payload(
-            field=field,
-            value=value.strip(),
-            acted_by=self._current_analyst_identity(),
+        self._prompt_selected_record_update(
+            tree=self.alert_tree,
+            rows_by_id=self.alert_rows_by_id,
+            missing_selection_title="No Alert Selected",
+            missing_selection_message="Select an alert before applying an update.",
+            missing_record_title="Alert Unavailable",
+            missing_record_message="The selected alert is no longer available in the current view.",
+            prompt_title=title,
+            prompt_message=prompt,
+            apply_update=lambda alert_id, value, _payload: self.manager.update_alert(
+                alert_id,
+                self._build_alert_update_payload(
+                    field=field,
+                    value=value,
+                    acted_by=self._current_analyst_identity(),
+                ),
+            ),
+            refresh_detail=self._refresh_alert_detail,
         )
-        self.manager.update_alert(alert_id, payload)
-        self.refresh()
-        self.alert_tree.selection_set(alert_id)
-        self._refresh_alert_detail()
 
     def _apply_case_status(self, status_value: str, title: str) -> None:
-        case_id = self._selected_tree_item_id(self.case_tree)
-        if case_id is None:
-            if messagebox is not None:
-                messagebox.showwarning("No Case Selected", "Select a case before applying a status update.")
-            return
-        payload = self._build_case_update_payload(field="status", value=status_value)
-        self.manager.update_case(case_id, payload)
-        if messagebox is not None:
-            messagebox.showinfo(title, f"Updated case {case_id} to {status_value}.")
-        self.refresh()
-        self.case_tree.selection_set(case_id)
-        self._refresh_case_detail()
+        self._apply_selected_record_update(
+            tree=self.case_tree,
+            rows_by_id=self.case_rows_by_id,
+            missing_selection_title="No Case Selected",
+            missing_selection_message="Select a case before applying a status update.",
+            missing_record_title="Case Unavailable",
+            missing_record_message="The selected case is no longer available in the current view.",
+            update=lambda case_id, _payload: self.manager.update_case(
+                case_id,
+                self._build_case_update_payload(field="status", value=status_value),
+            ),
+            refresh_detail=self._refresh_case_detail,
+            success_title=title,
+            success_message=lambda case_id: f"Updated case {case_id} to {status_value}.",
+        )
 
     def _alert_query_kwargs(self) -> dict[str, Any]:
         severity = self._parse_severity(self.alert_severity_var.get())
@@ -1154,21 +1200,21 @@ class SocDashboard:
         return str(selected) if selected else None
 
     def _prompt_case_update(self, *, field: str, title: str, prompt: str) -> None:
-        case_id = self._selected_tree_item_id(self.case_tree)
-        if case_id is None:
-            if messagebox is not None:
-                messagebox.showwarning("No Case Selected", "Select a case before applying an update.")
-            return
-        if simpledialog is None:
-            return
-        value = simpledialog.askstring(title, prompt, parent=self.root)
-        if value is None or not value.strip():
-            return
-        payload = self._build_case_update_payload(field=field, value=value.strip())
-        self.manager.update_case(case_id, payload)
-        self.refresh()
-        self.case_tree.selection_set(case_id)
-        self._refresh_case_detail()
+        self._prompt_selected_record_update(
+            tree=self.case_tree,
+            rows_by_id=self.case_rows_by_id,
+            missing_selection_title="No Case Selected",
+            missing_selection_message="Select a case before applying an update.",
+            missing_record_title="Case Unavailable",
+            missing_record_message="The selected case is no longer available in the current view.",
+            prompt_title=title,
+            prompt_message=prompt,
+            apply_update=lambda case_id, value, _payload: self.manager.update_case(
+                case_id,
+                self._build_case_update_payload(field=field, value=value),
+            ),
+            refresh_detail=self._refresh_case_detail,
+        )
 
     def open_summary_drilldown(self, metric_key: str) -> None:
         handlers: dict[str, Callable[[], None]] = {
@@ -1197,15 +1243,25 @@ class SocDashboard:
         related_cases = self._resolve_event_cases(event_payload)
         choice = self._choose_event_pivot(event_payload, related_alerts=related_alerts, related_cases=related_cases)
         if choice == "alerts":
-            selected_alert = self._select_summary_record("alert", related_alerts, title="Related Alerts")
+            selected_alert = self._select_summary_record_or_show_info(
+                "alert",
+                related_alerts,
+                title="Related Alerts",
+                info_title="Related Alerts",
+                limit=30,
+            )
             if selected_alert is None:
-                self._show_info_dialog("Related Alerts", self._format_summary_records("alert", related_alerts, limit=30))
                 return
             self._pivot_from_alert(selected_alert)
         elif choice == "cases":
-            selected_case = self._select_summary_record("case", related_cases, title="Related Cases")
+            selected_case = self._select_summary_record_or_show_info(
+                "case",
+                related_cases,
+                title="Related Cases",
+                info_title="Related Cases",
+                limit=30,
+            )
             if selected_case is None:
-                self._show_info_dialog("Related Cases", self._format_summary_records("case", related_cases, limit=30))
                 return
             self._pivot_from_case(selected_case)
         else:
@@ -1217,9 +1273,14 @@ class SocDashboard:
         linked_case = self.case_rows_by_id.get(linked_case_id) if linked_case_id else None
         choice = self._choose_alert_pivot(alert_payload, source_events=source_events, linked_case=linked_case)
         if choice == "events":
-            selected_event = self._select_summary_record("event", source_events, title="Source Events")
+            selected_event = self._select_summary_record_or_show_info(
+                "event",
+                source_events,
+                title="Source Events",
+                info_title="Alert Details",
+                info_text=self._format_alert_detail(alert_payload),
+            )
             if selected_event is None:
-                self._show_info_dialog("Alert Details", self._format_alert_detail(alert_payload))
                 return
             self._pivot_from_event(selected_event)
             return
@@ -1233,16 +1294,26 @@ class SocDashboard:
         source_events = self._resolve_case_source_events(case_payload)
         choice = self._choose_case_activity_pivot(case_payload, linked_alerts=linked_alerts, source_events=source_events)
         if choice == "alerts":
-            selected_alert = self._select_summary_record("alert", linked_alerts, title="Linked Alerts")
+            selected_alert = self._select_summary_record_or_show_info(
+                "alert",
+                linked_alerts,
+                title="Linked Alerts",
+                info_title="Case Linked Activity",
+                info_text=self._format_case_linked_activity(case_payload, linked_alerts, source_events),
+            )
             if selected_alert is None:
-                self._show_info_dialog("Case Linked Activity", self._format_case_linked_activity(case_payload, linked_alerts, source_events))
                 return
             self._pivot_from_alert(selected_alert)
             return
         if choice == "events":
-            selected_event = self._select_summary_record("event", source_events, title="Source Events")
+            selected_event = self._select_summary_record_or_show_info(
+                "event",
+                source_events,
+                title="Source Events",
+                info_title="Case Linked Activity",
+                info_text=self._format_case_linked_activity(case_payload, linked_alerts, source_events),
+            )
             if selected_event is None:
-                self._show_info_dialog("Case Linked Activity", self._format_case_linked_activity(case_payload, linked_alerts, source_events))
                 return
             self._pivot_from_event(selected_event)
             return
@@ -1517,18 +1588,40 @@ class SocDashboard:
             return None
         return dict(rows[selected_index])
 
+    def _select_summary_record_or_show_info(
+        self,
+        kind: str,
+        rows: Sequence[dict[str, Any]],
+        *,
+        title: str,
+        info_title: str,
+        info_text: str | None = None,
+        info_kind: str | None = None,
+        info_rows: Sequence[dict[str, Any]] | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any] | None:
+        selected = self._select_summary_record(kind, rows, title=title)
+        if selected is not None:
+            return selected
+        if info_text is None:
+            info_text = self._format_summary_records(info_kind or kind, info_rows if info_rows is not None else rows, limit=limit)
+        self._show_info_dialog(info_title, info_text)
+        return None
+
     def view_recent_tracker_blocks(self) -> None:
         tracker_events = [
             event.model_dump(mode="json")
             for event in self.manager.list_events(limit=200)
             if event.event_type == "privacy.tracker_block"
         ]
-        selected = self._select_summary_record("tracker_block", tracker_events[:50], title="Recent Tracker Blocks")
+        selected = self._select_summary_record_or_show_info(
+            "tracker_block",
+            tracker_events[:50],
+            title="Recent Tracker Blocks",
+            info_title="Recent Tracker Blocks",
+            limit=50,
+        )
         if selected is None:
-            self._show_info_dialog(
-                "Recent Tracker Blocks",
-                self._format_summary_records("tracker_block", tracker_events[:50], limit=50),
-            )
             return
         self._pivot_from_event(selected)
 
@@ -1586,34 +1679,686 @@ class SocDashboard:
             lines.append("- none")
         self._show_info_dialog("Tracker Feed Details", "\n".join(lines))
 
-    def _choose_event_pivot(
+    def view_packet_sessions(self) -> None:
+        sessions = self._collect_packet_sessions(limit=50)
+        selected = self._select_summary_record_or_show_info(
+            "packet_session",
+            sessions,
+            title="Packet Sessions",
+            info_title="Packet Sessions",
+            limit=50,
+        )
+        if selected is None:
+            return
+        self._pivot_from_packet_session(selected)
+
+    def view_network_evidence(self) -> None:
+        evidence_rows = self._collect_network_evidence()
+        selected = self._select_summary_record_or_show_info(
+            "network_evidence",
+            evidence_rows,
+            title="Network Evidence",
+            info_title="Network Evidence",
+            limit=50,
+        )
+        if selected is None:
+            return
+        self._pivot_from_network_evidence(selected)
+
+    def view_detection_rules(self) -> None:
+        selected = self._select_detection_rule()
+        if selected is None:
+            return
+        related_alerts = [item.model_dump(mode="json") for item in self.manager.query_alerts(correlation_rule=str(selected.get("rule_id") or ""), limit=50)]
+        grouped_alerts = self._group_rule_alerts(related_alerts)
+        open_case_ids = sorted(
+            {
+                str(case_id)
+                for group in grouped_alerts
+                for case_id in cast(list[Any], group.get("open_case_ids") or [])
+                if str(case_id)
+            }
+        )
+        related_case_ids = sorted(
+            {
+                str(case_id)
+                for group in grouped_alerts
+                for case_id in cast(list[Any], group.get("related_case_ids") or [])
+                if str(case_id)
+            }
+        )
+        selected = dict(selected)
+        selected["related_case_ids"] = related_case_ids
+        selected["open_case_ids"] = open_case_ids
+        selected["open_case_count"] = len(open_case_ids)
+        if self._handle_existing_case_guard(
+            open_case_ids=open_case_ids,
+            context_label=f"Detection rule {selected.get('rule_id', '-')}",
+        ):
+            return
+        self._show_info_dialog("Detection Rule", self._format_detection_rule_detail(selected))
+
+    def toggle_detection_rule(self) -> None:
+        selected = self._select_detection_rule()
+        if selected is None:
+            return
+        rule_id = str(selected.get("rule_id") or "")
+        enabled = bool(selected.get("enabled"))
+        updated = self.manager.update_detection_rule(rule_id, SocDetectionRuleUpdate(enabled=not enabled))
+        if messagebox is not None:
+            state = "enabled" if updated.enabled else "disabled"
+            messagebox.showinfo("Detection Rule Updated", f"Rule {updated.rule_id} is now {state}.")
+        self.refresh()
+
+    def update_detection_rule_parameter(self) -> None:
+        selected = self._select_detection_rule()
+        if selected is None:
+            return
+        if simpledialog is None:
+            return
+        rule_id = str(selected.get("rule_id") or "")
+        parameter_name = simpledialog.askstring(
+            "Update Detection Parameter",
+            "Enter the parameter name to update:",
+            parent=self.root,
+        )
+        if not parameter_name:
+            return
+        parameter_value = simpledialog.askstring(
+            "Update Detection Parameter",
+            f"Enter the value for {parameter_name}:",
+            parent=self.root,
+        )
+        if parameter_value is None:
+            return
+        updated = self.manager.update_detection_rule(
+            rule_id,
+            SocDetectionRuleUpdate(parameters={parameter_name: self._coerce_detection_parameter(parameter_value)}),
+        )
+        if messagebox is not None:
+            messagebox.showinfo(
+                "Detection Rule Updated",
+                f"Updated {updated.rule_id} parameter {parameter_name} to {updated.parameters.get(parameter_name)!r}.",
+            )
+        self.refresh()
+
+    def view_packet_overlap_correlations(self) -> None:
+        alerts = [
+            item.model_dump(mode="json")
+            for item in self.manager.query_alerts(correlation_rule="packet_network_remote_overlap", limit=50)
+        ]
+        selected = self._select_summary_record_or_show_info(
+            "alert",
+            alerts,
+            title="Packet Correlations",
+            info_title="Packet Correlations",
+            limit=50,
+        )
+        if selected is None:
+            return
+        self._pivot_from_alert(selected)
+
+    def view_detection_rule_alerts(self) -> None:
+        selected_rule = self._select_detection_rule()
+        if selected_rule is None:
+            return
+        rule_id = str(selected_rule.get("rule_id") or "")
+        alerts = [item.model_dump(mode="json") for item in self.manager.query_alerts(correlation_rule=rule_id, limit=50)]
+        grouped_alerts = self._group_rule_alerts(alerts)
+        selected_group = self._select_summary_record_or_show_info(
+            "alert_group",
+            grouped_alerts,
+            title=f"Alert Groups for {rule_id}",
+            info_title=f"Alerts for {rule_id}",
+            limit=50,
+        )
+        if selected_group is None:
+            return
+        if self._handle_existing_case_guard(
+            open_case_ids=[str(item) for item in cast(list[Any], selected_group.get("open_case_ids") or []) if str(item)],
+            context_label=f"Alert group {selected_group.get('group_key', rule_id)}",
+        ):
+            return
+        selected_alert = self._select_summary_record_or_show_info(
+            "alert",
+            cast(list[dict[str, Any]], selected_group.get("alerts") or []),
+            title=f"Alerts for {selected_group.get('group_key', rule_id)}",
+            info_title=f"Alerts for {selected_group.get('group_key', rule_id)}",
+            limit=50,
+        )
+        if selected_alert is None:
+            return
+        self._pivot_from_alert(selected_alert)
+
+    def view_detection_rule_evidence(self) -> None:
+        selected_rule = self._select_detection_rule()
+        if selected_rule is None:
+            return
+        rule_id = str(selected_rule.get("rule_id") or "")
+        alert_rows = [item.model_dump(mode="json") for item in self.manager.query_alerts(correlation_rule=rule_id, limit=50)]
+        source_events = self._collect_rule_source_events(alert_rows)
+        grouped_evidence = self._group_rule_evidence(source_events)
+        selected_group = self._select_summary_record_or_show_info(
+            "evidence_group",
+            grouped_evidence,
+            title=f"Evidence Groups for {rule_id}",
+            info_title=f"Evidence for {rule_id}",
+            limit=50,
+        )
+        if selected_group is None:
+            return
+        if self._handle_existing_case_guard(
+            open_case_ids=[str(item) for item in cast(list[Any], selected_group.get("open_case_ids") or []) if str(item)],
+            context_label=f"Evidence group {selected_group.get('group_key', rule_id)}",
+        ):
+            return
+        selected_event = self._select_summary_record_or_show_info(
+            "event",
+            cast(list[dict[str, Any]], selected_group.get("events") or []),
+            title=f"Evidence for {selected_group.get('group_key', rule_id)}",
+            info_title=f"Evidence for {selected_group.get('group_key', rule_id)}",
+            limit=50,
+        )
+        if selected_event is None:
+            return
+        self._pivot_from_event(selected_event)
+
+    def _pivot_from_packet_session(self, session_payload: dict[str, Any]) -> None:
+        remote_ip = str(session_payload.get("remote_ip") or "")
+        if not remote_ip:
+            self._show_info_dialog("Packet Session", self._format_packet_session_detail(session_payload))
+            return
+        related_events = [
+            item.model_dump(mode="json")
+            for item in self.manager.query_events(text=remote_ip, limit=100)
+            if item.event_type in {"packet.monitor.finding", "packet.monitor.recovered", "network.monitor.finding", "network.monitor.recovered"}
+        ]
+        selected = self._select_summary_record_or_show_info(
+            "event",
+            related_events,
+            title="Packet Session Events",
+            info_title="Packet Session",
+            info_text=self._format_packet_session_detail(session_payload),
+        )
+        if selected is None:
+            return
+        self._pivot_from_event(selected)
+
+    def _pivot_from_network_evidence(self, evidence_payload: dict[str, Any]) -> None:
+        related_events = self._resolve_network_evidence_events(evidence_payload)
+        related_alerts = self._resolve_network_evidence_alerts(related_events)
+        related_cases = self._resolve_network_evidence_cases(related_events)
+        packet_session = cast(dict[str, Any] | None, evidence_payload.get("packet_session"))
+        choice = self._choose_network_evidence_pivot(
+            evidence_payload,
+            related_events=related_events,
+            related_alerts=related_alerts,
+            related_cases=related_cases,
+            packet_session=packet_session,
+        )
+        if choice == "events":
+            selected = self._select_summary_record_or_show_info(
+                "event",
+                related_events,
+                title="Network Evidence Events",
+                info_title="Network Evidence",
+                info_text=self._format_network_evidence_detail(evidence_payload),
+            )
+            if selected is None:
+                return
+            self._pivot_from_event(selected)
+            return
+        if choice == "alerts":
+            selected = self._select_summary_record_or_show_info(
+                "alert",
+                related_alerts,
+                title="Network Evidence Alerts",
+                info_title="Network Evidence",
+                info_text=self._format_network_evidence_detail(evidence_payload),
+            )
+            if selected is None:
+                return
+            self._pivot_from_alert(selected)
+            return
+        if choice == "cases":
+            selected = self._select_summary_record_or_show_info(
+                "case",
+                related_cases,
+                title="Network Evidence Cases",
+                info_title="Network Evidence",
+                info_text=self._format_network_evidence_detail(evidence_payload),
+            )
+            if selected is None:
+                return
+            self._pivot_from_case(selected)
+            return
+        if choice == "session" and packet_session is not None:
+            self._pivot_from_packet_session(packet_session)
+            return
+        if choice == "details":
+            self._show_info_dialog("Network Evidence", self._format_network_evidence_detail(evidence_payload))
+            return
+        self._show_info_dialog("Network Evidence", self._format_network_evidence_detail(evidence_payload))
+
+    def _collect_network_evidence(
         self,
-        event_payload: dict[str, Any],
         *,
-        related_alerts: Sequence[dict[str, Any]],
-        related_cases: Sequence[dict[str, Any]],
+        packet_sessions: Sequence[dict[str, Any]] | None = None,
+        observations: Sequence[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        session_rows = list(packet_sessions) if packet_sessions is not None else self.packet_monitor.list_recent_sessions(limit=100)
+        observation_rows = list(observations) if observations is not None else self.network_monitor.list_recent_observations(limit=100)
+        combined: dict[str, dict[str, Any]] = {}
+        for item in observation_rows:
+            remote_ip = str(item.get("remote_ip") or "")
+            if not remote_ip:
+                continue
+            combined[remote_ip] = {
+                "remote_ip": remote_ip,
+                "title": f"Network evidence for {remote_ip}",
+                "severity": "medium" if item.get("sensitive_ports") else "low",
+                "last_seen_at": item.get("last_seen_at"),
+                "observation": item,
+                "packet_session": None,
+            }
+        for item in session_rows:
+            remote_ip = str(item.get("remote_ip") or "")
+            if not remote_ip:
+                continue
+            record = combined.setdefault(
+                remote_ip,
+                {
+                    "remote_ip": remote_ip,
+                    "title": f"Network evidence for {remote_ip}",
+                    "severity": "medium",
+                    "last_seen_at": item.get("last_seen_at"),
+                    "observation": None,
+                    "packet_session": None,
+                },
+            )
+            record["packet_session"] = item
+            session_last_seen = str(item.get("last_seen_at") or "")
+            if session_last_seen > str(record.get("last_seen_at") or ""):
+                record["last_seen_at"] = item.get("last_seen_at")
+            if item.get("sensitive_ports"):
+                record["severity"] = "high"
+        rows = list(combined.values())
+        for row in rows:
+            source_events = self._resolve_network_evidence_events(row)
+            related_cases = self._resolve_network_evidence_cases(source_events)
+            row["related_alert_ids"] = [item.get("alert_id") for item in self._resolve_network_evidence_alerts(source_events) if item.get("alert_id")]
+            row["related_case_ids"] = [item.get("case_id") for item in related_cases if item.get("case_id")]
+            row["open_case_ids"] = [
+                item.get("case_id")
+                for item in related_cases
+                if item.get("case_id") and str(item.get("status") or "") != SocCaseStatus.closed.value
+            ]
+            row["open_case_count"] = len(cast(list[str], row["open_case_ids"]))
+            if row["open_case_count"]:
+                row["title"] = f"Network evidence for {row.get('remote_ip', '-')} (open cases: {row['open_case_count']})"
+        rows.sort(key=lambda row: str(row.get("last_seen_at") or ""), reverse=True)
+        return rows
+
+    def _collect_packet_sessions(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        rows = [dict(item) for item in self.packet_monitor.list_recent_sessions(limit=limit)]
+        for row in rows:
+            source_events = self._resolve_packet_session_events(row)
+            related_cases = self._resolve_network_evidence_cases(source_events)
+            related_alerts = self._resolve_network_evidence_alerts(source_events)
+            row["related_alert_ids"] = [item.get("alert_id") for item in related_alerts if item.get("alert_id")]
+            row["related_case_ids"] = [item.get("case_id") for item in related_cases if item.get("case_id")]
+            row["open_case_ids"] = [
+                item.get("case_id")
+                for item in related_cases
+                if item.get("case_id") and str(item.get("status") or "") != SocCaseStatus.closed.value
+            ]
+            row["open_case_count"] = len(cast(list[str], row["open_case_ids"]))
+            remote_ip = str(row.get("remote_ip") or "-")
+            if row["open_case_count"]:
+                row["remote_ip_display"] = f"{remote_ip} [open:{row['open_case_count']}]"
+            else:
+                row["remote_ip_display"] = remote_ip
+        return rows
+
+    def _resolve_network_evidence_events(self, evidence_payload: dict[str, Any]) -> list[dict[str, Any]]:
+        remote_ip = str(evidence_payload.get("remote_ip") or "")
+        if not remote_ip or not hasattr(self.manager, "query_events"):
+            return []
+        return [
+            item.model_dump(mode="json")
+            for item in self.manager.query_events(text=remote_ip, limit=100)
+            if item.event_type in {"packet.monitor.finding", "packet.monitor.recovered", "network.monitor.finding", "network.monitor.recovered"}
+        ]
+
+    def _resolve_network_evidence_alerts(self, related_events: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+        unique_alerts: dict[str, dict[str, Any]] = {}
+        for event_payload in related_events:
+            for alert_payload in self._resolve_event_alerts(event_payload):
+                alert_id = str(alert_payload.get("alert_id") or "")
+                if alert_id and alert_id not in unique_alerts:
+                    unique_alerts[alert_id] = alert_payload
+        return list(unique_alerts.values())
+
+    def _resolve_network_evidence_cases(self, related_events: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+        unique_cases: dict[str, dict[str, Any]] = {}
+        for event_payload in related_events:
+            for case_payload in self._resolve_event_cases(event_payload):
+                case_id = str(case_payload.get("case_id") or "")
+                if case_id and case_id not in unique_cases:
+                    unique_cases[case_id] = case_payload
+        return list(unique_cases.values())
+
+    def _select_detection_rule(self) -> dict[str, Any] | None:
+        rules = [item.model_dump(mode="json") for item in self.manager.list_detection_rules()]
+        selected = self._select_summary_record("detection_rule", rules, title="Detection Rules")
+        if selected is None:
+            self._show_info_dialog("Detection Rules", self._format_summary_records("detection_rule", rules, limit=50))
+            return None
+        rule_id = str(selected.get("rule_id") or "")
+        if not rule_id:
+            self._show_info_dialog("Detection Rules", "The selected rule is missing a rule id.")
+            return None
+        return selected
+
+    def _collect_rule_source_events(self, alert_rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+        unique_events: dict[str, dict[str, Any]] = {}
+        for alert_payload in alert_rows:
+            for event_payload in self._resolve_source_events(alert_payload):
+                event_id = str(event_payload.get("event_id") or "")
+                if event_id and event_id not in unique_events:
+                    unique_events[event_id] = event_payload
+        return list(unique_events.values())
+
+    def _group_rule_evidence(self, source_events: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+        grouped: dict[str, dict[str, Any]] = {}
+        for event_payload in source_events:
+            group_key = self._rule_evidence_group_key(event_payload)
+            entry = grouped.setdefault(
+                group_key,
+                {
+                    "group_key": group_key,
+                    "event_count": 0,
+                    "severity": event_payload.get("severity", "-"),
+                    "title": event_payload.get("title", "-"),
+                    "events": [],
+                    "related_case_ids": [],
+                    "open_case_ids": [],
+                    "open_case_count": 0,
+                },
+            )
+            entry["event_count"] = int(entry.get("event_count", 0)) + 1
+            cast(list[dict[str, Any]], entry["events"]).append(event_payload)
+            if self._severity_rank(str(event_payload.get("severity", "low"))) > self._severity_rank(str(entry.get("severity", "low"))):
+                entry["severity"] = event_payload.get("severity", "-")
+            related_cases = self._resolve_network_evidence_cases(cast(list[dict[str, Any]], entry["events"]))
+            related_case_ids = [item.get("case_id") for item in related_cases if item.get("case_id")]
+            open_case_ids = [
+                item.get("case_id")
+                for item in related_cases
+                if item.get("case_id") and str(item.get("status") or "") != SocCaseStatus.closed.value
+            ]
+            entry["related_case_ids"] = related_case_ids
+            entry["open_case_ids"] = open_case_ids
+            entry["open_case_count"] = len(open_case_ids)
+            if open_case_ids:
+                entry["title"] = f"{group_key} (open cases: {len(open_case_ids)})"
+            else:
+                entry["title"] = group_key
+        groups = list(grouped.values())
+        groups.sort(
+            key=lambda item: (
+                -self._severity_rank(str(item.get("severity", "low"))),
+                -int(item.get("event_count", 0)),
+                str(item.get("group_key", "")),
+            )
+        )
+        return groups
+
+    def _group_rule_alerts(self, alert_rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+        grouped: dict[str, dict[str, Any]] = {}
+        for alert_payload in alert_rows:
+            group_key = str(
+                alert_payload.get("correlation_key")
+                or alert_payload.get("linked_case_id")
+                or alert_payload.get("correlation_rule")
+                or alert_payload.get("alert_id")
+                or "ungrouped"
+            )
+            entry = grouped.setdefault(
+                group_key,
+                {
+                    "group_key": group_key,
+                    "alert_count": 0,
+                    "severity": alert_payload.get("severity", "-"),
+                    "title": group_key,
+                    "alerts": [],
+                    "related_case_ids": [],
+                    "open_case_ids": [],
+                    "open_case_count": 0,
+                },
+            )
+            entry["alert_count"] = int(entry.get("alert_count", 0)) + 1
+            cast(list[dict[str, Any]], entry["alerts"]).append(alert_payload)
+            if self._severity_rank(str(alert_payload.get("severity", "low"))) > self._severity_rank(str(entry.get("severity", "low"))):
+                entry["severity"] = alert_payload.get("severity", "-")
+            related_case_ids = sorted(
+                {
+                    str(item.get("linked_case_id") or "")
+                    for item in cast(list[dict[str, Any]], entry["alerts"])
+                    if str(item.get("linked_case_id") or "")
+                }
+            )
+            open_case_ids: list[str] = []
+            for case_id in related_case_ids:
+                existing_case = self._resolve_case_for_network_evidence([case_id])
+                if existing_case is None:
+                    continue
+                if str(existing_case.get("status") or "") != SocCaseStatus.closed.value:
+                    open_case_ids.append(case_id)
+            entry["related_case_ids"] = related_case_ids
+            entry["open_case_ids"] = open_case_ids
+            entry["open_case_count"] = len(open_case_ids)
+            if open_case_ids:
+                entry["title"] = f"{group_key} (open cases: {len(open_case_ids)})"
+            else:
+                entry["title"] = group_key
+        groups = list(grouped.values())
+        groups.sort(
+            key=lambda item: (
+                -self._severity_rank(str(item.get("severity", "low"))),
+                -int(item.get("alert_count", 0)),
+                str(item.get("group_key", "")),
+            )
+        )
+        return groups
+
+    @staticmethod
+    def _rule_evidence_group_key(event_payload: dict[str, Any]) -> str:
+        details = event_payload.get("details")
+        nested = details.get("details") if isinstance(details, dict) else None
+        if isinstance(nested, dict):
+            for key in ("remote_ip", "hostname", "filename", "artifact_path", "session_key", "key"):
+                value = nested.get(key)
+                if isinstance(value, str) and value:
+                    return value
+        if isinstance(details, dict):
+            for key in ("source_ip", "hostname", "filename", "device_id", "resource"):
+                value = details.get(key)
+                if isinstance(value, str) and value:
+                    return value
+        return str(event_payload.get("event_type") or "ungrouped")
+
+    @staticmethod
+    def _severity_rank(value: str) -> int:
+        order = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+        return order.get(value.casefold(), 0)
+
+    def promote_packet_session_to_case(self) -> None:
+        sessions = self.packet_monitor.list_recent_sessions(limit=50)
+        selected = self._select_summary_record("packet_session", sessions, title="Packet Sessions")
+        if selected is None:
+            self._show_info_dialog(
+                "Packet Sessions",
+                self._format_summary_records("packet_session", sessions, limit=50),
+            )
+            return
+        related_events = self._resolve_packet_session_events(selected)
+        related_cases = self._resolve_network_evidence_cases(related_events)
+        open_case_ids = [
+            str(item.get("case_id") or "")
+            for item in related_cases
+            if str(item.get("case_id") or "") and str(item.get("status") or "") != SocCaseStatus.closed.value
+        ]
+        if self._handle_existing_case_choice(
+            open_case_ids=open_case_ids,
+            context_label=f"Packet session for {selected.get('remote_ip', '-')}",
+            context_details=[
+                f"Session key: {selected.get('session_key', '-')}",
+                f"Open case count: {len(open_case_ids)}",
+            ],
+            no_action_label="create another case",
+        ):
+            return
+        if hasattr(self.manager, "create_case_from_packet_session"):
+            request_payload = SocPacketSessionCaseRequest(
+                session_key=str(selected.get("session_key") or ""),
+                assignee=self._current_analyst_identity(),
+            )
+            case = self.manager.create_case_from_packet_session(selected, request_payload)
+        else:
+            case_payload = self._build_packet_session_case_payload(
+                selected,
+                source_events=related_events,
+                assignee=self._current_analyst_identity(),
+            )
+            case = self.manager.create_case(case_payload)
+        if messagebox is not None:
+            messagebox.showinfo("Case Created", f"Created case {case.case_id} from packet session {selected.get('remote_ip', '-')}.")
+        self.refresh()
+        self.case_tree.selection_set(case.case_id)
+        self._refresh_case_detail()
+
+    def promote_network_evidence_to_case(self) -> None:
+        evidence_rows = self._collect_network_evidence()
+        selected = self._select_summary_record("network_evidence", evidence_rows, title="Network Evidence")
+        if selected is None:
+            self._show_info_dialog(
+                "Network Evidence",
+                self._format_summary_records("network_evidence", evidence_rows, limit=50),
+            )
+            return
+        open_case_ids = [str(item) for item in cast(list[Any], selected.get("open_case_ids") or []) if str(item)]
+        if self._handle_existing_case_choice(
+            open_case_ids=open_case_ids,
+            context_label=f"Network evidence for {selected.get('remote_ip', '-')}",
+            context_details=[
+                f"Remote IP: {selected.get('remote_ip', '-')}",
+                f"Open case count: {len(open_case_ids)}",
+            ],
+            no_action_label="create another case",
+        ):
+            return
+        if hasattr(self.manager, "create_case_from_network_evidence"):
+            request_payload = SocNetworkEvidenceCaseRequest(
+                remote_ip=str(selected.get("remote_ip") or ""),
+                assignee=self._current_analyst_identity(),
+            )
+            case = self.manager.create_case_from_network_evidence(selected, request_payload)
+        else:
+            source_events = self._resolve_network_evidence_events(selected)
+            case_payload = self._build_network_evidence_case_payload(
+                selected,
+                source_events=source_events,
+                linked_alerts=self._resolve_network_evidence_alerts(source_events),
+                assignee=self._current_analyst_identity(),
+            )
+            case = self.manager.create_case(case_payload)
+        if messagebox is not None:
+            messagebox.showinfo("Case Created", f"Created case {case.case_id} from network evidence {selected.get('remote_ip', '-')}.")
+        self.refresh()
+        self.case_tree.selection_set(case.case_id)
+        self._refresh_case_detail()
+
+    def _resolve_case_for_network_evidence(self, case_ids: Sequence[str]) -> dict[str, Any] | None:
+        for case_id in case_ids:
+            existing = self.case_rows_by_id.get(case_id)
+            if existing is not None:
+                return existing
+            if hasattr(self.manager, "get_case"):
+                try:
+                    return self.manager.get_case(case_id).model_dump(mode="json")
+                except Exception:
+                    continue
+        return None
+
+    def _handle_existing_case_choice(
+        self,
+        *,
+        open_case_ids: Sequence[str],
+        context_label: str,
+        context_details: Sequence[str] = (),
+        no_action_label: str = "continue",
+    ) -> bool:
+        if not open_case_ids:
+            return False
+        choice: bool | None = False
+        if messagebox is not None:
+            details = "\n".join(detail for detail in context_details if detail)
+            if details:
+                details = f"{details}\n\n"
+            choice = messagebox.askyesnocancel(
+                "Open Existing Case",
+                (
+                    f"{context_label} already has {len(open_case_ids)} open case(s).\n\n"
+                    f"{details}"
+                    "Yes: open the existing case\n"
+                    f"No: {no_action_label}\n"
+                    "Cancel: stop"
+                ),
+            )
+        if choice is None:
+            return True
+        if choice is True:
+            existing_case = self._resolve_case_for_network_evidence(open_case_ids)
+            if existing_case is not None:
+                self._pivot_from_case(existing_case)
+                return True
+        return False
+
+    def _handle_existing_case_guard(self, *, open_case_ids: Sequence[str], context_label: str) -> bool:
+        return self._handle_existing_case_choice(
+            open_case_ids=open_case_ids,
+            context_label=context_label,
+            context_details=[f"Open case count: {len(open_case_ids)}"],
+            no_action_label="continue",
+        )
+
+    def _choose_action_dialog(
+        self,
+        *,
+        title: str,
+        summary: str,
+        actions: Sequence[tuple[str, str, int]],
+        default_choice: str,
+        no_tk_choice: str,
+        width: int,
+        height: int,
+        min_width: int,
+        min_height: int,
+        detail_label: str,
+        detail_width: int,
     ) -> str:
-        if not related_alerts and not related_cases:
-            return "details"
         if tk is None or not hasattr(self, "root"):
-            return "alerts" if related_alerts else "cases"
+            return no_tk_choice
 
         dialog = tk.Toplevel(self.root)
-        dialog.title("Event Actions")
+        dialog.title(title)
         dialog.configure(bg="#eef4ff")
         dialog.transient(self.root)
         dialog.grab_set()
-        _center_window(dialog, 620, 260)
-        dialog.minsize(540, 220)
-        choice = "details"
-        event_id = str(event_payload.get("event_id") or "-")
-        title = str(event_payload.get("title") or "-")
-        summary = (
-            f"Event: {event_id}\n"
-            f"Title: {title}\n\n"
-            f"Related alerts: {len(related_alerts)}\n"
-            f"Related cases: {len(related_cases)}"
-        )
+        _center_window(dialog, width, height)
+        dialog.minsize(min_width, min_height)
+        choice = default_choice
         tk.Label(dialog, text=summary, bg="#eef4ff", fg="#24364a", justify="left", anchor="w", padx=16, pady=16).pack(fill="both", expand=True)
 
         controls = tk.Frame(dialog, bg="#eef4ff", padx=16, pady=12)
@@ -1624,14 +2369,54 @@ class SocDashboard:
             choice = value
             dialog.destroy()
 
-        if related_alerts:
-            tk.Button(controls, text="Open Related Alerts", command=lambda: set_choice("alerts"), width=18).pack(side="left")
-        if related_cases:
-            tk.Button(controls, text="Open Related Cases", command=lambda: set_choice("cases"), width=18).pack(side="left", padx=(8, 0))
-        tk.Button(controls, text="Event Details", command=lambda: set_choice("details"), width=14).pack(side="right")
-        dialog.bind("<Escape>", lambda _event: set_choice("details"))
+        def build_choice_handler(selected_value: str) -> Callable[[], None]:
+            return lambda: set_choice(selected_value)
+
+        for index, (label, value, button_width) in enumerate(actions):
+            tk.Button(controls, text=label, command=build_choice_handler(value), width=button_width).pack(
+                side="left",
+                padx=(8, 0) if index > 0 else (0, 0),
+            )
+        tk.Button(controls, text=detail_label, command=lambda: set_choice(default_choice), width=detail_width).pack(side="right")
+        dialog.bind("<Escape>", lambda _event: set_choice(default_choice))
         self.root.wait_window(dialog)
         return choice
+
+    def _choose_event_pivot(
+        self,
+        event_payload: dict[str, Any],
+        *,
+        related_alerts: Sequence[dict[str, Any]],
+        related_cases: Sequence[dict[str, Any]],
+    ) -> str:
+        if not related_alerts and not related_cases:
+            return "details"
+        event_id = str(event_payload.get("event_id") or "-")
+        event_title = str(event_payload.get("title") or "-")
+        summary = (
+            f"Event: {event_id}\n"
+            f"Title: {event_title}\n\n"
+            f"Related alerts: {len(related_alerts)}\n"
+            f"Related cases: {len(related_cases)}"
+        )
+        actions: list[tuple[str, str, int]] = []
+        if related_alerts:
+            actions.append(("Open Related Alerts", "alerts", 18))
+        if related_cases:
+            actions.append(("Open Related Cases", "cases", 18))
+        return self._choose_action_dialog(
+            title="Event Actions",
+            summary=summary,
+            actions=actions,
+            default_choice="details",
+            no_tk_choice="alerts" if related_alerts else "cases",
+            width=620,
+            height=260,
+            min_width=540,
+            min_height=220,
+            detail_label="Event Details",
+            detail_width=14,
+        )
 
     def _choose_alert_pivot(
         self,
@@ -1643,43 +2428,32 @@ class SocDashboard:
         has_linked_case = linked_case is not None
         if not source_events and not has_linked_case:
             return "details"
-        if tk is None or not hasattr(self, "root"):
-            return "events" if source_events else "case"
-
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Alert Actions")
-        dialog.configure(bg="#eef4ff")
-        dialog.transient(self.root)
-        dialog.grab_set()
-        _center_window(dialog, 620, 260)
-        dialog.minsize(540, 220)
-        choice = "details"
         alert_id = str(alert_payload.get("alert_id") or "-")
-        title = str(alert_payload.get("title") or "-")
+        alert_title = str(alert_payload.get("title") or "-")
         summary = (
             f"Alert: {alert_id}\n"
-            f"Title: {title}\n\n"
+            f"Title: {alert_title}\n\n"
             f"Source events: {len(source_events)}\n"
             f"Linked case: {'yes' if has_linked_case else 'no'}"
         )
-        tk.Label(dialog, text=summary, bg="#eef4ff", fg="#24364a", justify="left", anchor="w", padx=16, pady=16).pack(fill="both", expand=True)
-
-        controls = tk.Frame(dialog, bg="#eef4ff", padx=16, pady=12)
-        controls.pack(fill="x")
-
-        def set_choice(value: str) -> None:
-            nonlocal choice
-            choice = value
-            dialog.destroy()
-
+        actions: list[tuple[str, str, int]] = []
         if source_events:
-            tk.Button(controls, text="Open Source Events", command=lambda: set_choice("events"), width=18).pack(side="left")
+            actions.append(("Open Source Events", "events", 18))
         if has_linked_case:
-            tk.Button(controls, text="Open Linked Case", command=lambda: set_choice("case"), width=18).pack(side="left", padx=(8, 0))
-        tk.Button(controls, text="Alert Details", command=lambda: set_choice("details"), width=14).pack(side="right")
-        dialog.bind("<Escape>", lambda _event: set_choice("details"))
-        self.root.wait_window(dialog)
-        return choice
+            actions.append(("Open Linked Case", "case", 18))
+        return self._choose_action_dialog(
+            title="Alert Actions",
+            summary=summary,
+            actions=actions,
+            default_choice="details",
+            no_tk_choice="events" if source_events else "case",
+            width=620,
+            height=260,
+            min_width=540,
+            min_height=220,
+            detail_label="Alert Details",
+            detail_width=14,
+        )
 
     def _choose_case_activity_pivot(
         self,
@@ -1690,63 +2464,120 @@ class SocDashboard:
     ) -> str:
         if not linked_alerts and not source_events:
             return "details"
-        if tk is None or not hasattr(self, "root"):
-            return "alerts" if linked_alerts else "events"
-
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Case Activity")
-        dialog.configure(bg="#eef4ff")
-        dialog.transient(self.root)
-        dialog.grab_set()
-        _center_window(dialog, 620, 260)
-        dialog.minsize(540, 220)
-        choice = "details"
         case_id = str(case_payload.get("case_id") or "-")
-        title = str(case_payload.get("title") or "-")
+        case_title = str(case_payload.get("title") or "-")
         summary = (
             f"Case: {case_id}\n"
-            f"Title: {title}\n\n"
+            f"Title: {case_title}\n\n"
             f"Linked alerts: {len(linked_alerts)}\n"
             f"Source events: {len(source_events)}"
         )
-        tk.Label(dialog, text=summary, bg="#eef4ff", fg="#24364a", justify="left", anchor="w", padx=16, pady=16).pack(fill="both", expand=True)
-
-        controls = tk.Frame(dialog, bg="#eef4ff", padx=16, pady=12)
-        controls.pack(fill="x")
-
-        def set_choice(value: str) -> None:
-            nonlocal choice
-            choice = value
-            dialog.destroy()
-
+        actions: list[tuple[str, str, int]] = []
         if linked_alerts:
-            tk.Button(controls, text="Open Linked Alerts", command=lambda: set_choice("alerts"), width=18).pack(side="left")
+            actions.append(("Open Linked Alerts", "alerts", 18))
         if source_events:
-            tk.Button(controls, text="Open Source Events", command=lambda: set_choice("events"), width=18).pack(side="left", padx=(8, 0))
-        tk.Button(controls, text="Activity Details", command=lambda: set_choice("details"), width=14).pack(side="right")
-        dialog.bind("<Escape>", lambda _event: set_choice("details"))
-        self.root.wait_window(dialog)
-        return choice
+            actions.append(("Open Source Events", "events", 18))
+        return self._choose_action_dialog(
+            title="Case Activity",
+            summary=summary,
+            actions=actions,
+            default_choice="details",
+            no_tk_choice="alerts" if linked_alerts else "events",
+            width=620,
+            height=260,
+            min_width=540,
+            min_height=220,
+            detail_label="Activity Details",
+            detail_width=14,
+        )
+
+    def _choose_network_evidence_pivot(
+        self,
+        evidence_payload: dict[str, Any],
+        *,
+        related_events: Sequence[dict[str, Any]],
+        related_alerts: Sequence[dict[str, Any]],
+        related_cases: Sequence[dict[str, Any]],
+        packet_session: dict[str, Any] | None,
+    ) -> str:
+        has_packet_session = packet_session is not None
+        if not related_events and not related_alerts and not related_cases and not has_packet_session:
+            return "details"
+        remote_ip = str(evidence_payload.get("remote_ip") or "-")
+        summary = (
+            f"Remote IP: {remote_ip}\n"
+            f"Severity: {evidence_payload.get('severity', '-')}\n\n"
+            f"Related events: {len(related_events)}\n"
+            f"Related alerts: {len(related_alerts)}\n"
+            f"Related cases: {len(related_cases)}\n"
+            f"Open cases: {int(evidence_payload.get('open_case_count') or 0)}\n"
+            f"Packet session: {'yes' if has_packet_session else 'no'}"
+        )
+        actions: list[tuple[str, str, int]] = []
+        if related_alerts:
+            actions.append(("Open Related Alerts", "alerts", 18))
+        if related_cases:
+            actions.append(("Open Related Cases", "cases", 18))
+        if has_packet_session:
+            actions.append(("Open Packet Session", "session", 18))
+        if related_events:
+            actions.append(("Open Events", "events", 14))
+        if related_alerts:
+            no_tk_choice = "alerts"
+        elif related_cases:
+            no_tk_choice = "cases"
+        elif has_packet_session:
+            no_tk_choice = "session"
+        elif related_events:
+            no_tk_choice = "events"
+        else:
+            no_tk_choice = "details"
+        return self._choose_action_dialog(
+            title="Network Evidence Actions",
+            summary=summary,
+            actions=actions,
+            default_choice="details",
+            no_tk_choice=no_tk_choice,
+            width=640,
+            height=280,
+            min_width=560,
+            min_height=240,
+            detail_label="Evidence Details",
+            detail_width=16,
+        )
 
     def _resolve_event_alerts(self, event_payload: dict[str, Any]) -> list[dict[str, Any]]:
         event_id = str(event_payload.get("event_id") or "")
         if not event_id:
             return []
+        alert_rows = cast(dict[str, dict[str, Any]], getattr(self, "all_alert_rows_by_id", {}))
         return [
             alert
-            for alert in self.all_alert_rows_by_id.values()
+            for alert in alert_rows.values()
             if event_id in cast(list[str], alert.get("source_event_ids") or [])
         ]
 
     def _resolve_event_cases(self, event_payload: dict[str, Any]) -> list[dict[str, Any]]:
         event_id = str(event_payload.get("event_id") or "")
-        if not event_id:
+        if not event_id or not hasattr(self.manager, "list_cases"):
             return []
         all_cases = [item.model_dump(mode="json") for item in self.manager.list_cases()]
         return [
             case
             for case in all_cases
             if event_id in cast(list[str], case.get("source_event_ids") or [])
+        ]
+
+    def _resolve_packet_session_events(self, session_payload: dict[str, Any]) -> list[dict[str, Any]]:
+        if hasattr(self.manager, "resolve_packet_session_events"):
+            return [item.model_dump(mode="json") for item in self.manager.resolve_packet_session_events(session_payload)]
+        remote_ip = str(session_payload.get("remote_ip") or "")
+        if not remote_ip:
+            return []
+        return [
+            item.model_dump(mode="json")
+            for item in self.manager.query_events(text=remote_ip, limit=100)
+            if item.event_type in {"packet.monitor.finding", "packet.monitor.recovered", "network.monitor.finding", "network.monitor.recovered"}
         ]
 
     def _navigate_summary_view(
@@ -1825,6 +2656,102 @@ class SocDashboard:
         if field == "status":
             return SocCaseUpdate(status=SocCaseStatus(value))
         raise ValueError(f"Unsupported case update field: {field}")
+
+    @staticmethod
+    def _build_packet_session_case_payload(
+        session_payload: dict[str, Any],
+        *,
+        source_events: Sequence[dict[str, Any]],
+        assignee: str | None = None,
+    ) -> SocCaseCreate:
+        remote_ip = str(session_payload.get("remote_ip") or "unknown-remote")
+        sensitive_ports = [int(item) for item in cast(list[Any], session_payload.get("sensitive_ports") or [])]
+        severity = SocSeverity.critical if sensitive_ports else SocSeverity.high
+        packet_count = int(session_payload.get("total_packets") or session_payload.get("last_packet_count") or 0)
+        observables: list[str] = [remote_ip, str(session_payload.get("session_key") or f"packet-session:{remote_ip}")]
+        observables.extend(f"protocol:{item}" for item in cast(list[Any], session_payload.get("protocols") or []))
+        observables.extend(f"local_port:{int(item)}" for item in cast(list[Any], session_payload.get("local_ports") or []))
+        observables.extend(f"remote_port:{int(item)}" for item in cast(list[Any], session_payload.get("remote_ports") or [])[:10])
+        payload: dict[str, Any] = {
+            "title": f"Investigate packet session {remote_ip}",
+            "summary": f"Investigate compact packet session evidence for {remote_ip}. Total packets observed: {packet_count}.",
+            "severity": severity.value,
+            "source_event_ids": [str(item.get("event_id")) for item in source_events if item.get("event_id")],
+            "observables": observables,
+        }
+        if assignee:
+            payload["assignee"] = assignee
+        return SocCaseCreate.model_validate(payload)
+
+    @staticmethod
+    def _build_network_evidence_case_payload(
+        evidence_payload: dict[str, Any],
+        *,
+        source_events: Sequence[dict[str, Any]],
+        linked_alerts: Sequence[dict[str, Any]],
+        assignee: str | None = None,
+    ) -> SocCaseCreate:
+        remote_ip = str(evidence_payload.get("remote_ip") or "unknown-remote")
+        observation = cast(dict[str, Any], evidence_payload.get("observation") or {})
+        packet_session = cast(dict[str, Any], evidence_payload.get("packet_session") or {})
+        sensitive_ports = [int(item) for item in cast(list[Any], observation.get("sensitive_ports") or [])]
+        local_ports = [int(item) for item in cast(list[Any], observation.get("local_ports") or [])]
+        remote_ports = [int(item) for item in cast(list[Any], observation.get("remote_ports") or [])[:10]]
+        protocols = [str(item) for item in cast(list[Any], packet_session.get("protocols") or [])]
+        severity = SocSeverity.critical if sensitive_ports else SocSeverity.high
+        total_hits = int(observation.get("total_hits") or 0)
+        total_packets = int(packet_session.get("total_packets") or packet_session.get("last_packet_count") or 0)
+        observables: list[str] = [remote_ip]
+        session_key = str(packet_session.get("session_key") or "")
+        if session_key:
+            observables.append(session_key)
+        observables.extend(f"local_port:{item}" for item in local_ports)
+        observables.extend(f"remote_port:{item}" for item in remote_ports)
+        observables.extend(f"sensitive_port:{item}" for item in sensitive_ports)
+        observables.extend(f"protocol:{item}" for item in protocols)
+        payload: dict[str, Any] = {
+            "title": f"Investigate network evidence {remote_ip}",
+            "summary": f"Investigate combined network evidence for {remote_ip}. Observation hits: {total_hits}. Packet count: {total_packets}.",
+            "severity": severity.value,
+            "source_event_ids": [str(item.get("event_id")) for item in source_events if item.get("event_id")],
+            "linked_alert_ids": [str(item.get("alert_id")) for item in linked_alerts if item.get("alert_id")],
+            "observables": observables,
+        }
+        if assignee:
+            payload["assignee"] = assignee
+        return SocCaseCreate.model_validate(payload)
+
+    @staticmethod
+    def _format_detection_rule_detail(rule_payload: dict[str, Any]) -> str:
+        _related_alerts, related_cases, open_cases = SocDashboard._format_investigation_counts(rule_payload)
+        return (
+            f"Detection Rule: {rule_payload.get('rule_id', '-')}\n"
+            f"Title: {rule_payload.get('title', '-')}\n"
+            f"Category: {rule_payload.get('category', '-')}\n"
+            f"Enabled: {rule_payload.get('enabled', False)}\n"
+            f"Hit Count: {rule_payload.get('hit_count', 0)}\n"
+            f"Open Alerts: {rule_payload.get('open_alert_count', 0)}\n"
+            f"{related_cases}\n"
+            f"{open_cases}\n"
+            f"Last Match: {rule_payload.get('last_match_at') or '-'}\n"
+            f"Parameters: {json.dumps(rule_payload.get('parameters') or {}, sort_keys=True)}\n\n"
+            f"Description:\n{rule_payload.get('description', '-')}"
+        )
+
+    @staticmethod
+    def _coerce_detection_parameter(value: str) -> object:
+        normalized = value.strip()
+        if normalized.casefold() in {"true", "false"}:
+            return normalized.casefold() == "true"
+        try:
+            return int(normalized)
+        except ValueError:
+            pass
+        try:
+            return float(normalized)
+        except ValueError:
+            pass
+        return normalized
 
     @staticmethod
     def _build_alert_update_payload(*, field: str, value: str, acted_by: str | None = None) -> SocAlertUpdate:
@@ -2043,12 +2970,47 @@ class SocDashboard:
     def _format_summary_records(kind: str, rows: Sequence[dict[str, Any]], *, limit: int = 30) -> str:
         if not rows:
             return f"No {kind} records are available."
+        if kind == "packet_session":
+            lines = [f"{kind.title()} records ({len(rows)}):", ""]
+            for row in rows[:limit]:
+                lines.append(
+                    f"- {row.get('session_key', '-')}: "
+                    f"{row.get('remote_ip_display', row.get('remote_ip', '-'))} | "
+                    f"{row.get('last_seen_at', '-')} | "
+                    f"packets={row.get('total_packets', row.get('last_packet_count', 0))}"
+                )
+            remaining = len(rows) - min(len(rows), limit)
+            if remaining > 0:
+                lines.append("")
+                lines.append(f"...and {remaining} more")
+            return "\n".join(lines)
+        if kind in {"alert_group", "evidence_group"}:
+            count_key = "alert_count" if kind == "alert_group" else "event_count"
+            lines = [f"{kind.title()} records ({len(rows)}):", ""]
+            for row in rows[:limit]:
+                lines.append(
+                    f"- {row.get('group_key', '-')}: "
+                    f"{count_key}={row.get(count_key, 0)} | "
+                    f"severity={row.get('severity', '-')} | "
+                    f"open_cases={row.get('open_case_count', 0)} | "
+                    f"{row.get('title', '-')}"
+                )
+            remaining = len(rows) - min(len(rows), limit)
+            if remaining > 0:
+                lines.append("")
+                lines.append(f"...and {remaining} more")
+            return "\n".join(lines)
         labels: dict[str, tuple[str, str, str, str]] = {
             "event": ("event_id", "event_type", "severity", "title"),
             "alert": ("alert_id", "status", "severity", "title"),
             "case": ("case_id", "status", "severity", "title"),
             "host": ("key", "severity", "title", "summary"),
             "tracker_block": ("event_id", "event_type", "severity", "title"),
+            "packet_session": ("session_key", "remote_ip", "last_seen_at", "total_packets"),
+            "network_evidence": ("remote_ip", "severity", "last_seen_at", "title"),
+            "detection_rule": ("rule_id", "enabled", "hit_count", "title"),
+            "evidence_group": ("group_key", "event_count", "severity", "title"),
+            "alert_group": ("group_key", "alert_count", "severity", "title"),
         }
         id_key, first_key, second_key, title_key = labels.get(kind, ("id", "type", "severity", "title"))
         lines = [f"{kind.title()} records ({len(rows)}):", ""]
@@ -2065,12 +3027,24 @@ class SocDashboard:
 
     @staticmethod
     def _format_summary_selection_label(kind: str, row: dict[str, Any]) -> str:
+        if kind == "packet_session":
+            return (
+                f"{row.get('session_key', '-')} | "
+                f"{row.get('remote_ip_display', row.get('remote_ip', '-'))} | "
+                f"{row.get('last_seen_at', '-')} | "
+                f"{row.get('total_packets', row.get('last_packet_count', 0))}"
+            )
         labels: dict[str, tuple[str, str, str, str]] = {
             "event": ("event_id", "event_type", "severity", "title"),
             "alert": ("alert_id", "status", "severity", "title"),
             "case": ("case_id", "status", "severity", "title"),
             "host": ("key", "severity", "title", "summary"),
             "tracker_block": ("event_id", "event_type", "severity", "title"),
+            "packet_session": ("session_key", "remote_ip", "last_seen_at", "total_packets"),
+            "network_evidence": ("remote_ip", "severity", "last_seen_at", "title"),
+            "detection_rule": ("rule_id", "enabled", "hit_count", "title"),
+            "evidence_group": ("group_key", "event_count", "severity", "title"),
+            "alert_group": ("group_key", "alert_count", "severity", "title"),
         }
         id_key, first_key, second_key, title_key = labels.get(kind, ("id", "type", "severity", "title"))
         return (
@@ -2126,6 +3100,8 @@ class SocDashboard:
         summary = dashboard["summary"]
         workload = cast(dict[str, Any], dashboard.get("workload") or {})
         assignee_workload = cast(list[dict[str, Any]], dashboard.get("assignee_workload") or [])
+        packet_session_status = cast(dict[str, Any], dashboard.get("packet_session_status") or {})
+        network_evidence_status = cast(dict[str, Any], dashboard.get("network_evidence_status") or {})
         top_event_types = dashboard.get("top_event_types") or {}
         most_common = ", ".join(f"{name}: {count}" for name, count in list(top_event_types.items())[:3]) or "none"
         loaded_assignees = sum(
@@ -2137,6 +3113,8 @@ class SocDashboard:
             f"Open alerts: {summary['open_alerts']} | "
             f"Open cases: {summary['open_cases']} | "
             f"Host findings: {host_findings_count} | "
+            f"Packet sessions: {packet_session_status.get('session_count', 0)} | "
+            f"Network evidence: {network_evidence_status.get('observation_count', 0)} | "
             f"Stale assigned alerts: {workload.get('stale_assigned_alerts', 0)} | "
             f"Stale active cases: {workload.get('stale_active_cases', 0)} | "
             f"Loaded assignees: {loaded_assignees} | "
@@ -2148,6 +3126,8 @@ class SocDashboard:
         assignee_workload = cast(list[dict[str, Any]], dashboard.get("assignee_workload") or [])
         aging = cast(dict[str, dict[str, int]], dashboard.get("aging_buckets") or {})
         tracker_status = cast(dict[str, Any], dashboard.get("tracker_feed_status") or {})
+        packet_session_status = cast(dict[str, Any], dashboard.get("packet_session_status") or {})
+        network_evidence_status = cast(dict[str, Any], dashboard.get("network_evidence_status") or {})
         alert_aging = aging.get("alerts") or {}
         case_aging = aging.get("cases") or {}
         lines = ["Assignee Summary:"]
@@ -2183,9 +3163,110 @@ class SocDashboard:
                 f"- stale: {tracker_status.get('is_stale', False)}",
                 f"- last result: {tracker_status.get('last_refresh_result') or 'unknown'}",
                 f"- last error: {tracker_status.get('last_error') or 'none'}",
+                "",
+                "Packet Sessions:",
+                f"- session count: {packet_session_status.get('session_count', 0)}",
             ]
         )
+        recent_sessions = cast(list[dict[str, Any]], packet_session_status.get("recent_sessions") or [])
+        if recent_sessions:
+            lines.extend(
+                f"- {item.get('remote_ip_display', item.get('remote_ip', '-'))}: packets={item.get('total_packets', item.get('last_packet_count', 0))}, last seen={item.get('last_seen_at', '-')}"
+                for item in recent_sessions[:5]
+            )
+        else:
+            lines.append("- none")
+        lines.extend(
+            [
+                "",
+                "Network Evidence:",
+                f"- observation count: {network_evidence_status.get('observation_count', 0)}",
+            ]
+        )
+        recent_evidence = cast(list[dict[str, Any]], network_evidence_status.get("combined_evidence") or [])
+        if recent_evidence:
+            lines.extend(
+                f"- {item.get('remote_ip', '-')}: severity={item.get('severity', '-')}, last seen={item.get('last_seen_at', '-')}"
+                for item in recent_evidence[:5]
+            )
+        else:
+            lines.append("- none")
         return "\n".join(lines)
+
+    @staticmethod
+    def _format_bullet_list(items: Sequence[Any]) -> str:
+        return "\n".join(f"- {item}" for item in items) if items else "- none"
+
+    @staticmethod
+    def _format_investigation_counts(payload: dict[str, Any]) -> tuple[str, str, str]:
+        return (
+            f"Related Alerts: {len(cast(list[str], payload.get('related_alert_ids') or []))}",
+            f"Related Cases: {len(cast(list[str], payload.get('related_case_ids') or []))}",
+            f"Open Cases: {int(payload.get('open_case_count') or 0)}",
+        )
+
+    @staticmethod
+    def _format_endpoint_samples(samples: Sequence[dict[str, Any]], *, include_protocol: bool = False) -> str:
+        if not samples:
+            return "- none"
+        lines: list[str] = []
+        for item in samples[:10]:
+            prefix = f"{item.get('protocol', '-')} " if include_protocol else ""
+            lines.append(
+                f"- {prefix}{item.get('remote_ip', '-')}:{item.get('remote_port', '-')} -> "
+                f"{item.get('local_ip', '-')}:{item.get('local_port', '-')}"
+            )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_packet_session_detail(session_payload: dict[str, Any]) -> str:
+        sample_endpoints = cast(list[dict[str, Any]], session_payload.get("sample_packet_endpoints") or [])
+        sample_lines = SocDashboard._format_endpoint_samples(sample_endpoints)
+        related_alerts, related_cases, open_cases = SocDashboard._format_investigation_counts(session_payload)
+        return (
+            f"Packet Session: {session_payload.get('session_key', '-')}\n"
+            f"Remote IP: {session_payload.get('remote_ip', '-')}\n"
+            f"Protocols: {session_payload.get('protocols', [])}\n"
+            f"Local IPs: {session_payload.get('local_ips', [])}\n"
+            f"Local Ports: {session_payload.get('local_ports', [])}\n"
+            f"Remote Ports: {session_payload.get('remote_ports', [])}\n"
+            f"Sensitive Ports: {session_payload.get('sensitive_ports', [])}\n"
+            f"First Seen: {session_payload.get('first_seen_at', '-')}\n"
+            f"Last Seen: {session_payload.get('last_seen_at', '-')}\n"
+            f"{related_alerts}\n"
+            f"{related_cases}\n"
+            f"{open_cases}\n"
+            f"Sightings: {session_payload.get('sightings', 0)}\n"
+            f"Total Packets: {session_payload.get('total_packets', 0)}\n"
+            f"Max Packet Count: {session_payload.get('max_packet_count', 0)}\n"
+            f"Last Packet Count: {session_payload.get('last_packet_count', 0)}\n\n"
+            f"Sample Endpoints:\n{sample_lines}"
+        )
+
+    @staticmethod
+    def _format_network_evidence_detail(evidence_payload: dict[str, Any]) -> str:
+        observation = cast(dict[str, Any], evidence_payload.get("observation") or {})
+        packet_session = cast(dict[str, Any], evidence_payload.get("packet_session") or {})
+        sample_connections = cast(list[dict[str, Any]], observation.get("sample_connections") or [])
+        sample_sessions = cast(list[dict[str, Any]], packet_session.get("sample_packet_endpoints") or [])
+        connection_lines = SocDashboard._format_endpoint_samples(sample_connections)
+        session_lines = SocDashboard._format_endpoint_samples(sample_sessions, include_protocol=True)
+        related_alerts, related_cases, open_cases = SocDashboard._format_investigation_counts(evidence_payload)
+        return (
+            f"Network Evidence: {evidence_payload.get('remote_ip', '-')}\n"
+            f"Severity: {evidence_payload.get('severity', '-')}\n"
+            f"Last Seen: {evidence_payload.get('last_seen_at', '-')}\n"
+            f"{related_alerts}\n"
+            f"{related_cases}\n"
+            f"{open_cases}\n"
+            f"Observation Sightings: {observation.get('sightings', 0)}\n"
+            f"Observation Hits: {observation.get('total_hits', 0)}\n"
+            f"Observation Ports: {', '.join(str(item) for item in cast(list[int], observation.get('local_ports') or [])) or '-'}\n"
+            f"Session Packets: {packet_session.get('total_packets', packet_session.get('last_packet_count', 0))}\n"
+            f"Session Protocols: {', '.join(str(item) for item in cast(list[str], packet_session.get('protocols') or [])) or '-'}\n\n"
+            f"Sample Connections:\n{connection_lines}\n\n"
+            f"Sample Session Endpoints:\n{session_lines}"
+        )
 
     def _refresh_alert_detail(self) -> None:
         alert_id = self._selected_tree_item_id(self.alert_tree)
@@ -2304,109 +3385,341 @@ class SocDashboard:
         target.write_text(content, encoding="utf-8")
         return target
 
-    def copy_selected_alert_detail(self) -> None:
-        alert_id = self._selected_tree_item_id(self.alert_tree)
-        if alert_id is None:
-            self._copy_text_to_clipboard("", title="Copy Alert Detail", empty_message="Select an alert before copying its detail.")
-            return
-        alert_payload = self.alert_rows_by_id.get(alert_id)
-        self._copy_text_to_clipboard(
-            self._format_alert_detail(alert_payload) if alert_payload is not None else "",
-            title="Copy Alert Detail",
-            empty_message="The selected alert is no longer available.",
-        )
+    def _selected_record_detail(
+        self,
+        *,
+        tree: Any,
+        rows_by_id: dict[str, dict[str, Any]],
+        formatter: Callable[[dict[str, Any]], str],
+    ) -> tuple[str | None, str]:
+        record_id = self._selected_tree_item_id(tree)
+        if record_id is None:
+            return None, ""
+        payload = rows_by_id.get(record_id)
+        if payload is None:
+            return record_id, ""
+        return record_id, formatter(payload)
 
-    def save_selected_alert_detail(self) -> None:
-        alert_id = self._selected_tree_item_id(self.alert_tree)
-        if alert_id is None:
+    def _require_selected_record(
+        self,
+        *,
+        tree: Any,
+        rows_by_id: dict[str, dict[str, Any]],
+        missing_selection_title: str,
+        missing_selection_message: str,
+        missing_record_title: str,
+        missing_record_message: str,
+    ) -> tuple[str, dict[str, Any]] | None:
+        record_id = self._selected_tree_item_id(tree)
+        if record_id is None:
             if messagebox is not None:
-                messagebox.showwarning("Save Alert Detail", "Select an alert before saving its detail.")
-            return
-        alert_payload = self.alert_rows_by_id.get(alert_id)
-        if alert_payload is None:
+                messagebox.showwarning(missing_selection_title, missing_selection_message)
+            return None
+        payload = rows_by_id.get(record_id)
+        if payload is None:
             if messagebox is not None:
-                messagebox.showwarning("Save Alert Detail", "The selected alert is no longer available.")
-            return
-        target = self._write_dashboard_export(prefix=f"alert-{alert_id}", content=self._format_alert_detail(alert_payload))
-        if messagebox is not None:
-            messagebox.showinfo("Save Alert Detail", f"Saved alert detail to {target}.")
+                messagebox.showwarning(missing_record_title, missing_record_message)
+            return None
+        return record_id, payload
 
-    def copy_selected_case_detail(self) -> None:
-        case_id = self._selected_tree_item_id(self.case_tree)
-        if case_id is None:
-            self._copy_text_to_clipboard("", title="Copy Case Detail", empty_message="Select a case before copying its detail.")
-            return
-        case_payload = self.case_rows_by_id.get(case_id)
-        self._copy_text_to_clipboard(
-            self._format_case_detail(case_payload) if case_payload is not None else "",
-            title="Copy Case Detail",
-            empty_message="The selected case is no longer available.",
-        )
-
-    def save_selected_case_detail(self) -> None:
-        case_id = self._selected_tree_item_id(self.case_tree)
-        if case_id is None:
-            if messagebox is not None:
-                messagebox.showwarning("Save Case Detail", "Select a case before saving its detail.")
-            return
-        case_payload = self.case_rows_by_id.get(case_id)
-        if case_payload is None:
-            if messagebox is not None:
-                messagebox.showwarning("Save Case Detail", "The selected case is no longer available.")
-            return
-        target = self._write_dashboard_export(prefix=f"case-{case_id}", content=self._format_case_detail(case_payload))
-        if messagebox is not None:
-            messagebox.showinfo("Save Case Detail", f"Saved case detail to {target}.")
-
-    def copy_selected_host_detail(self) -> None:
-        finding_key = self._selected_tree_item_id(self.host_tree)
-        if finding_key is None:
-            self._copy_text_to_clipboard("", title="Copy Host Detail", empty_message="Select a host finding before copying its detail.")
-            return
-        finding_payload = self.host_rows_by_key.get(finding_key)
-        self._copy_text_to_clipboard(
-            self._format_host_detail(finding_payload) if finding_payload is not None else "",
-            title="Copy Host Detail",
-            empty_message="The selected host finding is no longer available.",
-        )
-
-    def save_selected_host_detail(self) -> None:
-        finding_key = self._selected_tree_item_id(self.host_tree)
-        if finding_key is None:
-            if messagebox is not None:
-                messagebox.showwarning("Save Host Detail", "Select a host finding before saving its detail.")
-            return
-        finding_payload = self.host_rows_by_key.get(finding_key)
-        if finding_payload is None:
-            if messagebox is not None:
-                messagebox.showwarning("Save Host Detail", "The selected host finding is no longer available.")
-            return
-        target = self._write_dashboard_export(prefix=f"host-{finding_key}", content=self._format_host_detail(finding_payload))
-        if messagebox is not None:
-            messagebox.showinfo("Save Host Detail", f"Saved host detail to {target}.")
-
-    def open_linked_case_from_alert_detail(self) -> None:
-        alert_id = self._selected_tree_item_id(self.alert_tree)
-        if alert_id is None:
-            if messagebox is not None:
-                messagebox.showwarning("Open Linked Case", "Select an alert before opening its linked case.")
-            return
-        alert_payload = self.alert_rows_by_id.get(alert_id)
-        if alert_payload is None:
-            if messagebox is not None:
-                messagebox.showwarning("Open Linked Case", "The selected alert is no longer available.")
-            return
+    def _open_linked_case_for_alert(
+        self,
+        *,
+        alert_payload: dict[str, Any],
+        dialog_title: str,
+        missing_link_message: str,
+        missing_case_message: str,
+    ) -> bool:
         linked_case_id = str(alert_payload.get("linked_case_id") or "")
         if not linked_case_id:
             if messagebox is not None:
-                messagebox.showinfo("Open Linked Case", "The selected alert is not linked to a case.")
-            return
+                messagebox.showinfo(dialog_title, missing_link_message)
+            return False
         linked_case = self.case_rows_by_id.get(linked_case_id)
         if linked_case is None:
             if messagebox is not None:
-                messagebox.showwarning("Open Linked Case", "The linked case is not available in the current view.")
-            return
+                messagebox.showwarning(dialog_title, missing_case_message)
+            return False
         self._pivot_from_case(linked_case)
+        return True
+
+    def _copy_selected_detail(
+        self,
+        *,
+        tree: Any,
+        rows_by_id: dict[str, dict[str, Any]],
+        formatter: Callable[[dict[str, Any]], str],
+        title: str,
+        missing_selection_message: str,
+        missing_record_message: str,
+    ) -> None:
+        record_id, detail = self._selected_record_detail(tree=tree, rows_by_id=rows_by_id, formatter=formatter)
+        self._copy_text_to_clipboard(
+            detail,
+            title=title,
+            empty_message=missing_selection_message if record_id is None else missing_record_message,
+        )
+
+    def _save_selected_detail(
+        self,
+        *,
+        tree: Any,
+        rows_by_id: dict[str, dict[str, Any]],
+        formatter: Callable[[dict[str, Any]], str],
+        dialog_title: str,
+        missing_selection_message: str,
+        missing_record_message: str,
+        prefix_template: str,
+        success_message_template: str,
+    ) -> None:
+        record_id, detail = self._selected_record_detail(tree=tree, rows_by_id=rows_by_id, formatter=formatter)
+        if record_id is None:
+            if messagebox is not None:
+                messagebox.showwarning(dialog_title, missing_selection_message)
+            return
+        if not detail:
+            if messagebox is not None:
+                messagebox.showwarning(dialog_title, missing_record_message)
+            return
+        target = self._write_dashboard_export(prefix=prefix_template.format(record_id=record_id), content=detail)
+        if messagebox is not None:
+            messagebox.showinfo(dialog_title, success_message_template.format(target=target))
+
+    def _apply_selected_record_update(
+        self,
+        *,
+        tree: Any,
+        rows_by_id: dict[str, dict[str, Any]],
+        missing_selection_title: str,
+        missing_selection_message: str,
+        missing_record_title: str,
+        missing_record_message: str,
+        update: Callable[[str, dict[str, Any]], Any],
+        refresh_detail: Callable[[], None],
+        success_title: str | None = None,
+        success_message: str | Callable[[str], str] | None = None,
+    ) -> None:
+        selected = self._require_selected_record(
+            tree=tree,
+            rows_by_id=rows_by_id,
+            missing_selection_title=missing_selection_title,
+            missing_selection_message=missing_selection_message,
+            missing_record_title=missing_record_title,
+            missing_record_message=missing_record_message,
+        )
+        if selected is None:
+            return
+        record_id, payload = selected
+        update(record_id, payload)
+        if success_title is not None and success_message is not None and messagebox is not None:
+            body = success_message(record_id) if callable(success_message) else success_message
+            messagebox.showinfo(success_title, body)
+        self.refresh()
+        tree.selection_set(record_id)
+        refresh_detail()
+
+    def _prompt_selected_record_update(
+        self,
+        *,
+        tree: Any,
+        rows_by_id: dict[str, dict[str, Any]],
+        missing_selection_title: str,
+        missing_selection_message: str,
+        missing_record_title: str,
+        missing_record_message: str,
+        prompt_title: str,
+        prompt_message: str,
+        apply_update: Callable[[str, str, dict[str, Any]], Any],
+        refresh_detail: Callable[[], None],
+    ) -> None:
+        selected = self._require_selected_record(
+            tree=tree,
+            rows_by_id=rows_by_id,
+            missing_selection_title=missing_selection_title,
+            missing_selection_message=missing_selection_message,
+            missing_record_title=missing_record_title,
+            missing_record_message=missing_record_message,
+        )
+        if selected is None or simpledialog is None:
+            return
+        record_id, payload = selected
+        value = simpledialog.askstring(prompt_title, prompt_message, parent=self.root)
+        if value is None or not value.strip():
+            return
+        apply_update(record_id, value.strip(), payload)
+        self.refresh()
+        tree.selection_set(record_id)
+        refresh_detail()
+
+    def _apply_bulk_record_updates(
+        self,
+        *,
+        record_ids: Sequence[str],
+        empty_title: str,
+        empty_message: str,
+        apply_update: Callable[[str], Any],
+        success_title: str,
+        success_message: Callable[[int], str],
+    ) -> int:
+        valid_ids = [record_id for record_id in record_ids if record_id]
+        if not valid_ids:
+            if messagebox is not None:
+                messagebox.showinfo(empty_title, empty_message)
+            return 0
+        for record_id in valid_ids:
+            apply_update(record_id)
+        if messagebox is not None:
+            messagebox.showinfo(success_title, success_message(len(valid_ids)))
+        self.refresh()
+        return len(valid_ids)
+
+    def _prompt_bulk_assignee_update(
+        self,
+        *,
+        record_ids: Sequence[str],
+        empty_title: str,
+        empty_message: str,
+        prompt_title: str,
+        prompt_message: str,
+        apply_update: Callable[[str, str], Any],
+        success_title: str,
+        success_message: Callable[[int], str],
+    ) -> int:
+        valid_ids = [record_id for record_id in record_ids if record_id]
+        if not valid_ids:
+            if messagebox is not None:
+                messagebox.showinfo(empty_title, empty_message)
+            return 0
+        if simpledialog is None:
+            return 0
+        assignee = simpledialog.askstring(prompt_title, prompt_message, parent=self.root)
+        if assignee is None or not assignee.strip():
+            return 0
+        assignee_value = assignee.strip()
+        for record_id in valid_ids:
+            apply_update(record_id, assignee_value)
+        if messagebox is not None:
+            messagebox.showinfo(success_title, success_message(len(valid_ids)))
+        self.refresh()
+        return len(valid_ids)
+
+    def _promote_alert_rows_to_selected_case(
+        self,
+        *,
+        rows: Sequence[dict[str, Any]],
+        missing_case_title: str,
+        missing_case_message: str,
+        success_title: str,
+        success_message: Callable[[int, str], str],
+    ) -> int:
+        case_id = self._selected_tree_item_id(self.case_tree)
+        if case_id is None:
+            if messagebox is not None:
+                messagebox.showwarning(missing_case_title, missing_case_message)
+            return 0
+        actor = self._current_analyst_identity()
+        promoted = 0
+        for row in rows:
+            alert_id = str(row.get("alert_id") or "")
+            if not alert_id:
+                continue
+            alert = self.manager.get_alert(alert_id)
+            self.manager.promote_alert_to_case(
+                alert_id,
+                payload=self._build_promote_payload(alert, acted_by=actor, existing_case_id=case_id),
+            )
+            promoted += 1
+        if messagebox is not None:
+            messagebox.showinfo(success_title, success_message(promoted, case_id))
+        self.refresh()
+        self.case_tree.selection_set(case_id)
+        self._refresh_case_detail()
+        return promoted
+
+    def copy_selected_alert_detail(self) -> None:
+        self._copy_selected_detail(
+            tree=self.alert_tree,
+            rows_by_id=self.alert_rows_by_id,
+            formatter=self._format_alert_detail,
+            title="Copy Alert Detail",
+            missing_selection_message="Select an alert before copying its detail.",
+            missing_record_message="The selected alert is no longer available.",
+        )
+
+    def save_selected_alert_detail(self) -> None:
+        self._save_selected_detail(
+            tree=self.alert_tree,
+            rows_by_id=self.alert_rows_by_id,
+            formatter=self._format_alert_detail,
+            dialog_title="Save Alert Detail",
+            missing_selection_message="Select an alert before saving its detail.",
+            missing_record_message="The selected alert is no longer available.",
+            prefix_template="alert-{record_id}",
+            success_message_template="Saved alert detail to {target}.",
+        )
+
+    def copy_selected_case_detail(self) -> None:
+        self._copy_selected_detail(
+            tree=self.case_tree,
+            rows_by_id=self.case_rows_by_id,
+            formatter=self._format_case_detail,
+            title="Copy Case Detail",
+            missing_selection_message="Select a case before copying its detail.",
+            missing_record_message="The selected case is no longer available.",
+        )
+
+    def save_selected_case_detail(self) -> None:
+        self._save_selected_detail(
+            tree=self.case_tree,
+            rows_by_id=self.case_rows_by_id,
+            formatter=self._format_case_detail,
+            dialog_title="Save Case Detail",
+            missing_selection_message="Select a case before saving its detail.",
+            missing_record_message="The selected case is no longer available.",
+            prefix_template="case-{record_id}",
+            success_message_template="Saved case detail to {target}.",
+        )
+
+    def copy_selected_host_detail(self) -> None:
+        self._copy_selected_detail(
+            tree=self.host_tree,
+            rows_by_id=self.host_rows_by_key,
+            formatter=self._format_host_detail,
+            title="Copy Host Detail",
+            missing_selection_message="Select a host finding before copying its detail.",
+            missing_record_message="The selected host finding is no longer available.",
+        )
+
+    def save_selected_host_detail(self) -> None:
+        self._save_selected_detail(
+            tree=self.host_tree,
+            rows_by_id=self.host_rows_by_key,
+            formatter=self._format_host_detail,
+            dialog_title="Save Host Detail",
+            missing_selection_message="Select a host finding before saving its detail.",
+            missing_record_message="The selected host finding is no longer available.",
+            prefix_template="host-{record_id}",
+            success_message_template="Saved host detail to {target}.",
+        )
+
+    def open_linked_case_from_alert_detail(self) -> None:
+        selected = self._require_selected_record(
+            tree=self.alert_tree,
+            rows_by_id=self.alert_rows_by_id,
+            missing_selection_title="Open Linked Case",
+            missing_selection_message="Select an alert before opening its linked case.",
+            missing_record_title="Open Linked Case",
+            missing_record_message="The selected alert is no longer available.",
+        )
+        if selected is None:
+            return
+        _alert_id, alert_payload = selected
+        self._open_linked_case_for_alert(
+            alert_payload=alert_payload,
+            dialog_title="Open Linked Case",
+            missing_link_message="The selected alert is not linked to a case.",
+            missing_case_message="The linked case is not available in the current view.",
+        )
 
     def export_current_dashboard_view(self) -> None:
         dashboard = getattr(self, "_latest_dashboard", {}) or {}
@@ -2464,8 +3777,7 @@ class SocDashboard:
 
     @staticmethod
     def _format_alert_detail(alert_payload: dict[str, Any]) -> str:
-        notes = alert_payload.get("notes") or []
-        note_lines = "\n".join(f"- {item}" for item in notes) if notes else "- none"
+        note_lines = SocDashboard._format_bullet_list(cast(list[Any], alert_payload.get("notes") or []))
         source_event_ids = alert_payload.get("source_event_ids") or []
         return (
             f"Alert: {alert_payload.get('alert_id', '-')}\n"
@@ -2544,10 +3856,8 @@ class SocDashboard:
 
     @staticmethod
     def _format_case_detail(case_payload: dict[str, Any]) -> str:
-        notes = case_payload.get("notes") or []
-        observables = case_payload.get("observables") or []
-        note_lines = "\n".join(f"- {item}" for item in notes) if notes else "- none"
-        observable_lines = "\n".join(f"- {item}" for item in observables) if observables else "- none"
+        note_lines = SocDashboard._format_bullet_list(cast(list[Any], case_payload.get("notes") or []))
+        observable_lines = SocDashboard._format_bullet_list(cast(list[Any], case_payload.get("observables") or []))
         return (
             f"Case: {case_payload.get('case_id', '-')}\n"
             f"Title: {case_payload.get('title', '-')}\n"
