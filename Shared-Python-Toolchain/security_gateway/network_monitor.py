@@ -69,6 +69,7 @@ class NetworkMonitor:
                 "last_checked_at": _utc_now().isoformat(),
                 "snapshot": snapshot,
                 "active_findings": [asdict(finding) for finding in active_findings],
+                "connection_history": self._updated_connection_history(snapshot, previous_state=previous_state),
             }
         )
         return {
@@ -77,6 +78,17 @@ class NetworkMonitor:
             "emitted_findings": [asdict(finding) for finding in emitted_findings],
             "resolved_findings": [asdict(finding) for finding in resolved_findings],
         }
+
+    def list_recent_observations(self, *, limit: int = 50, remote_ip: str | None = None) -> list[dict[str, Any]]:
+        state = self._read_state()
+        connection_history = state.get("connection_history") or {}
+        if not isinstance(connection_history, dict):
+            return []
+        observations = [payload for payload in connection_history.values() if isinstance(payload, dict)]
+        if remote_ip is not None:
+            observations = [item for item in observations if str(item.get("remote_ip") or "") == remote_ip]
+        observations.sort(key=lambda item: self._sortable_timestamp(item.get("last_seen_at")), reverse=True)
+        return observations[: max(1, limit)]
 
     def collect_snapshot(self) -> dict[str, Any]:
         result = self._runner(["netstat", "-nao", "-p", "tcp"])
@@ -348,3 +360,70 @@ class NetworkMonitor:
             tags=["network", "recovery"],
             resolved=True,
         )
+
+    def _updated_connection_history(self, snapshot: dict[str, Any], *, previous_state: dict[str, Any]) -> dict[str, Any]:
+        history = previous_state.get("connection_history") or {}
+        next_history: dict[str, Any] = {
+            remote_ip: payload
+            for remote_ip, payload in history.items()
+            if isinstance(remote_ip, str) and isinstance(payload, dict)
+        }
+        checked_at = str(snapshot.get("checked_at") or _utc_now().isoformat())
+        observations = snapshot.get("suspicious_observations") or []
+        for item in observations:
+            if not isinstance(item, dict):
+                continue
+            remote_ip = str(item.get("remote_ip") or "")
+            if not remote_ip:
+                continue
+            previous = next_history.get(remote_ip)
+            if not isinstance(previous, dict):
+                previous = {}
+            next_history[remote_ip] = {
+                "remote_ip": remote_ip,
+                "states": sorted({*self._as_string_list(previous.get("states")), *self._as_string_list(item.get("states"))}),
+                "state_counts": self._merge_state_counts(previous.get("state_counts"), item.get("state_counts")),
+                "local_ports": sorted({*self._as_int_list(previous.get("local_ports")), *self._as_int_list(item.get("local_ports"))}),
+                "remote_ports": sorted({*self._as_int_list(previous.get("remote_ports")), *self._as_int_list(item.get("remote_ports"))})[-20:],
+                "sensitive_ports": sorted({*self._as_int_list(previous.get("sensitive_ports")), *self._as_int_list(item.get("sensitive_ports"))}),
+                "first_seen_at": str(previous.get("first_seen_at") or checked_at),
+                "last_seen_at": checked_at,
+                "sightings": int(previous.get("sightings") or 0) + 1,
+                "total_hits": int(previous.get("total_hits") or 0) + int(item.get("hit_count") or 0),
+                "max_hit_count": max(int(previous.get("max_hit_count") or 0), int(item.get("hit_count") or 0)),
+                "last_hit_count": int(item.get("hit_count") or 0),
+                "sample_connections": list(item.get("sample_connections") or [])[: self._evidence_sample_limit],
+            }
+        return next_history
+
+    @staticmethod
+    def _merge_state_counts(previous: Any, current: Any) -> dict[str, int]:
+        merged: dict[str, int] = {}
+        if isinstance(previous, dict):
+            for key, value in previous.items():
+                merged[str(key)] = int(value)
+        if isinstance(current, dict):
+            for key, value in current.items():
+                merged[str(key)] = max(merged.get(str(key), 0), int(value))
+        return merged
+
+    @staticmethod
+    def _as_string_list(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(item) for item in value]
+
+    @staticmethod
+    def _as_int_list(value: Any) -> list[int]:
+        if not isinstance(value, list):
+            return []
+        return [int(item) for item in value]
+
+    @staticmethod
+    def _sortable_timestamp(value: Any) -> datetime:
+        if not isinstance(value, str):
+            return datetime.min.replace(tzinfo=UTC)
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return datetime.min.replace(tzinfo=UTC)

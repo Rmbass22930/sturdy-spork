@@ -3,6 +3,7 @@ param(
     [string]$Python = "py",
     [string[]]$PythonArgs = @("-3.13"),
     [string]$OutputRoot = "$PSScriptRoot\..\dist",
+    [string]$InstallerSpec = "SecurityGatewayInstaller.spec",
     [switch]$PublishFullBundle
 )
 
@@ -19,12 +20,57 @@ $uninstallWork = Join-Path $stageRoot "uninstall-build"
 $installerDist = Join-Path $stageRoot "installer-dist"
 $installerWork = Join-Path $stageRoot "installer-build"
 
-$finalApp = Join-Path $outputRoot "SecurityGateway.exe"
-$finalUninstaller = Join-Path $outputRoot "SecurityGateway-Uninstall.exe"
-$finalInstaller = Join-Path $outputRoot "SecurityGatewayInstaller.exe"
+$finalApp = Join-Path $outputRoot "SecurityGateway"
+$finalUninstaller = Join-Path $outputRoot "SecurityGateway-Uninstall"
+$installerName = [System.IO.Path]::GetFileNameWithoutExtension($InstallerSpec) -replace '\.spec$',''
+if ([string]::IsNullOrWhiteSpace($installerName)) {
+    $installerName = "SecurityGatewayInstaller"
+}
+$finalInstaller = Join-Path $outputRoot ($installerName + ".exe")
+$finalInstallerDir = Join-Path $outputRoot $installerName
 $finalBundle = Join-Path $outputRoot "SecurityGateway-build.zip"
 $finalBundleUnpack = Join-Path $outputRoot "SecurityGateway-build-unpack.cmd"
 $finalManifest = Join-Path $outputRoot "SecurityGateway-build-manifest.json"
+
+function Resolve-BuiltExecutablePath {
+    param(
+        [string]$DistRoot,
+        [string]$Name
+    )
+    $onedirPath = Join-Path (Join-Path $DistRoot $Name) ($Name + ".exe")
+    if (Test-Path -LiteralPath $onedirPath) {
+        return [System.IO.Path]::GetFullPath($onedirPath)
+    }
+    $onefilePath = Join-Path $DistRoot ($Name + ".exe")
+    if (Test-Path -LiteralPath $onefilePath) {
+        return [System.IO.Path]::GetFullPath($onefilePath)
+    }
+    throw "Expected executable was not created for $Name under $DistRoot"
+}
+
+function Publish-BuiltArtifact {
+    param(
+        [string]$DistRoot,
+        [string]$Name,
+        [string]$FileDestination,
+        [string]$DirectoryDestination
+    )
+    $sourceDir = Join-Path $DistRoot $Name
+    if (Test-Path -LiteralPath $sourceDir) {
+        Remove-Item -LiteralPath $FileDestination -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $DirectoryDestination -Force -Recurse -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Force -Path $DirectoryDestination | Out-Null
+        Get-ChildItem -LiteralPath $sourceDir -Force | Copy-Item -Destination $DirectoryDestination -Recurse -Force
+        return Resolve-BuiltExecutablePath -DistRoot $DistRoot -Name $Name
+    }
+    $sourceFile = Join-Path $DistRoot ($Name + ".exe")
+    if (Test-Path -LiteralPath $sourceFile) {
+        Remove-Item -LiteralPath $DirectoryDestination -Force -Recurse -ErrorAction SilentlyContinue
+        Copy-Item -Force $sourceFile $FileDestination
+        return [System.IO.Path]::GetFullPath($FileDestination)
+    }
+    throw "Expected artifact was not created for $Name under $DistRoot"
+}
 
 New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
 Remove-Item -LiteralPath $appDist,$appWork,$uninstallDist,$uninstallWork,$installerDist,$installerWork -Force -Recurse -ErrorAction SilentlyContinue
@@ -45,10 +91,7 @@ try {
         throw "SecurityGateway payload build failed with exit code $LASTEXITCODE"
     }
 
-    $payloadPath = Join-Path $appDist "SecurityGateway.exe"
-    if (-not (Test-Path $payloadPath)) {
-        throw "Expected SecurityGateway payload was not created: $payloadPath"
-    }
+    $payloadPath = Resolve-BuiltExecutablePath -DistRoot $appDist -Name "SecurityGateway"
 
     & $Python @PythonArgs -m PyInstaller `
         --noconfirm `
@@ -61,10 +104,7 @@ try {
         throw "SecurityGateway uninstaller build failed with exit code $LASTEXITCODE"
     }
 
-    $uninstallerPath = Join-Path $uninstallDist "SecurityGateway-Uninstall.exe"
-    if (-not (Test-Path $uninstallerPath)) {
-        throw "Expected SecurityGateway uninstaller was not created: $uninstallerPath"
-    }
+    $uninstallerPath = Resolve-BuiltExecutablePath -DistRoot $uninstallDist -Name "SecurityGateway-Uninstall"
 
     $env:SECURITY_GATEWAY_PAYLOAD_PATH = $payloadPath
     $env:SECURITY_GATEWAY_UNINSTALLER_PATH = $uninstallerPath
@@ -73,27 +113,40 @@ try {
         --clean `
         --distpath $installerDist `
         --workpath $installerWork `
-        (Join-Path $projectRoot "SecurityGatewayInstaller.spec")
+        (Join-Path $projectRoot $InstallerSpec)
 
     if ($LASTEXITCODE -ne 0) {
         throw "SecurityGateway installer build failed with exit code $LASTEXITCODE"
     }
 
-    $installerPath = Join-Path $installerDist "SecurityGatewayInstaller.exe"
-    if (-not (Test-Path $installerPath)) {
-        throw "Expected SecurityGateway installer was not created: $installerPath"
-    }
-
-    Copy-Item -Force $installerPath $finalInstaller
+    $installerPath = Publish-BuiltArtifact `
+        -DistRoot $installerDist `
+        -Name $installerName `
+        -FileDestination $finalInstaller `
+        -DirectoryDestination $finalInstallerDir
 
     if ($PublishFullBundle) {
-        Copy-Item -Force $payloadPath $finalApp
-        Copy-Item -Force $uninstallerPath $finalUninstaller
+        $publishedPayloadPath = Publish-BuiltArtifact `
+            -DistRoot $appDist `
+            -Name "SecurityGateway" `
+            -FileDestination (Join-Path $outputRoot "SecurityGateway.exe") `
+            -DirectoryDestination $finalApp
+        $publishedUninstallerPath = Publish-BuiltArtifact `
+            -DistRoot $uninstallDist `
+            -Name "SecurityGateway-Uninstall" `
+            -FileDestination (Join-Path $outputRoot "SecurityGateway-Uninstall.exe") `
+            -DirectoryDestination $finalUninstaller
 
         if (Test-Path -LiteralPath $finalBundle) {
             Remove-Item -LiteralPath $finalBundle -Force
         }
-        tar -a -c -f $finalBundle -C $outputRoot "SecurityGateway.exe" "SecurityGateway-Uninstall.exe" "SecurityGatewayInstaller.exe"
+        $bundleItems = @("SecurityGateway", "SecurityGateway-Uninstall")
+        if (Test-Path -LiteralPath $finalInstallerDir) {
+            $bundleItems += $installerName
+        } else {
+            $bundleItems += ($installerName + ".exe")
+        }
+        tar -a -c -f $finalBundle -C $outputRoot @bundleItems
         if ($LASTEXITCODE -ne 0) {
             throw "SecurityGateway bundle creation failed with exit code $LASTEXITCODE"
         }
@@ -130,7 +183,7 @@ exit /b 0
             $gitCommit = $null
         }
 
-        $files = @($finalApp, $finalUninstaller, $finalInstaller, $finalBundle)
+        $files = @($publishedPayloadPath, $publishedUninstallerPath, $installerPath, $finalBundle)
         $manifest = [ordered]@{
             build_name = "SecurityGateway"
             built_at_utc = (Get-Date).ToUniversalTime().ToString("o")
@@ -166,7 +219,7 @@ finally {
 Write-Host ""
 Write-Host "Build complete:" -ForegroundColor Green
 if ($PublishFullBundle) {
-    Get-Item $finalApp, $finalUninstaller, $finalInstaller, $finalBundle, $finalManifest | Select-Object FullName, Length, LastWriteTime
+    Get-Item $publishedPayloadPath, $publishedUninstallerPath, $installerPath, $finalBundle, $finalManifest | Select-Object FullName, Length, LastWriteTime
 } else {
-    Get-Item $finalInstaller, $payloadPath, $uninstallerPath | Select-Object FullName, Length, LastWriteTime
+    Get-Item $installerPath, $payloadPath, $uninstallerPath | Select-Object FullName, Length, LastWriteTime
 }

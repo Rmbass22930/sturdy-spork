@@ -6,19 +6,21 @@ The PyInstaller bootstrap (`installer/installer.py`) can now fetch external prog
 
 Use [scripts/build-security-gateway.ps1](/J:/_shared_toolchains/Shared-Python-Toolchain/scripts/build-security-gateway.ps1) to build the app and installer together.
 
-- It builds `SecurityGateway.exe` first into a staged location.
-- It passes that exact staged payload into `SecurityGatewayInstaller.spec`.
+- It builds the app and uninstaller first into staged onedir bundle locations.
+- It passes those exact staged bundle roots into `SecurityGatewayInstaller.spec`.
 - The installer spec now fails fast if `SECURITY_GATEWAY_PAYLOAD_PATH` is not provided.
 - The staged build is pinned to `Python 3.13`.
-- By default, the build only publishes `SecurityGatewayInstaller.exe` into the output folder.
+- By default, the build only publishes the installer artifact into the output folder.
 - The payload and uninstaller are still built into staged locations for local install refreshes.
 - If you need the legacy full release bundle in the output folder, build with `-PublishFullBundle`.
 - Full bundle mode emits:
+  - `SecurityGateway\`
+  - `SecurityGateway-Uninstall\`
   - `SecurityGateway-build.zip`
   - `SecurityGateway-build-unpack.cmd`
   - `SecurityGateway-build-manifest.json`
 
-This avoids silently embedding a stale `dist\SecurityGateway.exe`.
+This avoids silently embedding a stale flat `dist\SecurityGateway.exe` and removes the app/installer one-file bootstrap path from packaged installs.
 
 Use [scripts/sync-security-gateway-release.ps1](/J:/_shared_toolchains/Shared-Python-Toolchain/scripts/sync-security-gateway-release.ps1) to refresh the local installed copy at:
 - `C:\Program Files\SecurityGateway`

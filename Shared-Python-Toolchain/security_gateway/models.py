@@ -42,6 +42,61 @@ class DeviceContext(BaseModel):
     edr_active: bool
 
 
+class EndpointProcessTelemetry(BaseModel):
+    device_id: str = Field(min_length=1, max_length=128)
+    process_name: str = Field(min_length=1, max_length=256)
+    process_guid: Optional[str] = Field(default=None, max_length=128)
+    process_path: Optional[str] = Field(default=None, max_length=512)
+    process_sha256: Optional[str] = Field(default=None, max_length=128)
+    parent_process_name: Optional[str] = Field(default=None, max_length=256)
+    parent_process_guid: Optional[str] = Field(default=None, max_length=128)
+    parent_process_path: Optional[str] = Field(default=None, max_length=512)
+    parent_process_sha256: Optional[str] = Field(default=None, max_length=128)
+    parent_chain: list[str] = Field(default_factory=list, max_length=16)
+    command_line: Optional[str] = Field(default=None, max_length=2_000)
+    user_name: Optional[str] = Field(default=None, max_length=256)
+    integrity_level: Optional[str] = Field(default=None, max_length=64)
+    signer_name: Optional[str] = Field(default=None, max_length=256)
+    signer_status: Optional[str] = Field(default=None, max_length=64)
+    reputation: Optional[str] = Field(default=None, max_length=64)
+    risk_flags: list[str] = Field(default_factory=list, max_length=32)
+    remote_ips: list[str] = Field(default_factory=list, max_length=32)
+    network_connections: list[dict[str, Any]] = Field(default_factory=list, max_length=64)
+
+    @field_validator("parent_chain", "risk_flags", "remote_ips")
+    @classmethod
+    def validate_endpoint_telemetry_lists(cls, value: list[str]) -> list[str]:
+        for item in value:
+            if not item or len(item) > 256:
+                raise ValueError("List entries must be between 1 and 256 characters.")
+        return value
+
+
+class EndpointFileTelemetry(BaseModel):
+    device_id: str = Field(min_length=1, max_length=128)
+    filename: str = Field(min_length=1, max_length=256)
+    artifact_path: Optional[str] = Field(default=None, max_length=512)
+    sha256: Optional[str] = Field(default=None, max_length=128)
+    operation: str = Field(min_length=1, max_length=64)
+    size_bytes: Optional[int] = Field(default=None, ge=0)
+    verdict: Optional[str] = Field(default=None, max_length=256)
+    actor_process_name: Optional[str] = Field(default=None, max_length=256)
+    actor_process_sha256: Optional[str] = Field(default=None, max_length=128)
+    signer_name: Optional[str] = Field(default=None, max_length=256)
+    signer_status: Optional[str] = Field(default=None, max_length=64)
+    reputation: Optional[str] = Field(default=None, max_length=64)
+    file_extension: Optional[str] = Field(default=None, max_length=32)
+    risk_flags: list[str] = Field(default_factory=list, max_length=32)
+
+    @field_validator("risk_flags")
+    @classmethod
+    def validate_file_risk_flags(cls, value: list[str]) -> list[str]:
+        for item in value:
+            if not item or len(item) > 256:
+                raise ValueError("Risk flags must be between 1 and 256 characters.")
+        return value
+
+
 class WebAuthnResponse(BaseModel):
     credential_id: str = Field(min_length=1, max_length=256)
     signature: str = Field(min_length=1, max_length=4096)
@@ -222,6 +277,97 @@ class SocCaseCreate(BaseModel):
         return value
 
 
+class SocPacketSessionCaseRequest(BaseModel):
+    session_key: str = Field(min_length=1, max_length=256)
+    title: Optional[str] = Field(default=None, min_length=1, max_length=160)
+    summary: Optional[str] = Field(default=None, min_length=1, max_length=2_000)
+    severity: Optional[SocSeverity] = None
+    assignee: Optional[str] = Field(default=None, max_length=128)
+
+
+class SocNetworkEvidenceCaseRequest(BaseModel):
+    remote_ip: str = Field(min_length=1, max_length=128)
+    title: Optional[str] = Field(default=None, min_length=1, max_length=160)
+    summary: Optional[str] = Field(default=None, min_length=1, max_length=2_000)
+    severity: Optional[SocSeverity] = None
+    assignee: Optional[str] = Field(default=None, max_length=128)
+
+
+class SocRemoteNodeCaseRequest(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=160)
+    summary: Optional[str] = Field(default=None, min_length=1, max_length=2_000)
+    severity: Optional[SocSeverity] = None
+    assignee: Optional[str] = Field(default=None, max_length=128)
+
+
+class SocEndpointTimelineCaseRequest(BaseModel):
+    device_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    process_name: Optional[str] = Field(default=None, min_length=1, max_length=256)
+    process_guid: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    remote_ip: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    signer_name: Optional[str] = Field(default=None, min_length=1, max_length=256)
+    sha256: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    limit: int = Field(default=200, ge=1, le=500)
+    title: Optional[str] = Field(default=None, min_length=1, max_length=160)
+    summary: Optional[str] = Field(default=None, min_length=1, max_length=2_000)
+    severity: Optional[SocSeverity] = None
+    assignee: Optional[str] = Field(default=None, max_length=128)
+
+
+class SocTelemetryClusterCaseRequest(BaseModel):
+    cluster_by: str = Field(default="remote_ip", pattern="^(remote_ip|device_id|process_guid)$")
+    cluster_key: str = Field(min_length=1, max_length=256)
+    device_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    process_name: Optional[str] = Field(default=None, min_length=1, max_length=256)
+    process_guid: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    remote_ip: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    signer_name: Optional[str] = Field(default=None, min_length=1, max_length=256)
+    sha256: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    filename: Optional[str] = Field(default=None, min_length=1, max_length=256)
+    artifact_path: Optional[str] = Field(default=None, min_length=1, max_length=512)
+    session_key: Optional[str] = Field(default=None, min_length=1, max_length=256)
+    start_at: Optional[datetime] = None
+    end_at: Optional[datetime] = None
+    title: Optional[str] = Field(default=None, min_length=1, max_length=160)
+    summary: Optional[str] = Field(default=None, min_length=1, max_length=2_000)
+    severity: Optional[SocSeverity] = None
+    assignee: Optional[str] = Field(default=None, max_length=128)
+
+
+class SocCaseEndpointTimelineClusterCaseRequest(BaseModel):
+    cluster_by: str = Field(default="process", pattern="^(process|remote_ip)$")
+    cluster_key: str = Field(min_length=1, max_length=256)
+    title: Optional[str] = Field(default=None, min_length=1, max_length=160)
+    summary: Optional[str] = Field(default=None, min_length=1, max_length=2_000)
+    severity: Optional[SocSeverity] = None
+    assignee: Optional[str] = Field(default=None, max_length=128)
+
+
+class SocCaseRuleGroupCaseRequest(BaseModel):
+    group_key: str = Field(min_length=1, max_length=256)
+    title: Optional[str] = Field(default=None, min_length=1, max_length=160)
+    summary: Optional[str] = Field(default=None, min_length=1, max_length=2_000)
+    severity: Optional[SocSeverity] = None
+    assignee: Optional[str] = Field(default=None, max_length=128)
+
+
+class SocCaseTelemetryClusterCaseRequest(BaseModel):
+    cluster_by: str = Field(default="remote_ip", pattern="^(remote_ip|device_id|process_guid)$")
+    cluster_key: str = Field(min_length=1, max_length=256)
+    title: Optional[str] = Field(default=None, min_length=1, max_length=160)
+    summary: Optional[str] = Field(default=None, min_length=1, max_length=2_000)
+    severity: Optional[SocSeverity] = None
+    assignee: Optional[str] = Field(default=None, max_length=128)
+
+
+class SocDashboardViewStateUpdate(BaseModel):
+    operational_reason_filter: Optional[str] = Field(default=None, max_length=128)
+    hunt_cluster_mode: Optional[str] = Field(default=None, pattern="^(remote_ip|device_id|process_guid)$")
+    hunt_cluster_value: Optional[str] = Field(default=None, max_length=256)
+    hunt_cluster_key: Optional[str] = Field(default=None, max_length=256)
+    hunt_cluster_action: Optional[str] = Field(default=None, pattern="^(events|existing_case|case|details)$")
+
+
 class SocCaseRecord(SocCaseCreate):
     case_id: str = Field(min_length=1, max_length=64)
     status: SocCaseStatus = SocCaseStatus.open
@@ -235,3 +381,56 @@ class SocCaseUpdate(BaseModel):
     assignee: Optional[str] = Field(default=None, max_length=128)
     note: Optional[str] = Field(default=None, max_length=512)
     observable: Optional[str] = Field(default=None, max_length=256)
+
+
+class SocDetectionRuleRecord(BaseModel):
+    rule_id: str = Field(min_length=1, max_length=128)
+    title: str = Field(min_length=1, max_length=160)
+    description: str = Field(min_length=1, max_length=512)
+    category: str = Field(default="correlation", min_length=1, max_length=64)
+    enabled: bool = True
+    parameters: Dict[str, Any] = Field(default_factory=dict)
+    hit_count: int = 0
+    open_alert_count: int = 0
+    last_match_at: Optional[datetime] = None
+
+
+class SocDetectionRuleUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    parameters: Dict[str, Any] = Field(default_factory=dict)
+
+
+class PlatformNodeAcknowledgeRequest(BaseModel):
+    acknowledged_by: Optional[str] = Field(default=None, max_length=128)
+    note: Optional[str] = Field(default=None, max_length=512)
+
+
+class PlatformNodeSuppressRequest(BaseModel):
+    suppressed_by: Optional[str] = Field(default=None, max_length=128)
+    reason: Optional[str] = Field(default=None, max_length=512)
+    minutes: int = Field(default=60, ge=1, le=10_080)
+    scopes: list[str] = Field(default_factory=lambda: ["remote_node_health"], max_length=16)
+
+
+class PlatformNodeMaintenanceRequest(BaseModel):
+    started_by: Optional[str] = Field(default=None, max_length=128)
+    reason: Optional[str] = Field(default=None, max_length=512)
+    minutes: int = Field(default=60, ge=1, le=10_080)
+    services: list[str] = Field(default_factory=list, max_length=32)
+
+
+class PlatformNodeRefreshRequest(BaseModel):
+    requested_by: Optional[str] = Field(default=None, max_length=128)
+    reason: Optional[str] = Field(default=None, max_length=512)
+
+
+class PlatformNodeDrainRequest(BaseModel):
+    drained_by: Optional[str] = Field(default=None, max_length=128)
+    reason: Optional[str] = Field(default=None, max_length=512)
+    services: list[str] = Field(default_factory=list, max_length=32)
+
+
+class PlatformNodeActionUpdateRequest(BaseModel):
+    acted_by: Optional[str] = Field(default=None, max_length=128)
+    note: Optional[str] = Field(default=None, max_length=512)
+    result: Optional[str] = Field(default=None, max_length=64)

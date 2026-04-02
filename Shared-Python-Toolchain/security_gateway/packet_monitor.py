@@ -76,13 +76,14 @@ class PacketMonitor:
     def run_check(self) -> dict[str, Any]:
         snapshot = self.collect_snapshot()
         previous_state = self._read_state()
-        if snapshot.get("capture_status") != "ok":
+        if snapshot.get("capture_status") not in {"ok", "fallback_socket_table"}:
             self._write_state(
                 {
                     "last_checked_at": _utc_now().isoformat(),
                     "snapshot": snapshot,
                     "active_findings": previous_state.get("active_findings", []),
                     "history": previous_state.get("history", {}),
+                    "session_history": previous_state.get("session_history", {}),
                 }
             )
             return {
@@ -109,6 +110,7 @@ class PacketMonitor:
                 "snapshot": snapshot,
                 "active_findings": [asdict(finding) for finding in active_findings],
                 "history": self._updated_history(snapshot, previous_state=previous_state),
+                "session_history": self._updated_session_history(snapshot, previous_state=previous_state),
             }
         )
         return {
@@ -142,7 +144,7 @@ class PacketMonitor:
             )
             start_error = (start_result.stderr or start_result.stdout or "").strip()
             if start_result.returncode != 0:
-                return self._capture_failure_snapshot(start_error or "pktmon start failed")
+                return self._snapshot_or_fallback(start_error or "pktmon start failed")
 
             stop_result: subprocess.CompletedProcess[str] | None = None
             try:
@@ -152,14 +154,14 @@ class PacketMonitor:
 
             stop_error = (stop_result.stderr or stop_result.stdout or "").strip()
             if stop_result.returncode != 0:
-                return self._capture_failure_snapshot(stop_error or "pktmon stop failed")
+                return self._snapshot_or_fallback(stop_error or "pktmon stop failed")
             actual_etl_path = self._wait_for_capture_file(
                 temp_dir,
                 requested_path=etl_path,
                 timeout_seconds=max(12.0, self._sample_seconds + 10.0),
             )
             if actual_etl_path is None:
-                return self._capture_failure_snapshot(f"pktmon capture file missing: {etl_path}")
+                return self._snapshot_or_fallback(f"pktmon capture file missing: {etl_path}")
 
             convert_result = self._runner(
                 [
@@ -174,18 +176,20 @@ class PacketMonitor:
             )
             convert_error = (convert_result.stderr or convert_result.stdout or "").strip()
             if convert_result.returncode != 0:
-                return self._capture_failure_snapshot(convert_error or "pktmon conversion failed")
+                return self._snapshot_or_fallback(convert_error or "pktmon conversion failed")
             if not self._wait_for_file(txt_path, timeout_seconds=2.0):
-                return self._capture_failure_snapshot(f"pktmon conversion output missing: {txt_path}")
+                return self._snapshot_or_fallback(f"pktmon conversion output missing: {txt_path}")
 
             text = txt_path.read_text(encoding="utf-8", errors="ignore")
             observations = self._parse_packet_text(text)
             return {
                 "checked_at": _utc_now().isoformat(),
                 "capture_status": "ok",
+                "evidence_mode": "pktmon",
                 "sample_seconds": self._sample_seconds,
                 "packet_size": self._pkt_size,
                 "packet_observations": observations,
+                "session_observations": self._build_session_observations(observations),
             }
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -217,6 +221,7 @@ class PacketMonitor:
                         else "Packet metadata sampling observed packet volume materially above the learned baseline for this remote IP."
                     ),
                     details={
+                        "session_key": item.get("session_key") or f"packet-session:{remote_ip}",
                         "remote_ip": remote_ip,
                         "protocols": item.get("protocols") or [],
                         "local_ports": item.get("local_ports") or [],
@@ -230,6 +235,7 @@ class PacketMonitor:
                         "abnormal_reason": "sensitive_port" if sensitive_ports else "baseline_exceeded",
                         "evidence": {
                             "sample_packet_endpoints": item.get("sample_packet_endpoints") or [],
+                            "sample_sessions": [self._session_summary(item)],
                             "sample_count": len(item.get("sample_packet_endpoints") or []),
                             "retention_mode": "compact_evidence_only",
                         },
@@ -259,6 +265,86 @@ class PacketMonitor:
                 "last_seen_at": snapshot.get("checked_at"),
             }
         return next_history
+
+    def _updated_session_history(self, snapshot: dict[str, Any], *, previous_state: dict[str, Any]) -> dict[str, Any]:
+        history = previous_state.get("session_history") or {}
+        next_history: dict[str, Any] = {
+            session_key: payload
+            for session_key, payload in history.items()
+            if isinstance(session_key, str) and isinstance(payload, dict)
+        }
+        checked_at = str(snapshot.get("checked_at") or _utc_now().isoformat())
+        observations = snapshot.get("session_observations") or []
+        for item in observations:
+            if not isinstance(item, dict):
+                continue
+            session_key = str(item.get("session_key") or "")
+            if not session_key:
+                continue
+            previous = next_history.get(session_key)
+            if not isinstance(previous, dict):
+                previous = {}
+            next_history[session_key] = {
+                "session_key": session_key,
+                "remote_ip": item.get("remote_ip"),
+                "protocols": sorted({*self._as_string_list(previous.get("protocols")), *self._as_string_list(item.get("protocols"))}),
+                "local_ips": sorted({*self._as_string_list(previous.get("local_ips")), *self._as_string_list(item.get("local_ips"))}),
+                "local_ports": sorted({*self._as_int_list(previous.get("local_ports")), *self._as_int_list(item.get("local_ports"))}),
+                "remote_ports": sorted({*self._as_int_list(previous.get("remote_ports")), *self._as_int_list(item.get("remote_ports"))})[-20:],
+                "sensitive_ports": sorted({*self._as_int_list(previous.get("sensitive_ports")), *self._as_int_list(item.get("sensitive_ports"))}),
+                "first_seen_at": str(previous.get("first_seen_at") or checked_at),
+                "last_seen_at": checked_at,
+                "sightings": int(previous.get("sightings") or 0) + 1,
+                "total_packets": int(previous.get("total_packets") or 0) + int(item.get("packet_count") or 0),
+                "max_packet_count": max(int(previous.get("max_packet_count") or 0), int(item.get("packet_count") or 0)),
+                "last_packet_count": int(item.get("packet_count") or 0),
+                "sample_packet_endpoints": list(item.get("sample_packet_endpoints") or [])[: self._evidence_sample_limit],
+            }
+        return next_history
+
+    def list_recent_sessions(self, *, limit: int = 50, remote_ip: str | None = None) -> list[dict[str, Any]]:
+        state = self._read_state()
+        session_history = state.get("session_history") or {}
+        if not isinstance(session_history, dict):
+            return []
+        sessions = [payload for payload in session_history.values() if isinstance(payload, dict)]
+        if remote_ip is not None:
+            sessions = [item for item in sessions if str(item.get("remote_ip") or "") == remote_ip]
+        sessions.sort(key=lambda item: self._sortable_timestamp(item.get("last_seen_at")), reverse=True)
+        return sessions[: max(1, limit)]
+
+    def _build_session_observations(self, observations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        sessions: list[dict[str, Any]] = []
+        for item in observations:
+            remote_ip = str(item.get("remote_ip") or "")
+            if not remote_ip:
+                continue
+            sessions.append(
+                {
+                    "session_key": f"packet-session:{remote_ip}",
+                    "remote_ip": remote_ip,
+                    "protocols": list(item.get("protocols") or []),
+                    "local_ips": list(item.get("local_ips") or []),
+                    "local_ports": list(item.get("local_ports") or []),
+                    "remote_ports": list(item.get("remote_ports") or []),
+                    "packet_count": int(item.get("packet_count") or 0),
+                    "sensitive_ports": list(item.get("sensitive_ports") or []),
+                    "sample_packet_endpoints": list(item.get("sample_packet_endpoints") or []),
+                }
+            )
+        return sessions
+
+    @staticmethod
+    def _session_summary(item: dict[str, Any]) -> dict[str, Any]:
+        remote_ip = str(item.get("remote_ip") or "unknown")
+        return {
+            "session_key": item.get("session_key") or f"packet-session:{remote_ip}",
+            "remote_ip": remote_ip,
+            "protocols": list(item.get("protocols") or []),
+            "local_ports": list(item.get("local_ports") or []),
+            "packet_count": int(item.get("packet_count") or 0),
+            "sensitive_ports": list(item.get("sensitive_ports") or []),
+        }
 
     def _parse_packet_text(self, text: str) -> list[dict[str, Any]]:
         grouped: dict[str, dict[str, Any]] = {}
@@ -383,6 +469,33 @@ class PacketMonitor:
             or candidate.is_reserved
         )
 
+    def _snapshot_or_fallback(self, error: str) -> dict[str, Any]:
+        failure_snapshot = self._capture_failure_snapshot(error)
+        fallback_snapshot = self._collect_socket_table_snapshot(failure_snapshot)
+        if fallback_snapshot is not None:
+            return fallback_snapshot
+        return failure_snapshot
+
+    def _collect_socket_table_snapshot(self, failure_snapshot: dict[str, Any]) -> dict[str, Any] | None:
+        if str(failure_snapshot.get("capture_status") or "") != "permission_denied":
+            return None
+        try:
+            observations, collected = self._collect_socket_table_observations()
+        except Exception:  # noqa: BLE001
+            return None
+        if not collected:
+            return None
+        return {
+            "checked_at": _utc_now().isoformat(),
+            "capture_status": "fallback_socket_table",
+            "evidence_mode": "socket_table",
+            "sample_seconds": self._sample_seconds,
+            "packet_size": self._pkt_size,
+            "error": failure_snapshot.get("error"),
+            "packet_observations": observations,
+            "session_observations": self._build_session_observations(observations),
+        }
+
     def _capture_failure_snapshot(self, error: str) -> dict[str, Any]:
         normalized = error.casefold()
         if "access is denied" in normalized:
@@ -394,11 +507,133 @@ class PacketMonitor:
         return {
             "checked_at": _utc_now().isoformat(),
             "capture_status": status,
+            "evidence_mode": "pktmon",
             "sample_seconds": self._sample_seconds,
             "packet_size": self._pkt_size,
             "error": error,
             "packet_observations": [],
+            "session_observations": [],
         }
+
+    def _collect_socket_table_observations(self) -> tuple[list[dict[str, Any]], bool]:
+        outputs: list[tuple[str, str]] = []
+        for protocol in ("tcp", "udp"):
+            result = self._runner(["netstat", "-ano", "-n", "-p", protocol])
+            if result.returncode != 0:
+                continue
+            outputs.append((protocol.upper(), result.stdout or ""))
+        if not outputs:
+            return [], False
+        grouped: dict[str, dict[str, Any]] = {}
+        for protocol, text in outputs:
+            self._merge_socket_table_observations(grouped, text=text, protocol=protocol)
+        observations = []
+        for value in grouped.values():
+            observations.append(
+                {
+                    "remote_ip": value["remote_ip"],
+                    "protocols": sorted(value["protocols"]),
+                    "local_ips": sorted(value["local_ips"]),
+                    "local_ports": sorted(value["local_ports"]),
+                    "remote_ports": sorted(value["remote_ports"]),
+                    "packet_count": value["packet_count"],
+                    "sensitive_ports": sorted(value["sensitive_ports"]),
+                    "sample_packet_endpoints": list(value["sample_packet_endpoints"]),
+                    "evidence_mode": "socket_table",
+                }
+            )
+        observations.sort(key=lambda item: (-int(item["packet_count"]), str(item["remote_ip"])))
+        return observations, True
+
+    def _merge_socket_table_observations(self, grouped: dict[str, dict[str, Any]], *, text: str, protocol: str) -> None:
+        for raw_line in text.splitlines():
+            parsed = self._parse_socket_table_line(raw_line, protocol=protocol)
+            if parsed is None:
+                continue
+            local_ip, local_port, remote_ip, remote_port, state, pid = parsed
+            record = grouped.setdefault(
+                remote_ip,
+                {
+                    "remote_ip": remote_ip,
+                    "protocols": set(),
+                    "local_ports": set(),
+                    "remote_ports": set(),
+                    "packet_count": 0,
+                    "sensitive_ports": set(),
+                    "local_ips": set(),
+                    "sample_packet_endpoints": [],
+                },
+            )
+            record["protocols"].add(protocol)
+            record["local_ports"].add(local_port)
+            record["remote_ports"].add(remote_port)
+            record["local_ips"].add(local_ip)
+            record["packet_count"] += 1
+            if local_port in self._sensitive_ports:
+                record["sensitive_ports"].add(local_port)
+            sample_packet_endpoints = record["sample_packet_endpoints"]
+            if len(sample_packet_endpoints) < self._evidence_sample_limit:
+                endpoint = {
+                    "protocol": protocol,
+                    "remote_ip": remote_ip,
+                    "remote_port": remote_port,
+                    "local_ip": local_ip,
+                    "local_port": local_port,
+                }
+                if state:
+                    endpoint["state"] = state
+                if pid is not None:
+                    endpoint["pid"] = pid
+                sample_packet_endpoints.append(endpoint)
+
+    def _parse_socket_table_line(
+        self,
+        line: str,
+        *,
+        protocol: str,
+    ) -> tuple[str, int, str, int, str | None, int | None] | None:
+        tokens = line.split()
+        if not tokens or tokens[0].upper() != protocol.upper():
+            return None
+        if protocol == "TCP" and len(tokens) >= 5:
+            local_token, remote_token, state_token, pid_token = tokens[1], tokens[2], tokens[3], tokens[4]
+        elif protocol == "UDP" and len(tokens) >= 4:
+            local_token, remote_token, state_token, pid_token = tokens[1], tokens[2], None, tokens[3]
+        else:
+            return None
+        local_endpoint = self._parse_socket_endpoint(local_token)
+        remote_endpoint = self._parse_socket_endpoint(remote_token)
+        if local_endpoint is None or remote_endpoint is None:
+            return None
+        local_ip, local_port = local_endpoint
+        remote_ip, remote_port = remote_endpoint
+        if not self._is_public_ip(remote_ip):
+            return None
+        pid = None
+        if pid_token is not None and pid_token.isdigit():
+            pid = int(pid_token)
+        return local_ip, local_port, remote_ip, remote_port, state_token, pid
+
+    @staticmethod
+    def _parse_socket_endpoint(value: str) -> tuple[str, int] | None:
+        token = value.strip()
+        if token in {"*", "*:*"}:
+            return None
+        if token.startswith("[") and "]:" in token:
+            closing = token.rfind("]:")
+            host = token[1:closing]
+            port_text = token[closing + 2 :]
+        else:
+            if ":" not in token:
+                return None
+            host, port_text = token.rsplit(":", 1)
+        if port_text in {"*", ""}:
+            return None
+        try:
+            port = int(port_text)
+        except ValueError:
+            return None
+        return host.strip("[]"), port
 
     @staticmethod
     def _run_command(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -472,3 +707,24 @@ class PacketMonitor:
             tags=["packet", "network", "recovery"],
             resolved=True,
         )
+
+    @staticmethod
+    def _as_string_list(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(item) for item in value]
+
+    @staticmethod
+    def _as_int_list(value: Any) -> list[int]:
+        if not isinstance(value, list):
+            return []
+        return [int(item) for item in value]
+
+    @staticmethod
+    def _sortable_timestamp(value: Any) -> datetime:
+        if not isinstance(value, str):
+            return datetime.min.replace(tzinfo=UTC)
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return datetime.min.replace(tzinfo=UTC)

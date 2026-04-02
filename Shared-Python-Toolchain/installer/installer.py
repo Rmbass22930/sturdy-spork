@@ -7,7 +7,6 @@ import hashlib
 import json
 import os
 import subprocess as std_subprocess
-import queue
 import shutil
 import subprocess
 import sys
@@ -19,23 +18,13 @@ import urllib.request
 from datetime import UTC, datetime, timedelta
 from dataclasses import dataclass
 from pathlib import Path
-from types import ModuleType
-from typing import Any, List, Optional
-
-tk: ModuleType | None
-ttk: ModuleType | None
-messagebox: Any
-try:
-    import tkinter as tk
-    from tkinter import messagebox, ttk
-except Exception:  # pragma: no cover
-    tk = None
-    ttk = None
-    messagebox = None
+from typing import List, Optional
 
 INSTALL_DIR = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "SecurityGateway"
-RESOURCE_RELATIVE = Path("payload") / "SecurityGateway.exe"
-UNINSTALLER_RELATIVE = Path("payload") / "SecurityGateway-Uninstall.exe"
+PAYLOAD_BUNDLE_NAME = "SecurityGateway"
+UNINSTALLER_BUNDLE_NAME = "SecurityGateway-Uninstall"
+RESOURCE_RELATIVE = Path("payload") / PAYLOAD_BUNDLE_NAME / "SecurityGateway.exe"
+UNINSTALLER_RELATIVE = Path("payload") / UNINSTALLER_BUNDLE_NAME / "SecurityGateway-Uninstall.exe"
 GUIDE_RELATIVE = Path("docs") / "INSTALL_GUIDE.pdf"
 DEPENDENCY_MANIFEST_RELATIVE = Path("installer") / "dependencies.json"
 UNINSTALL_SCRIPT_NAME = "Uninstall-SecurityGateway.ps1"
@@ -56,14 +45,12 @@ LOCKED_FILE_RETRY_ATTEMPTS = 3
 LOCKED_FILE_RETRY_DELAY_SECONDS = 0.5
 GUIDE_AUTO_CLOSE_SECONDS = 30
 TASK_REGISTRATION_LOG = USER_DATA_DIR / "installer" / "task-registration.log"
-
-
-def center_window(root: Any, width: int, height: int) -> None:
-    screen_width = int(root.winfo_screenwidth())
-    screen_height = int(root.winfo_screenheight())
-    x = max((screen_width - width) // 2, 0)
-    y = max((screen_height - height) // 2, 0)
-    root.geometry(f"{width}x{height}+{x}+{y}")
+SMOKE_TEST_DIR_NAME = "SecurityGatewaySmoke"
+UNINSTALLER_INSTALL_SUBDIR = "uninstall"
+SHORTCUT_SPECS: tuple[tuple[str, str, str], ...] = (
+    ("SecurityGateway.lnk", "", "Security Gateway Tools"),
+    ("SecurityGateway SOC Dashboard.lnk", "soc-dashboard", "Security Gateway SOC Dashboard"),
+)
 
 
 @dataclass
@@ -130,253 +117,6 @@ class InstallReporter:
         print(message, file=sys.stderr)
 
 
-class InstallerUI(InstallReporter):
-    STAGES = [
-        "Opening install guide",
-        "Resolving payload",
-        "Installing prerequisites",
-        "Copying application files",
-        "Updating PATH",
-        "Creating shortcuts",
-        "Registering automation task",
-        "Installing uninstaller",
-        "Writing uninstall script",
-        "Finishing",
-    ]
-
-    def __init__(self, args: argparse.Namespace):
-        if tk is None or ttk is None:
-            raise RuntimeError("Tk installer UI is unavailable on this machine.")
-        self.args = args
-        self.root = tk.Tk()
-        self.root.title("SecurityGateway Installer")
-        self.root.configure(bg="#f2f6fb")
-        center_window(self.root, 940, 700)
-        self.root.minsize(840, 620)
-        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
-        self._queue: "queue.Queue[tuple]" = queue.Queue()
-        self._decision_events: list[threading.Event] = []
-        self._install_thread: Optional[threading.Thread] = None
-        self._install_done = False
-        self._build_ui()
-
-    def _build_ui(self) -> None:
-        assert tk is not None and ttk is not None
-        style = ttk.Style()
-        try:
-            style.theme_use("vista")
-        except Exception:  # pragma: no cover
-            pass
-        style.configure("Installer.TFrame", background="#f2f6fb")
-        style.configure("Installer.TLabel", background="#f2f6fb", foreground="#233449", font=("Segoe UI", 10))
-        style.configure("Installer.Header.TLabel", background="#f2f6fb", foreground="#12335b", font=("Segoe UI", 20, "bold"))
-        style.configure("Installer.Subheader.TLabel", background="#f2f6fb", foreground="#3b4d63", font=("Segoe UI", 10, "bold"))
-        style.configure("Installer.TButton", font=("Segoe UI", 10, "bold"))
-
-        self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(3, weight=1)
-
-        header = ttk.Frame(self.root, padding=(22, 20, 22, 10), style="Installer.TFrame")
-        header.grid(row=0, column=0, sticky="ew")
-        header.columnconfigure(0, weight=1)
-        ttk.Label(header, text="SecurityGateway Installer", style="Installer.Header.TLabel").grid(
-            row=0, column=0, sticky="w"
-        )
-        ttk.Label(
-            header,
-            text="Installs SecurityGateway, creates desktop shortcuts, registers automation startup, and includes the SOC Dashboard in the installed launcher.",
-            wraplength=860,
-            style="Installer.Subheader.TLabel",
-        ).grid(row=1, column=0, sticky="w", pady=(6, 0))
-
-        progress_frame = ttk.Frame(self.root, padding=(22, 6, 22, 10), style="Installer.TFrame")
-        progress_frame.grid(row=1, column=0, sticky="ew")
-        progress_frame.columnconfigure(0, weight=1)
-        self.status_var = tk.StringVar(value="Ready to install.")
-        ttk.Label(progress_frame, textvariable=self.status_var, style="Installer.Subheader.TLabel").grid(
-            row=0, column=0, sticky="w"
-        )
-        self.progress = ttk.Progressbar(
-            progress_frame,
-            mode="determinate",
-            maximum=len(self.STAGES),
-            value=0,
-        )
-        self.progress.grid(row=1, column=0, sticky="ew", pady=(8, 0))
-
-        body = ttk.Frame(self.root, padding=(22, 0, 22, 0), style="Installer.TFrame")
-        body.grid(row=2, column=0, sticky="nsew")
-        body.columnconfigure(0, weight=1)
-        body.rowconfigure(0, weight=1)
-        self.log = tk.Text(body, height=22, wrap="word", font=("Consolas", 10), bg="#fbfdff", fg="#24364a")
-        self.log.grid(row=0, column=0, sticky="nsew")
-        self.log.configure(state="disabled")
-        scrollbar = ttk.Scrollbar(body, orient="vertical", command=self.log.yview)
-        scrollbar.grid(row=0, column=1, sticky="ns")
-        self.log.configure(yscrollcommand=scrollbar.set)
-
-        footer = ttk.Frame(self.root, padding=(22, 12, 22, 20), style="Installer.TFrame")
-        footer.grid(row=4, column=0, sticky="ew")
-        footer.columnconfigure(0, weight=1)
-        self.primary_button = ttk.Button(footer, text="Install", command=self._start_install, style="Installer.TButton")
-        self.primary_button.grid(row=0, column=1, sticky="e")
-        self.close_button = ttk.Button(footer, text="Close", command=self._on_close, style="Installer.TButton")
-        self.close_button.grid(row=0, column=2, sticky="e", padx=(8, 0))
-
-    def run(self) -> int:
-        self.root.after(100, self._pump_queue)
-        self.root.mainloop()
-        return 0
-
-    def _append_log(self, message: str) -> None:
-        self.log.configure(state="normal")
-        self.log.insert("end", message.rstrip() + "\n")
-        self.log.see("end")
-        self.log.configure(state="disabled")
-
-    def _on_close(self) -> None:
-        if self._install_thread and self._install_thread.is_alive() and not self._install_done:
-            return
-        self.root.destroy()
-
-    def _start_install(self) -> None:
-        if self._install_thread and self._install_thread.is_alive():
-            return
-        self.primary_button.configure(state="disabled")
-        self.status_var.set("Starting install...")
-        self._install_thread = threading.Thread(target=self._run_install, daemon=True)
-        self._install_thread.start()
-
-    def _run_install(self) -> None:
-        try:
-            perform_install(self.args, reporter=self)
-        except Exception as exc:  # noqa: BLE001
-            self._queue.put(("error", str(exc)))
-        else:
-            self._queue.put(("done", None))
-
-    def _pump_queue(self) -> None:
-        while True:
-            try:
-                item = self._queue.get_nowait()
-            except queue.Empty:
-                break
-            kind = item[0]
-            if kind == "stage":
-                title = item[1]
-                try:
-                    stage_index = self.STAGES.index(title) + 1
-                except ValueError:
-                    stage_index = self.progress["value"]
-                self.status_var.set(title)
-                self.progress.configure(value=stage_index)
-                self._append_log(f"[stage] {title}")
-            elif kind == "info":
-                self._append_log(item[1])
-            elif kind == "summary":
-                self.status_var.set("Install complete.")
-                self.progress.configure(value=len(self.STAGES))
-                self._append_log("")
-                self._append_log("Install complete:")
-                summary: InstallSummary = item[1]
-                self._append_log(f"- Application: {summary.installed_path}")
-                self._append_log(f"- Reports directory: {summary.reports_dir}")
-                self._append_log("- Installed launcher tools: SOC Dashboard, Reports, Install Folder, Uninstaller")
-                self._append_log("- Desktop shortcuts:")
-                for shortcut_path in summary.shortcut_paths:
-                    self._append_log(f"  - {shortcut_path}")
-                if summary.dependency_results:
-                    self._append_log("- Dependencies:")
-                    for result in summary.dependency_results:
-                        target_suffix = f" ({result.target})" if result.target else ""
-                        detail_suffix = f" - {result.detail}" if result.detail else ""
-                        self._append_log(f"  - {result.name}: {result.status} via {result.method}{target_suffix}{detail_suffix}")
-                else:
-                    self._append_log("- Dependencies: none")
-                self._append_log(f"- Uninstall executable: {summary.uninstall_executable}")
-                self._append_log(f"- Uninstall script: {summary.uninstall_script}")
-                self._append_log(f"- Startup registration script: {summary.register_startup_script}")
-                self._append_log("- PATH updated for current user. Sign out/in or restart terminal to use immediately.")
-            elif kind == "error":
-                self.status_var.set("Install failed.")
-                self._append_log(f"[error] {item[1]}")
-                self._install_done = True
-                self.primary_button.configure(state="normal", text="Retry Install")
-                self.close_button.configure(text="Close")
-            elif kind == "done":
-                self._install_done = True
-                self.primary_button.configure(state="disabled")
-                self.close_button.configure(text="Finish")
-            elif kind == "dependency_prompt":
-                dep, message, response, event = item[1], item[2], item[3], item[4]
-                action = self._show_dependency_dialog(dep, message)
-                response["action"] = action
-                event.set()
-        if self.root.winfo_exists():
-            self.root.after(100, self._pump_queue)
-
-    def _show_dependency_dialog(self, dep: ExternalDependency, message: str) -> str:
-        assert tk is not None and ttk is not None
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Dependency issue")
-        dialog.transient(self.root)
-        dialog.grab_set()
-        dialog.resizable(False, False)
-        dialog.configure(bg="#fdf4f0")
-        center_window(dialog, 580, 270)
-        dialog.columnconfigure(0, weight=1)
-        ttk.Label(
-            dialog,
-            text=f"Dependency install failed: {dep.name}",
-            font=("Segoe UI", 11, "bold"),
-            padding=(20, 18, 20, 8),
-        ).grid(row=0, column=0, sticky="w")
-        ttk.Label(
-            dialog,
-            text=message,
-            wraplength=520,
-            padding=(20, 0, 20, 0),
-        ).grid(row=1, column=0, sticky="w")
-        ttk.Label(
-            dialog,
-            text="Choose how setup should continue.",
-            padding=(20, 14, 20, 10),
-        ).grid(row=2, column=0, sticky="w")
-        result = {"action": "abort"}
-
-        buttons = ttk.Frame(dialog, padding=(20, 0, 20, 18))
-        buttons.grid(row=3, column=0, sticky="e")
-
-        def choose(action: str) -> None:
-            result["action"] = action
-            dialog.destroy()
-
-        ttk.Button(buttons, text="Retry", command=lambda: choose("retry")).grid(row=0, column=0, padx=(0, 8))
-        ttk.Button(buttons, text="Continue Without", command=lambda: choose("skip")).grid(row=0, column=1, padx=(0, 8))
-        ttk.Button(buttons, text="Abort", command=lambda: choose("abort")).grid(row=0, column=2)
-        dialog.wait_window()
-        return result["action"]
-
-    def stage(self, title: str) -> None:
-        self._queue.put(("stage", title))
-
-    def info(self, message: str) -> None:
-        self._queue.put(("info", message))
-
-    def dependency_failure(self, dep: ExternalDependency, message: str) -> str:
-        event = threading.Event()
-        response: dict[str, str] = {}
-        self._queue.put(("dependency_prompt", dep, message, response, event))
-        event.wait()
-        return response.get("action", "abort")
-
-    def summary(self, summary: InstallSummary) -> None:
-        self._queue.put(("summary", summary))
-
-    def error(self, message: str) -> None:
-        self._queue.put(("error", message))
-
-
 def resolve_powershell_executable() -> str:
     return (
         shutil.which("pwsh")
@@ -384,6 +124,15 @@ def resolve_powershell_executable() -> str:
         or shutil.which("powershell")
         or r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
     )
+
+
+def load_tk_modules():
+    try:
+        import tkinter as tk  # type: ignore[import-not-found]
+        from tkinter import messagebox, ttk  # type: ignore[import-not-found]
+    except Exception:  # pragma: no cover
+        return None, None, None
+    return tk, ttk, messagebox
 
 
 def ensure_admin() -> None:
@@ -394,9 +143,15 @@ def ensure_admin() -> None:
 def ensure_frozen_installer_elevation(argv: Optional[list[str]] = None) -> None:
     if not getattr(sys, "frozen", False):
         return
+    raw_args = list(sys.argv[1:] if argv is None else argv)
+    try:
+        parsed_args = parse_args(raw_args)
+    except SystemExit:
+        parsed_args = None
+    if parsed_args is not None and parsed_args.smoke_test:
+        return
     if ctypes.windll.shell32.IsUserAnAdmin():  # type: ignore[attr-defined]
         return
-    raw_args = list(sys.argv[1:] if argv is None else argv)
     executable = sys.executable
     parameters = std_subprocess.list2cmdline(raw_args) if raw_args else ""
     result = ctypes.windll.shell32.ShellExecuteW(  # type: ignore[attr-defined]
@@ -420,8 +175,21 @@ def resolve_resource(rel_path: Path) -> Path:
         project_root = Path(__file__).resolve().parents[1]
         candidates = [project_root / rel_path]
         if rel_path == RESOURCE_RELATIVE:
+            payload_override = os.environ.get("SECURITY_GATEWAY_PAYLOAD_PATH")
+            if payload_override:
+                override_path = Path(payload_override)
+                candidates.insert(0, override_path if override_path.is_file() else override_path / "SecurityGateway.exe")
+            candidates.append(project_root / "dist" / PAYLOAD_BUNDLE_NAME / "SecurityGateway.exe")
             candidates.append(project_root / "dist" / "SecurityGateway.exe")
         if rel_path == UNINSTALLER_RELATIVE:
+            uninstaller_override = os.environ.get("SECURITY_GATEWAY_UNINSTALLER_PATH")
+            if uninstaller_override:
+                override_path = Path(uninstaller_override)
+                candidates.insert(
+                    0,
+                    override_path if override_path.is_file() else override_path / "SecurityGateway-Uninstall.exe",
+                )
+            candidates.append(project_root / "dist" / UNINSTALLER_BUNDLE_NAME / "SecurityGateway-Uninstall.exe")
             candidates.append(project_root / "dist" / "SecurityGateway-Uninstall.exe")
     for resource in candidates:
         if resource.exists():
@@ -551,6 +319,7 @@ def _schedule_guide_auto_close(pid: Optional[int], *, timeout_seconds: int, repo
 
 def _offer_to_print_install_guide(guide: Path, reporter: InstallReporter) -> None:
     reporter.info("You can print the installation guide now if you want a paper copy.")
+    tk, _, messagebox = load_tk_modules()
     if messagebox is None or tk is None:
         reporter.info("Open the guide in your PDF viewer and use Print if you want a paper copy.")
         return
@@ -612,9 +381,38 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--payload-sha256", help="Expected SHA256 for payload download")
     parser.add_argument("--guide-url", help="Override install guide download URL")
     parser.add_argument("--dependency-manifest", help="Path or URL to dependency manifest JSON")
+    parser.add_argument("--install-dir", help="Override installation directory")
     parser.add_argument("--skip-dependencies", action="store_true", help="Skip prerequisite dependency installation")
+    parser.add_argument("--smoke-test", action="store_true", help="Install into a repo-local target without machine-wide integration")
     parser.add_argument("--console", action="store_true", help="Use the console installer flow even when the GUI is available")
     return parser.parse_args(argv)
+
+
+def resolve_install_dir(args: argparse.Namespace) -> Path:
+    install_dir = getattr(args, "install_dir", None)
+    if install_dir:
+        return Path(install_dir).expanduser().resolve()
+    if getattr(args, "smoke_test", False):
+        return (Path(tempfile.gettempdir()) / SMOKE_TEST_DIR_NAME).resolve()
+    return INSTALL_DIR
+
+
+def resolve_system_data_dir(args: argparse.Namespace) -> Path:
+    if getattr(args, "smoke_test", False):
+        return resolve_install_dir(args) / "system-data"
+    return SYSTEM_DATA_DIR
+
+
+def resolve_user_data_dir(args: argparse.Namespace) -> Path:
+    if getattr(args, "smoke_test", False):
+        return resolve_install_dir(args) / "user-data"
+    return USER_DATA_DIR
+
+
+def resolve_reports_dir(args: argparse.Namespace) -> Path:
+    if getattr(args, "smoke_test", False):
+        return resolve_user_data_dir(args) / "reports"
+    return REPORTS_DIR
 
 
 def copy_binary(src: Path, dest_dir: Path) -> Path:
@@ -634,6 +432,22 @@ def copy_binary(src: Path, dest_dir: Path) -> Path:
     if last_error is not None:
         raise last_error
     raise RuntimeError(f"Failed to copy {src} to {target}")
+
+
+def copy_bundle(src_executable: Path, dest_dir: Path) -> Path:
+    bundle_root = src_executable.parent
+    if bundle_root.name != src_executable.stem:
+        return copy_binary(src_executable, dest_dir)
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    for source_path in bundle_root.rglob("*"):
+        relative_path = source_path.relative_to(bundle_root)
+        target_path = dest_dir / relative_path
+        if source_path.is_dir():
+            target_path.mkdir(parents=True, exist_ok=True)
+            continue
+        copy_binary(source_path, target_path.parent)
+    return dest_dir / src_executable.name
 
 
 def _is_locked_file_error(exc: PermissionError) -> bool:
@@ -696,22 +510,54 @@ def resolve_desktop_roots() -> List[Path]:
     return resolved
 
 
+def resolve_start_menu_roots() -> List[Path]:
+    roots: list[Path] = []
+    appdata = os.environ.get("APPDATA")
+    program_data = os.environ.get("ProgramData")
+    if appdata:
+        roots.append(Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Security Gateway")
+    if program_data:
+        roots.append(Path(program_data) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Security Gateway")
+    seen: set[str] = set()
+    resolved: list[Path] = []
+    for root in roots:
+        key = str(root).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        resolved.append(root)
+    return resolved
+
+
+def resolve_shortcut_paths() -> List[tuple[Path, str, str]]:
+    shortcut_entries: list[tuple[Path, str, str]] = []
+    for root in [*resolve_desktop_roots(), *resolve_start_menu_roots()]:
+        for file_name, arguments, description in SHORTCUT_SPECS:
+            shortcut_entries.append((root / file_name, arguments, description))
+    return shortcut_entries
+
+
 def create_shortcut(exe_path: Path) -> List[Path]:
-    shortcut_paths = [root / "SecurityGateway.lnk" for root in resolve_desktop_roots()]
-    ps_targets = ", ".join(_ps_quote(str(path)) for path in shortcut_paths)
-    ps_script = f"$targets=@({ps_targets}); foreach($shortcutPath in $targets) {{"
-    ps_script += "New-Item -ItemType Directory -Force -Path ([System.IO.Path]::GetDirectoryName($shortcutPath)) | Out-Null;"
-    ps_script += "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($shortcutPath);"
-    ps_script += f"$s.TargetPath={_ps_quote(str(exe_path))};"
-    ps_script += f"$s.WorkingDirectory={_ps_quote(str(exe_path.parent))};"
-    ps_script += "$s.Save() }"
+    shortcut_entries = resolve_shortcut_paths()
+    ps_script = ""
+    for shortcut_path, arguments, description in shortcut_entries:
+        ps_script += f"$shortcutPath={_ps_quote(str(shortcut_path))};"
+        ps_script += "New-Item -ItemType Directory -Force -Path ([System.IO.Path]::GetDirectoryName($shortcutPath)) | Out-Null;"
+        ps_script += "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($shortcutPath);"
+        ps_script += f"$s.TargetPath={_ps_quote(str(exe_path))};"
+        ps_script += f"$s.Arguments={_ps_quote(arguments)};"
+        ps_script += f"$s.WorkingDirectory={_ps_quote(str(exe_path.parent))};"
+        ps_script += f"$s.Description={_ps_quote(description)};"
+        ps_script += f"$s.IconLocation={_ps_quote(str(exe_path))};"
+        ps_script += "$s.Save();"
     subprocess.run([resolve_powershell_executable(), "-NoProfile", "-Command", ps_script], check=True)
-    return shortcut_paths
+    return [path for path, _arguments, _description in shortcut_entries]
 
 
-def create_reports_directory() -> Path:
-    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    return REPORTS_DIR
+def create_reports_directory(args: argparse.Namespace) -> Path:
+    reports_dir = resolve_reports_dir(args)
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    return reports_dir
 
 
 def _ps_quote(value: str) -> str:
@@ -900,19 +746,29 @@ def unregister_automation_task() -> None:
         )
 
 
-def write_uninstall_script(installed_path: Path, path_backup_file: Path) -> Path:
+def write_uninstall_script(
+    installed_path: Path,
+    path_backup_file: Path,
+    *,
+    system_data_path: Optional[Path] = None,
+    user_data_path: Optional[Path] = None,
+    shortcut_paths: Optional[List[Path]] = None,
+    task_name: str = TASK_NAME,
+) -> Path:
     script_path = installed_path.parent / UNINSTALL_SCRIPT_NAME
-    shortcut_paths = [path / "SecurityGateway.lnk" for path in resolve_desktop_roots()]
+    shortcut_paths = shortcut_paths if shortcut_paths is not None else [
+        path for path, _arguments, _description in resolve_shortcut_paths()
+    ]
     shortcut_path_block = ", ".join(f'"{path}"' for path in shortcut_paths)
-    system_data = SYSTEM_DATA_DIR
-    user_data = USER_DATA_DIR
+    system_data = system_data_path or SYSTEM_DATA_DIR
+    user_data = user_data_path or USER_DATA_DIR
     script = f"""\
 param(
     [string]$InstallDir = "{installed_path.parent}",
     [string]$SystemDataPath = "{system_data}",
     [string]$UserDataPath = "{user_data}",
     [string]$PathBackupFile = "{path_backup_file}",
-    [string]$TaskName = "{TASK_NAME}"
+    [string]$TaskName = "{task_name}"
 )
 
 function Assert-Admin {{
@@ -1050,6 +906,12 @@ def rollback_install(transaction: InstallTransaction) -> None:
 
     if transaction.installed_path:
         try:
+            if (
+                transaction.uninstall_executable
+                and transaction.uninstall_executable.parent.exists()
+                and not any(transaction.uninstall_executable.parent.iterdir())
+            ):
+                transaction.uninstall_executable.parent.rmdir()
             install_dir = transaction.installed_path.parent
             if install_dir.exists() and not any(install_dir.iterdir()):
                 install_dir.rmdir()
@@ -1060,8 +922,9 @@ def rollback_install(transaction: InstallTransaction) -> None:
         try:
             if transaction.reports_dir.exists() and not any(transaction.reports_dir.iterdir()):
                 transaction.reports_dir.rmdir()
-            if USER_DATA_DIR.exists() and not any(USER_DATA_DIR.iterdir()):
-                USER_DATA_DIR.rmdir()
+            user_data_dir = transaction.reports_dir.parent
+            if user_data_dir.exists() and not any(user_data_dir.iterdir()):
+                user_data_dir.rmdir()
         except Exception as exc:  # noqa: BLE001
             cleanup_errors.append(f"reports directory cleanup failed: {exc}")
 
@@ -1219,7 +1082,7 @@ def print_install_summary(summary: InstallSummary) -> None:
     print(f"- Application: {summary.installed_path}")
     print(f"- Reports directory: {summary.reports_dir}")
     print("- Installed launcher tools: SOC Dashboard, Reports, Install Folder, Uninstaller")
-    print("- Desktop shortcuts:")
+    print("- Shortcuts:")
     for shortcut_path in summary.shortcut_paths:
         print(f"  - {shortcut_path}")
     if summary.dependency_results:
@@ -1260,11 +1123,18 @@ def prompt_dependency_failure(dep: ExternalDependency, message: str) -> str:
 
 def perform_install(args: argparse.Namespace, reporter: Optional[InstallReporter] = None) -> int:
     reporter = reporter or InstallReporter()
-    ensure_admin()
+    install_dir = resolve_install_dir(args)
+    system_data_dir = resolve_system_data_dir(args)
+    user_data_dir = resolve_user_data_dir(args)
+    if not args.smoke_test:
+        ensure_admin()
 
-    guide_url = args.guide_url or os.environ.get(GUIDE_URL_ENV)
     reporter.stage("Opening install guide")
-    show_install_guide(guide_url, reporter=reporter)
+    if args.smoke_test:
+        reporter.info("Smoke test mode: skipping installation guide launch.")
+    else:
+        guide_url = args.guide_url or os.environ.get(GUIDE_URL_ENV)
+        show_install_guide(guide_url, reporter=reporter)
 
     payload_url = args.payload_url or os.environ.get(PAYLOAD_URL_ENV)
     payload_sha = args.payload_sha256 or os.environ.get(PAYLOAD_SHA_ENV)
@@ -1277,9 +1147,12 @@ def perform_install(args: argparse.Namespace, reporter: Optional[InstallReporter
     uninstall_resource = resolve_resource(UNINSTALLER_RELATIVE)
 
     dependency_results: List[DependencyInstallResult] = []
-    if args.skip_dependencies:
+    if args.skip_dependencies or args.smoke_test:
         reporter.stage("Installing prerequisites")
-        reporter.info("Skipping prerequisite dependency installation.")
+        if args.smoke_test:
+            reporter.info("Smoke test mode: skipping prerequisite dependency installation.")
+        else:
+            reporter.info("Skipping prerequisite dependency installation.")
     else:
         manifest_ref = (
             args.dependency_manifest
@@ -1294,26 +1167,44 @@ def perform_install(args: argparse.Namespace, reporter: Optional[InstallReporter
     transaction = InstallTransaction()
     try:
         reporter.stage("Copying application files")
-        installed_path = copy_binary(resource, INSTALL_DIR)
+        installed_path = copy_bundle(resource, install_dir)
         transaction.installed_path = installed_path
-        uninstall_executable = copy_binary(uninstall_resource, INSTALL_DIR)
+        uninstall_install_dir = install_dir / UNINSTALLER_INSTALL_SUBDIR
+        uninstall_executable = copy_bundle(uninstall_resource, uninstall_install_dir)
         transaction.uninstall_executable = uninstall_executable
-        transaction.reports_dir = create_reports_directory()
+        transaction.reports_dir = create_reports_directory(args)
         reporter.info(f"Reports will be stored at {transaction.reports_dir}")
         reporter.stage("Updating PATH")
-        previous_path = update_user_path(INSTALL_DIR)
+        if args.smoke_test:
+            reporter.info("Smoke test mode: skipping PATH update.")
+            previous_path = ""
+        else:
+            previous_path = update_user_path(install_dir)
         transaction.previous_user_path = previous_path
         backup_file = installed_path.parent / PATH_BACKUP_NAME
         backup_file.write_text(previous_path, encoding="utf-8")
         transaction.backup_file = backup_file
         reporter.stage("Creating shortcuts")
-        transaction.shortcut_paths = create_shortcut(installed_path)
+        if args.smoke_test:
+            reporter.info("Smoke test mode: skipping desktop shortcuts.")
+            transaction.shortcut_paths = []
+        else:
+            transaction.shortcut_paths = create_shortcut(installed_path)
         reporter.stage("Registering automation task")
-        register_automation_task(installed_path)
-        transaction.automation_task_registered = True
+        if args.smoke_test:
+            reporter.info("Smoke test mode: skipping automation task registration.")
+        else:
+            register_automation_task(installed_path)
+            transaction.automation_task_registered = True
         reporter.stage("Installing uninstaller")
         reporter.stage("Writing uninstall script")
-        uninstall_script = write_uninstall_script(installed_path, backup_file)
+        uninstall_script = write_uninstall_script(
+            installed_path,
+            backup_file,
+            system_data_path=system_data_dir,
+            user_data_path=user_data_dir,
+            shortcut_paths=transaction.shortcut_paths,
+        )
         transaction.uninstall_script = uninstall_script
         register_startup_script = write_register_startup_script(installed_path)
         transaction.register_startup_script = register_startup_script
@@ -1331,7 +1222,7 @@ def perform_install(args: argparse.Namespace, reporter: Optional[InstallReporter
     reporter.summary(
         InstallSummary(
             installed_path=installed_path,
-            reports_dir=transaction.reports_dir or REPORTS_DIR,
+            reports_dir=transaction.reports_dir or resolve_reports_dir(args),
             shortcut_paths=transaction.shortcut_paths or [],
             uninstall_executable=uninstall_executable,
             uninstall_script=uninstall_script,
@@ -1342,23 +1233,12 @@ def perform_install(args: argparse.Namespace, reporter: Optional[InstallReporter
     return 0
 
 
-def should_use_installer_ui(args: argparse.Namespace) -> bool:
-    return bool(getattr(sys, "frozen", False) and not args.console and tk is not None and ttk is not None)
-
-
-def run_installer_ui(args: argparse.Namespace) -> int:
-    ui = InstallerUI(args)
-    return ui.run()
-
-
 def main(argv: Optional[list[str]] = None) -> int:
     ensure_frozen_installer_elevation(argv)
     args = parse_args(argv)
     if getattr(sys, "frozen", False):
         active_dir = Path(getattr(sys, "_MEIPASS")) if hasattr(sys, "_MEIPASS") else None
         cleanup_stale_mei_directories(active_dir=active_dir)
-    if should_use_installer_ui(args):
-        return run_installer_ui(args)
     return perform_install(args, reporter=InstallReporter())
 
 

@@ -18,8 +18,8 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
+    [],
+    [],
     [],
     name='SecurityGateway-Uninstall',
     debug=False,
@@ -27,6 +27,7 @@ exe = EXE(
     strip=False,
     upx=True,
     upx_exclude=[],
+    exclude_binaries=True,
     console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -34,4 +35,14 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     version='spec\\SecurityGatewayUninstall.version.txt',
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name='SecurityGateway-Uninstall',
 )

@@ -23,7 +23,7 @@ payload_root = resolve_bundle_root("SECURITY_GATEWAY_PAYLOAD_PATH", "SecurityGat
 uninstaller_root = resolve_bundle_root("SECURITY_GATEWAY_UNINSTALLER_PATH", "SecurityGateway-Uninstall.exe")
 
 a = Analysis(
-    ['installer\\installer_gui.py'],
+    ['installer\\installer.py'],
     pathex=[],
     binaries=[],
     datas=[
@@ -46,18 +46,18 @@ exe = EXE(
     [],
     [],
     [],
-    name='SecurityGatewayInstaller',
+    name='SecurityGatewayInstallerConsole',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
     upx_exclude=[],
     exclude_binaries=True,
-    console=False,
+    console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
-    uac_admin=True,
+    uac_admin=False,
     runtime_tmpdir=os.environ.get("SECURITY_GATEWAY_RUNTIME_TMPDIR"),
     codesign_identity=None,
     entitlements_file=None,
@@ -73,5 +73,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='SecurityGatewayInstaller',
+    name='SecurityGatewayInstallerConsole',
 )

@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
+from ipaddress import ip_address
 from pathlib import Path
-from typing import Any, Callable, cast
+from types import SimpleNamespace
+from typing import Any, Callable, Mapping, cast
 
 try:
     import tkinter as tk
@@ -19,20 +22,50 @@ except Exception:  # pragma: no cover
 from .alerts import alert_manager
 from .audit import AuditLogger
 from .config import settings
+from .dashboard_view_state import (
+    DashboardViewStateClient,
+    HttpDashboardViewStateClient,
+    build_dashboard_view_state_client,
+)
 from .models import (
     SocAlertPromoteCaseRequest,
     SocAlertStatus,
     SocAlertUpdate,
+    SocCaseTelemetryClusterCaseRequest,
+    SocCaseEndpointTimelineClusterCaseRequest,
+    SocCaseRuleGroupCaseRequest,
     SocCaseCreate,
+    SocEndpointTimelineCaseRequest,
     SocCaseStatus,
     SocCaseUpdate,
+    SocDashboardViewStateUpdate,
     SocDetectionRuleUpdate,
     SocNetworkEvidenceCaseRequest,
     SocPacketSessionCaseRequest,
     SocSeverity,
+    SocTelemetryClusterCaseRequest,
 )
 from .network_monitor import NetworkMonitor
 from .packet_monitor import PacketMonitor
+from .remote_soc_client import (
+    RemoteNetworkMonitorClient,
+    RemotePacketMonitorClient,
+    RemotePlatformClient,
+    RemoteSecurityOperationsClient,
+    RemoteTrackerIntelClient,
+)
+from .platform import (
+    cancel_platform_node_action,
+    clear_platform_node_drain,
+    clear_platform_node_maintenance,
+    request_platform_node_refresh,
+    retry_platform_node_action,
+    start_platform_node_drain,
+    clear_platform_node_suppression,
+    start_platform_node_maintenance,
+    suppress_platform_node,
+    update_platform_node_metadata,
+)
 from .soc import SecurityOperationsManager
 from .tracker_intel import TrackerIntel
 
@@ -97,6 +130,13 @@ class SocDashboard:
             "case_status": "all",
             "case_sort": "updated_asc",
         },
+        "operational": {
+            "alert_severity": "all",
+            "alert_link_state": "all",
+            "alert_sort": "updated_desc",
+            "case_status": "all",
+            "case_sort": "updated_desc",
+        },
         "my-queue": {
             "alert_severity": "all",
             "alert_link_state": "all",
@@ -106,7 +146,15 @@ class SocDashboard:
         },
     }
 
-    def __init__(self, manager: SecurityOperationsManager | None = None):
+    def __init__(
+        self,
+        manager: Any | None = None,
+        dashboard_view_state_client: DashboardViewStateClient | None = None,
+        tracker_intel: Any | None = None,
+        packet_monitor: Any | None = None,
+        network_monitor: Any | None = None,
+        platform_client: Any | None = None,
+    ):
         if tk is None or ttk is None:
             raise RuntimeError("Tk SOC dashboard is unavailable on this machine.")
         self.manager = manager or SecurityOperationsManager(
@@ -116,7 +164,11 @@ class SocDashboard:
             audit_logger=AuditLogger(settings.audit_log_path),
             alert_manager=alert_manager,
         )
-        self.tracker_intel = TrackerIntel(
+        self.dashboard_view_state_client = dashboard_view_state_client or build_dashboard_view_state_client(
+            manager=self.manager,
+            path=settings.soc_dashboard_view_state_path,
+        )
+        self.tracker_intel = tracker_intel or TrackerIntel(
             extra_domains_path=settings.tracker_domain_list_path,
             feed_cache_path=settings.tracker_feed_cache_path,
             feed_urls=settings.tracker_feed_urls,
@@ -128,7 +180,7 @@ class SocDashboard:
             verify_tls=settings.tracker_feed_verify_tls,
             ca_bundle_path=settings.tracker_feed_ca_bundle_path,
         )
-        self.packet_monitor = PacketMonitor(
+        self.packet_monitor = packet_monitor or PacketMonitor(
             state_path=settings.packet_monitor_state_path,
             sample_seconds=settings.packet_monitor_sample_seconds,
             min_packet_count=settings.packet_monitor_min_packet_count,
@@ -137,7 +189,7 @@ class SocDashboard:
             pkt_size=settings.packet_monitor_capture_bytes,
             sensitive_ports=settings.packet_monitor_sensitive_ports,
         )
-        self.network_monitor = NetworkMonitor(
+        self.network_monitor = network_monitor or NetworkMonitor(
             state_path=settings.network_monitor_state_path,
             suspicious_repeat_threshold=settings.network_monitor_repeat_threshold,
             dos_hit_threshold=settings.network_monitor_dos_hit_threshold,
@@ -145,6 +197,7 @@ class SocDashboard:
             dos_port_span_threshold=settings.network_monitor_dos_port_span_threshold,
             sensitive_ports=settings.network_monitor_sensitive_ports,
         )
+        self.platform_client = platform_client
         self.root = tk.Tk()
         self.root.title("Security Gateway SOC Dashboard")
         self.root.configure(bg="#eef4ff")
@@ -160,6 +213,14 @@ class SocDashboard:
         self.workload_assignee_var = tk.StringVar(value="all")
         self.alert_age_bucket_var = tk.StringVar(value="all")
         self.case_age_bucket_var = tk.StringVar(value="all")
+        self.hunt_cluster_mode_var = tk.StringVar(value="remote_ip")
+        self.hunt_cluster_value_var = tk.StringVar(value="")
+        self.saved_hunt_cluster_mode: str | None = None
+        self.saved_hunt_cluster_value: str | None = None
+        self.saved_hunt_cluster_key: str | None = None
+        self.saved_hunt_cluster_action: str | None = None
+        self.operational_reason_filter: str | None = None
+        self.saved_operational_reason_filter: str | None = None
         self.alert_rows_by_id: dict[str, dict[str, Any]] = {}
         self.case_rows_by_id: dict[str, dict[str, Any]] = {}
         self.event_rows_by_id: dict[str, dict[str, Any]] = {}
@@ -202,7 +263,7 @@ class SocDashboard:
         preset_combo = ttk.Combobox(
             identity_controls,
             textvariable=self.queue_preset_var,
-            values=("tier1-triage", "tier2-investigation", "containment", "review-closed", "unassigned", "needs-attention", "handoff", "my-queue", "custom"),
+            values=("tier1-triage", "tier2-investigation", "containment", "review-closed", "unassigned", "needs-attention", "handoff", "operational", "my-queue", "custom"),
             state="readonly",
             width=18,
         )
@@ -215,7 +276,7 @@ class SocDashboard:
 
         summary = ttk.Frame(self.root, padding=(18, 0, 18, 12), style="SOC.TFrame")
         summary.grid(row=1, column=0, sticky="ew")
-        for index in range(8):
+        for index in range(11):
             summary.columnconfigure(index, weight=1)
         self.summary_vars = {
             "events_total": tk.StringVar(value="0"),
@@ -224,8 +285,24 @@ class SocDashboard:
             "cases_total": tk.StringVar(value="0"),
             "open_cases": tk.StringVar(value="0"),
             "host_findings": tk.StringVar(value="0"),
+            "hunt_clusters": tk.StringVar(value="0"),
+            "operational_alerts": tk.StringVar(value="0"),
+            "operational_cases": tk.StringVar(value="0"),
             "stale_assigned_alerts": tk.StringVar(value="0"),
             "stale_active_cases": tk.StringVar(value="0"),
+        }
+        self.summary_label_vars = {
+            "events_total": tk.StringVar(value="Events"),
+            "alerts_total": tk.StringVar(value="Alerts"),
+            "open_alerts": tk.StringVar(value="Open Alerts"),
+            "cases_total": tk.StringVar(value="Cases"),
+            "open_cases": tk.StringVar(value="Open Cases"),
+            "host_findings": tk.StringVar(value="Host Findings"),
+            "hunt_clusters": tk.StringVar(value="Hunt Clusters"),
+            "operational_alerts": tk.StringVar(value="Operational Alerts"),
+            "operational_cases": tk.StringVar(value="Operational Cases"),
+            "stale_assigned_alerts": tk.StringVar(value="Stale Assigned Alerts"),
+            "stale_active_cases": tk.StringVar(value="Stale Active Cases"),
         }
         cards = [
             ("Events", "events_total", "#dbeafe"),
@@ -234,6 +311,9 @@ class SocDashboard:
             ("Cases", "cases_total", "#d1fae5"),
             ("Open Cases", "open_cases", "#ddd6fe"),
             ("Host Findings", "host_findings", "#fee2e2"),
+            ("Hunt Clusters", "hunt_clusters", "#e9d5ff"),
+            ("Operational Alerts", "operational_alerts", "#e0f2fe"),
+            ("Operational Cases", "operational_cases", "#dcfce7"),
             ("Stale Assigned Alerts", "stale_assigned_alerts", "#fde2e2"),
             ("Stale Active Cases", "stale_active_cases", "#ede9fe"),
         ]
@@ -393,17 +473,79 @@ class SocDashboard:
         ttk.Button(ops_controls, text="View Packet Correlations", command=self.view_packet_overlap_correlations).grid(
             row=2, column=18, sticky="w", padx=(8, 0), pady=(8, 0)
         )
-        ttk.Button(ops_controls, text="Toggle Detection Rule", command=self.toggle_detection_rule).grid(
+        ttk.Button(ops_controls, text="View Operational Alerts", command=self.view_operational_alerts).grid(
             row=2, column=19, sticky="w", padx=(8, 0), pady=(8, 0)
         )
-        ttk.Button(ops_controls, text="Update Detection Param", command=self.update_detection_rule_parameter).grid(
+        ttk.Button(ops_controls, text="View Operational Cases", command=self.view_operational_cases).grid(
             row=2, column=20, sticky="w", padx=(8, 0), pady=(8, 0)
         )
-        ttk.Button(ops_controls, text="View Rule Alerts", command=self.view_detection_rule_alerts).grid(
+        ttk.Button(ops_controls, text="Acknowledge Operational", command=self.acknowledge_selected_operational_alert).grid(
             row=2, column=21, sticky="w", padx=(8, 0), pady=(8, 0)
         )
-        ttk.Button(ops_controls, text="View Rule Evidence", command=self.view_detection_rule_evidence).grid(
+        ttk.Button(ops_controls, text="Promote Operational", command=self.promote_selected_operational_alert).grid(
             row=2, column=22, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="Open Operational Case", command=self.open_selected_operational_case).grid(
+            row=2, column=23, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="Investigating Operational Case", command=self.mark_selected_operational_case_investigating).grid(
+            row=2, column=24, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="Close Operational Case", command=self.close_selected_operational_case).grid(
+            row=2, column=25, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="Clear Operational Pressure", command=self.clear_operational_case_pressure).grid(
+            row=2, column=26, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="View Operational Case Alerts", command=self.view_operational_case_alerts).grid(
+            row=2, column=27, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="Clear Operational Filter", command=self.clear_operational_reason_filter).grid(
+            row=2, column=28, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="Toggle Detection Rule", command=self.toggle_detection_rule).grid(
+            row=2, column=29, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="Update Detection Param", command=self.update_detection_rule_parameter).grid(
+            row=2, column=30, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="View Rule Alerts", command=self.view_detection_rule_alerts).grid(
+            row=2, column=31, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="View Rule Evidence", command=self.view_detection_rule_evidence).grid(
+            row=2, column=32, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="View Endpoint Timeline", command=self.view_endpoint_timeline).grid(
+            row=2, column=33, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="View Timeline Clusters", command=self.view_endpoint_timeline_clusters).grid(
+            row=2, column=34, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="Promote Timeline Slice", command=self.promote_endpoint_timeline_to_case).grid(
+            row=2, column=35, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="View Hunt Clusters", command=self.view_hunt_telemetry_clusters).grid(
+            row=2, column=36, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="Promote Hunt Cluster", command=self.promote_hunt_telemetry_cluster_to_case).grid(
+            row=2, column=37, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Label(ops_controls, text="Hunt Cluster", style="SOC.TLabel").grid(row=5, column=9, sticky="w", padx=(12, 0), pady=(8, 0))
+        ttk.Combobox(
+            ops_controls,
+            textvariable=self.hunt_cluster_mode_var,
+            values=("remote_ip", "device_id", "process_guid"),
+            state="readonly",
+            width=12,
+        ).grid(row=5, column=10, sticky="w", padx=(8, 0), pady=(8, 0))
+        ttk.Entry(ops_controls, textvariable=self.hunt_cluster_value_var, width=24).grid(
+            row=5, column=11, columnspan=2, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="Apply Hunt Filter", command=self.apply_hunt_cluster_filter).grid(
+            row=5, column=13, columnspan=2, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="Clear Hunt Filter", command=self.clear_hunt_cluster_filter).grid(
+            row=5, column=15, columnspan=2, sticky="w", padx=(8, 0), pady=(8, 0)
         )
         ttk.Button(ops_controls, text="Open Selected Correlation", command=self.open_selected_correlation_action).grid(
             row=1, column=0, columnspan=3, sticky="w", pady=(8, 0)
@@ -413,6 +555,51 @@ class SocDashboard:
         )
         ttk.Button(ops_controls, text="Clear Activity Focus", command=self.clear_activity_focus).grid(
             row=1, column=6, columnspan=3, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="View Remote Nodes", command=self.view_remote_nodes).grid(
+            row=3, column=9, columnspan=2, sticky="w", padx=(12, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="View Node Action History", command=self.view_remote_node_action_history).grid(
+            row=3, column=11, columnspan=2, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="View Node Pressure", command=self.view_remote_node_action_pressure).grid(
+            row=3, column=13, columnspan=2, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="Refresh Remote Nodes", command=self.refresh_remote_nodes).grid(
+            row=3, column=15, columnspan=2, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="Acknowledge Node", command=self.acknowledge_remote_node).grid(
+            row=3, column=17, columnspan=2, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="Escalate Node", command=self.escalate_remote_node).grid(
+            row=3, column=19, columnspan=2, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="Suppress Node", command=self.suppress_remote_node).grid(
+            row=3, column=21, columnspan=2, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="Clear Node Suppression", command=self.clear_remote_node_suppression).grid(
+            row=3, column=23, columnspan=2, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="Node Maintenance", command=self.start_remote_node_maintenance).grid(
+            row=4, column=9, columnspan=2, sticky="w", padx=(12, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="Clear Maintenance", command=self.clear_remote_node_maintenance).grid(
+            row=4, column=11, columnspan=2, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="Request Node Refresh", command=self.request_remote_node_refresh).grid(
+            row=4, column=13, columnspan=2, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="Drain Node", command=self.drain_remote_node).grid(
+            row=4, column=15, columnspan=2, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="Mark Node Ready", command=self.mark_remote_node_ready).grid(
+            row=4, column=17, columnspan=2, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="Retry Node Action", command=self.retry_remote_node_action).grid(
+            row=4, column=19, columnspan=2, sticky="w", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Button(ops_controls, text="Cancel Node Action", command=self.cancel_remote_node_action).grid(
+            row=4, column=21, columnspan=2, sticky="w", padx=(8, 0), pady=(8, 0)
         )
         self.ops_detail_text = tk.Text(
             ops_frame,
@@ -548,7 +735,11 @@ class SocDashboard:
     def _build_summary_card(self, parent: Any, *, row: int, column: int, label: str, key: str, bg: str) -> None:
         card = tk.Frame(parent, bg=bg, bd=0, highlightthickness=0, padx=14, pady=14, cursor="hand2")
         card.grid(row=row, column=column, sticky="nsew", padx=(0 if column == 0 else 8, 0))
-        title = tk.Label(card, text=label, font=("Segoe UI", 10, "bold"), bg=bg, fg="#1f2937", cursor="hand2")
+        title_var = getattr(self, "summary_label_vars", {}).get(key)
+        if title_var is None:
+            title = tk.Label(card, text=label, font=("Segoe UI", 10, "bold"), bg=bg, fg="#1f2937", cursor="hand2")
+        else:
+            title = tk.Label(card, textvariable=title_var, font=("Segoe UI", 10, "bold"), bg=bg, fg="#1f2937", cursor="hand2")
         title.pack(anchor="w")
         value = tk.Label(card, textvariable=self.summary_vars[key], font=("Segoe UI", 22, "bold"), bg=bg, fg="#0f2f57", cursor="hand2")
         value.pack(anchor="w", pady=(8, 0))
@@ -669,6 +860,12 @@ class SocDashboard:
     def apply_queue_preset(self) -> None:
         preset_name = self.queue_preset_var.get() or "custom"
         preset = self._preset_values(preset_name)
+        if str(preset_name).strip().lower() != "operational":
+            self.operational_reason_filter = None
+        elif self.operational_reason_filter is None:
+            restored_filter = self._persisted_operational_reason_filter()
+            self.operational_reason_filter = restored_filter
+            self.saved_operational_reason_filter = restored_filter
         if preset:
             self.alert_severity_var.set(preset["alert_severity"])
             self.alert_link_state_var.set(preset["alert_link_state"])
@@ -677,8 +874,39 @@ class SocDashboard:
             self.case_sort_var.set(preset["case_sort"])
         self.refresh()
 
+    @staticmethod
+    def _normalize_hunt_cluster_mode(value: str | None) -> str:
+        normalized = str(value or "").strip()
+        return normalized if normalized in {"remote_ip", "device_id", "process_guid"} else "remote_ip"
+
+    @staticmethod
+    def _normalize_hunt_cluster_action(value: str | None) -> str:
+        normalized = str(value or "").strip()
+        return normalized if normalized in {"events", "existing_case", "case", "details"} else "events"
+
     def refresh(self) -> None:
         dashboard = cast(dict[str, Any], self.manager.dashboard())
+        view_state = cast(dict[str, Any], dashboard.get("view_state") or {})
+        if getattr(self, "saved_operational_reason_filter", None) is None:
+            saved_filter = str(view_state.get("operational_reason_filter") or "").strip() or None
+            self.saved_operational_reason_filter = saved_filter
+            if self._selected_preset_name() == "operational" and self.operational_reason_filter is None:
+                self.operational_reason_filter = saved_filter
+        if getattr(self, "saved_hunt_cluster_mode", None) is None:
+            saved_hunt_mode = self._normalize_hunt_cluster_mode(cast(str | None, view_state.get("hunt_cluster_mode")))
+            saved_hunt_value = str(view_state.get("hunt_cluster_value") or "").strip() or None
+            self.saved_hunt_cluster_mode = saved_hunt_mode
+            self.saved_hunt_cluster_value = saved_hunt_value
+            if hasattr(self, "hunt_cluster_mode_var"):
+                self.hunt_cluster_mode_var.set(saved_hunt_mode)
+            if hasattr(self, "hunt_cluster_value_var"):
+                self.hunt_cluster_value_var.set(saved_hunt_value or "")
+        if getattr(self, "saved_hunt_cluster_key", None) is None:
+            self.saved_hunt_cluster_key = str(view_state.get("hunt_cluster_key") or "").strip() or None
+        if getattr(self, "saved_hunt_cluster_action", None) is None:
+            self.saved_hunt_cluster_action = self._normalize_hunt_cluster_action(
+                cast(str | None, view_state.get("hunt_cluster_action"))
+            )
         self._latest_dashboard = dashboard
         summary = cast(dict[str, Any], dashboard["summary"])
         workload = cast(dict[str, Any], dashboard.get("workload") or {})
@@ -686,6 +914,35 @@ class SocDashboard:
         dashboard["tracker_feed_status"] = self.tracker_intel.feed_status()
         packet_sessions = self._collect_packet_sessions()
         network_observations = self.network_monitor.list_recent_observations(limit=100)
+        all_alerts = self.manager.list_alerts()
+        operational_alerts = [
+            item
+            for item in all_alerts
+            if str(item.category or "").casefold() == "operational"
+        ]
+        operational_alert_count = len(operational_alerts)
+        operational_case_count = len(self._operational_cases())
+        operational_reason_counts = dict(
+            Counter(
+                self._operational_route_reason(getattr(item, "correlation_key", None))
+                for item in operational_alerts
+            )
+        )
+        dashboard["operational_status"] = {
+            "alert_count": operational_alert_count,
+            "case_count": operational_case_count,
+            "reason_counts": operational_reason_counts,
+            "active_filter": self.operational_reason_filter,
+            "saved_filter": getattr(self, "saved_operational_reason_filter", None),
+        }
+        dashboard["view_state"] = {
+            **view_state,
+            "operational_reason_filter": getattr(self, "saved_operational_reason_filter", None),
+            "hunt_cluster_mode": getattr(self, "saved_hunt_cluster_mode", None) or "remote_ip",
+            "hunt_cluster_value": getattr(self, "saved_hunt_cluster_value", None),
+            "hunt_cluster_key": getattr(self, "saved_hunt_cluster_key", None),
+            "hunt_cluster_action": getattr(self, "saved_hunt_cluster_action", None) or "events",
+        }
         dashboard["packet_session_status"] = {
             "session_count": len(packet_sessions),
             "recent_sessions": packet_sessions[:10],
@@ -700,14 +957,47 @@ class SocDashboard:
         alert_rows = self._alert_rows_for_view(dashboard)
         case_rows = self._case_rows_for_view(dashboard)
         all_events = self.manager.list_events(limit=500)
-        all_alerts = self.manager.list_alerts()
+        active_hunt_cluster_mode, active_hunt_cluster_filters = self._active_hunt_telemetry_cluster_filters()
+        active_hunt_cluster_value = str(active_hunt_cluster_filters.get(active_hunt_cluster_mode) or "").strip()
+        remote_ip_hunt_clusters = self._collect_hunt_telemetry_clusters(cluster_by="remote_ip", limit=100)
+        device_hunt_clusters = self._collect_hunt_telemetry_clusters(cluster_by="device_id", limit=100)
+        process_hunt_clusters = self._collect_hunt_telemetry_clusters(cluster_by="process_guid", limit=100)
+        dashboard["hunt_cluster_status"] = {
+            "count": len(remote_ip_hunt_clusters),
+            "cluster_mode_counts": {
+                "remote_ip": len(remote_ip_hunt_clusters),
+                "device_id": len(device_hunt_clusters),
+                "process_guid": len(process_hunt_clusters),
+            },
+            "active_mode": active_hunt_cluster_mode,
+            "active_value": active_hunt_cluster_value or None,
+            "recent_clusters": remote_ip_hunt_clusters[:5],
+        }
         for key, value in self.summary_vars.items():
             if key == "host_findings":
                 value.set(str(len(host_findings)))
+            elif key == "hunt_clusters":
+                value.set(str(len(remote_ip_hunt_clusters)))
+            elif key == "operational_alerts":
+                value.set(str(operational_alert_count))
+            elif key == "operational_cases":
+                value.set(str(operational_case_count))
             elif key in workload:
                 value.set(str(workload.get(key, 0)))
             else:
                 value.set(str(summary.get(key, 0)))
+        active_operational_filter = str(self.operational_reason_filter or "").strip()
+        if hasattr(self, "summary_label_vars"):
+            operational_alerts_label = cast(dict[str, Any], self.summary_label_vars).get("operational_alerts")
+            if operational_alerts_label is not None and hasattr(operational_alerts_label, "set"):
+                operational_alerts_label.set(
+                    self._format_operational_summary_label("Operational Alerts", active_operational_filter)
+                )
+            operational_cases_label = cast(dict[str, Any], self.summary_label_vars).get("operational_cases")
+            if operational_cases_label is not None and hasattr(operational_cases_label, "set"):
+                operational_cases_label.set(
+                    self._format_operational_summary_label("Operational Cases", active_operational_filter)
+                )
         self.status_var.set(self._format_status_line(dashboard, host_findings_count=len(host_findings)))
         self._populate_tree(
             self.alert_tree,
@@ -1035,7 +1325,22 @@ class SocDashboard:
         _case_id, case_payload = selected
         linked_alerts = self._resolve_linked_alerts(case_payload)
         source_events = self._resolve_case_source_events(case_payload)
-        choice = self._choose_case_activity_pivot(case_payload, linked_alerts=linked_alerts, source_events=source_events)
+        case_timeline_clusters = self._resolve_case_endpoint_timeline_clusters(case_payload, source_events=source_events)
+        hunt_available = bool(case_payload.get("observables") or source_events)
+        timeline_filters: dict[str, Any] = {}
+        if not case_timeline_clusters:
+            timeline_filters = self._endpoint_timeline_filters_from_case(case_payload, source_events=source_events)
+        grouped_rule_alerts = self._resolve_case_rule_alert_groups(case_payload, linked_alerts)
+        grouped_rule_evidence = self._resolve_case_rule_evidence_groups(case_payload, source_events)
+        choice = self._call_case_activity_pivot(
+            case_payload,
+            linked_alerts=linked_alerts,
+            source_events=source_events,
+            timeline_available=bool(case_timeline_clusters or timeline_filters),
+            hunt_available=hunt_available,
+            grouped_rule_alerts=grouped_rule_alerts,
+            grouped_rule_evidence=grouped_rule_evidence,
+        )
         if choice == "alerts":
             selected_alert = self._select_summary_record("alert", linked_alerts, title="Linked Alerts")
             if selected_alert is None:
@@ -1049,6 +1354,22 @@ class SocDashboard:
                 self._show_info_dialog("Case Linked Activity", self._format_case_linked_activity(case_payload, linked_alerts, source_events))
                 return
             self._pivot_from_event(selected_event)
+            return
+        if choice == "timeline":
+            if case_timeline_clusters:
+                self._pivot_from_case_timeline_clusters(case_payload, linked_alerts, source_events, case_timeline_clusters)
+                return
+            if timeline_filters:
+                self._pivot_from_endpoint_timeline(case_payload, timeline_filters=timeline_filters)
+            return
+        if choice == "hunt":
+            self._pivot_from_case_hunt_telemetry_clusters(case_payload, linked_alerts, source_events)
+            return
+        if choice == "rule_alerts":
+            self._pivot_from_case_rule_alert_groups(case_payload, grouped_rule_alerts, linked_alerts, source_events)
+            return
+        if choice == "rule_evidence":
+            self._pivot_from_case_rule_evidence_groups(case_payload, grouped_rule_evidence, linked_alerts, source_events)
             return
         self._show_info_dialog("Case Linked Activity", self._format_case_linked_activity(case_payload, linked_alerts, source_events))
 
@@ -1224,6 +1545,9 @@ class SocDashboard:
             "cases_total": self._show_all_cases_summary_drilldown,
             "open_cases": self._show_open_cases_summary_drilldown,
             "host_findings": self._show_host_findings_summary_drilldown,
+            "hunt_clusters": self._show_hunt_clusters_summary_drilldown,
+            "operational_alerts": self._show_operational_alerts_summary_drilldown,
+            "operational_cases": self._show_operational_cases_summary_drilldown,
             "stale_assigned_alerts": self._show_stale_alerts_summary_drilldown,
             "stale_active_cases": self._show_stale_cases_summary_drilldown,
         }
@@ -1271,7 +1595,17 @@ class SocDashboard:
         source_events = self._resolve_source_events(alert_payload)
         linked_case_id = str(alert_payload.get("linked_case_id") or "")
         linked_case = self.case_rows_by_id.get(linked_case_id) if linked_case_id else None
-        choice = self._choose_alert_pivot(alert_payload, source_events=source_events, linked_case=linked_case)
+        timeline_filters = self._endpoint_timeline_filters_from_alert(
+            alert_payload,
+            source_events=source_events,
+            linked_case=linked_case,
+        )
+        choice = self._choose_alert_pivot(
+            alert_payload,
+            source_events=source_events,
+            linked_case=linked_case,
+            timeline_available=bool(timeline_filters),
+        )
         if choice == "events":
             selected_event = self._select_summary_record_or_show_info(
                 "event",
@@ -1284,6 +1618,9 @@ class SocDashboard:
                 return
             self._pivot_from_event(selected_event)
             return
+        if choice == "timeline" and timeline_filters:
+            self._pivot_from_alert_timeline(alert_payload, timeline_filters=timeline_filters)
+            return
         if choice == "case" and linked_case is not None:
             self._pivot_from_case(linked_case)
             return
@@ -1292,7 +1629,22 @@ class SocDashboard:
     def _pivot_from_case(self, case_payload: dict[str, Any]) -> None:
         linked_alerts = self._resolve_linked_alerts(case_payload)
         source_events = self._resolve_case_source_events(case_payload)
-        choice = self._choose_case_activity_pivot(case_payload, linked_alerts=linked_alerts, source_events=source_events)
+        case_timeline_clusters = self._resolve_case_endpoint_timeline_clusters(case_payload, source_events=source_events)
+        hunt_available = bool(case_payload.get("observables") or source_events)
+        timeline_filters: dict[str, Any] = {}
+        if not case_timeline_clusters:
+            timeline_filters = self._endpoint_timeline_filters_from_case(case_payload, source_events=source_events)
+        grouped_rule_alerts = self._resolve_case_rule_alert_groups(case_payload, linked_alerts)
+        grouped_rule_evidence = self._resolve_case_rule_evidence_groups(case_payload, source_events)
+        choice = self._call_case_activity_pivot(
+            case_payload,
+            linked_alerts=linked_alerts,
+            source_events=source_events,
+            timeline_available=bool(case_timeline_clusters or timeline_filters),
+            hunt_available=hunt_available,
+            grouped_rule_alerts=grouped_rule_alerts,
+            grouped_rule_evidence=grouped_rule_evidence,
+        )
         if choice == "alerts":
             selected_alert = self._select_summary_record_or_show_info(
                 "alert",
@@ -1316,6 +1668,22 @@ class SocDashboard:
             if selected_event is None:
                 return
             self._pivot_from_event(selected_event)
+            return
+        if choice == "timeline":
+            if case_timeline_clusters:
+                self._pivot_from_case_timeline_clusters(case_payload, linked_alerts, source_events, case_timeline_clusters)
+                return
+            if timeline_filters:
+                self._pivot_from_endpoint_timeline(case_payload, timeline_filters=timeline_filters)
+            return
+        if choice == "hunt":
+            self._pivot_from_case_hunt_telemetry_clusters(case_payload, linked_alerts, source_events)
+            return
+        if choice == "rule_alerts":
+            self._pivot_from_case_rule_alert_groups(case_payload, grouped_rule_alerts, linked_alerts, source_events)
+            return
+        if choice == "rule_evidence":
+            self._pivot_from_case_rule_evidence_groups(case_payload, grouped_rule_evidence, linked_alerts, source_events)
             return
         self._show_info_dialog("Case Details", self._format_case_detail(case_payload))
 
@@ -1359,6 +1727,37 @@ class SocDashboard:
         if not self.host_tree.selection() and self.host_tree.get_children():
             self.host_tree.selection_set(self.host_tree.get_children()[0])
             self._refresh_host_detail()
+
+    def _show_hunt_clusters_summary_drilldown(self) -> None:
+        self.view_hunt_telemetry_clusters()
+
+    def _show_operational_alerts_summary_drilldown(self) -> None:
+        choice = self._choose_operational_summary_reason("alerts")
+        if choice == "cancel":
+            return
+        self._set_operational_reason_filter(None if choice == "all" else choice)
+        self._navigate_summary_view(preset_name="operational", focus_target="alerts")
+
+    def _show_operational_cases_summary_drilldown(self) -> None:
+        choice = self._choose_operational_summary_reason("cases")
+        if choice == "cancel":
+            return
+        self._set_operational_reason_filter(None if choice == "all" else choice)
+        self._navigate_summary_view(preset_name="operational", focus_target="cases")
+
+    def clear_operational_reason_filter(self) -> None:
+        self._set_operational_reason_filter(None)
+        self.refresh()
+
+    def apply_hunt_cluster_filter(self) -> None:
+        mode = self._selected_hunt_telemetry_cluster_mode()
+        value = str(self.hunt_cluster_value_var.get().strip() if hasattr(self, "hunt_cluster_value_var") else "")
+        self._set_hunt_telemetry_cluster_filter(mode, value or None)
+        self.refresh()
+
+    def clear_hunt_cluster_filter(self) -> None:
+        self._set_hunt_telemetry_cluster_filter("remote_ip", None)
+        self.refresh()
 
     def _refresh_correlation_detail(self) -> None:
         alert_id = self._selected_tree_item_id(self.correlation_tree)
@@ -1705,6 +2104,725 @@ class SocDashboard:
             return
         self._pivot_from_network_evidence(selected)
 
+    def view_endpoint_timeline(self) -> None:
+        timeline_rows = self._collect_endpoint_timeline(limit=100)
+        selected = self._select_summary_record_or_show_info(
+            "endpoint_timeline",
+            timeline_rows,
+            title="Endpoint Timeline",
+            info_title="Endpoint Timeline",
+            limit=50,
+        )
+        if selected is None:
+            return
+        self._pivot_from_event(selected)
+
+    def view_endpoint_timeline_clusters(self) -> None:
+        cluster_by = self._choose_endpoint_timeline_cluster_mode()
+        clusters = self._collect_endpoint_timeline_clusters(cluster_by=cluster_by, limit=100)
+        selected = self._select_summary_record_or_show_info(
+            "endpoint_timeline_cluster",
+            clusters,
+            title="Endpoint Timeline Clusters",
+            info_title="Endpoint Timeline Clusters",
+            limit=50,
+        )
+        if selected is None:
+            return
+        selected = self._resolve_endpoint_timeline_cluster_detail(selected)
+        open_case_ids = [str(item) for item in cast(list[Any], selected.get("open_case_ids") or []) if str(item)]
+        if self._handle_existing_case_guard(
+            open_case_ids=open_case_ids,
+            context_label=f"Endpoint timeline cluster {selected.get('label', selected.get('cluster_key', '-'))}",
+        ):
+            return
+        timeline_rows = self._resolve_endpoint_timeline_cluster_events(selected)
+        event_selected = self._select_summary_record_or_show_info(
+            "endpoint_timeline",
+            timeline_rows,
+            title="Endpoint Timeline",
+            info_title="Endpoint Timeline",
+            info_text=self._format_endpoint_timeline_cluster_detail(selected),
+            limit=50,
+        )
+        if event_selected is None:
+            return
+        self._pivot_from_event(event_selected)
+
+    def view_hunt_telemetry_clusters(self) -> None:
+        cluster_by, cluster_filters = self._active_hunt_telemetry_cluster_filters()
+        clusters = self._collect_hunt_telemetry_clusters(cluster_by=cluster_by, limit=100, **cluster_filters)
+        saved_cluster_key = str(getattr(self, "saved_hunt_cluster_key", "") or "").strip()
+        selected = next(
+            (dict(item) for item in clusters if str(item.get("cluster_key") or "").strip() == saved_cluster_key),
+            None,
+        )
+        if selected is None:
+            selected = self._select_summary_record_or_show_info(
+                "hunt_telemetry_cluster",
+                clusters,
+                title="Hunt Telemetry Clusters",
+                info_title="Hunt Telemetry Clusters",
+                limit=50,
+            )
+        if selected is None:
+            return
+        selected = self._resolve_hunt_telemetry_cluster_detail(selected)
+        self._handle_hunt_telemetry_cluster_selection(selected)
+
+    def view_remote_nodes(self) -> None:
+        remote_nodes = self._collect_remote_nodes()
+        selected = self._select_summary_record_or_show_info(
+            "remote_node",
+            remote_nodes,
+            title="Remote Nodes",
+            info_title="Remote Nodes",
+        )
+        if selected is None:
+            return
+        self._show_info_dialog("Remote Node", self._format_remote_node_detail(self._resolve_remote_node_detail(selected)))
+
+    def view_remote_node_action_history(self) -> None:
+        remote_nodes = self._collect_remote_nodes()
+        if not remote_nodes:
+            self._show_info_dialog("Node Action History", "No remote nodes available.")
+            return
+        filter_choice = self._choose_action_dialog(
+            title="Node Action History",
+            summary="Choose a node action history filter.",
+            actions=[
+                ("Failed", "failed", 12),
+                ("Retried", "retried", 12),
+                ("Cancelled", "cancelled", 12),
+                ("Requested", "requested", 12),
+            ],
+            default_choice="all",
+            no_tk_choice="failed",
+            width=520,
+            height=180,
+            min_width=460,
+            min_height=160,
+            detail_label="All Nodes",
+            detail_width=12,
+        )
+        filtered = self._filter_remote_nodes_by_action_history(remote_nodes, filter_choice)
+        selected = self._select_summary_record_or_show_info(
+            "remote_node",
+            filtered,
+            title="Node Action History",
+            info_title="Node Action History",
+        )
+        if selected is None:
+            return
+        self._show_info_dialog("Node Action History", self._format_remote_node_detail(self._resolve_remote_node_detail(selected)))
+
+    def view_remote_node_action_pressure(self) -> None:
+        remote_nodes = self._collect_remote_nodes()
+        if not remote_nodes:
+            self._show_info_dialog("Node Action Pressure", "No remote nodes available.")
+            return
+        filter_choice = self._choose_action_dialog(
+            title="Node Action Pressure",
+            summary="Choose a remote node pressure filter.",
+            actions=[
+                ("Repeat Failures", "repeated_failures", 16),
+                ("Retry Pressure", "retry_pressure", 14),
+                ("Stuck Actions", "stuck_actions", 14),
+            ],
+            default_choice="all_active",
+            no_tk_choice="all_active",
+            width=540,
+            height=190,
+            min_width=480,
+            min_height=170,
+            detail_label="All Active",
+            detail_width=12,
+        )
+        filtered = self._filter_remote_nodes_by_action_pressure(remote_nodes, filter_choice)
+        selected = self._select_summary_record_or_show_info(
+            "remote_node",
+            filtered,
+            title="Node Action Pressure",
+            info_title="Node Action Pressure",
+        )
+        if selected is None:
+            return
+        if self._handle_existing_case_choice(
+            open_case_ids=[str(item) for item in cast(list[Any], selected.get("open_case_ids") or []) if str(item)],
+            context_label=f"Node action pressure on {selected.get('node_name', '-')}",
+            context_details=[
+                f"Status: {selected.get('status', 'unknown')}",
+                f"Repeat failures: {bool(selected.get('repeated_failure_active'))}",
+                f"Retry pressure: {bool(selected.get('retry_pressure_active'))}",
+                f"Stuck actions: {bool(selected.get('stuck_actions_active'))}",
+            ],
+            no_action_label="view node detail",
+        ):
+            return
+        self._show_info_dialog("Node Action Pressure", self._format_remote_node_detail(self._resolve_remote_node_detail(selected)))
+
+    def refresh_remote_nodes(self) -> None:
+        self.refresh()
+        if messagebox is not None:
+            messagebox.showinfo("Remote Nodes Refreshed", "Reloaded current remote node topology.")
+
+    def acknowledge_remote_node(self) -> None:
+        remote_nodes = self._collect_remote_nodes()
+        selected = self._select_summary_record_or_show_info(
+            "remote_node",
+            remote_nodes,
+            title="Remote Nodes",
+            info_title="Remote Nodes",
+        )
+        if selected is None:
+            return
+        analyst = self._current_analyst_identity() or "operator"
+        node_name = str(selected.get("node_name") or "")
+        platform_client = getattr(self, "platform_client", None)
+        manager = getattr(self, "manager", None)
+        if platform_client is not None and hasattr(platform_client, "acknowledge_platform_node"):
+            updated = cast(dict[str, Any], platform_client.acknowledge_platform_node(node_name, acknowledged_by=analyst))
+        elif manager is not None and hasattr(manager, "acknowledge_platform_node"):
+            updated = cast(dict[str, Any], manager.acknowledge_platform_node(node_name, acknowledged_by=analyst))
+        else:
+            updated = update_platform_node_metadata(
+                node_name,
+                {
+                    "acknowledged_at": datetime.now(UTC).isoformat(),
+                    "acknowledged_by": analyst,
+                },
+                path=settings.platform_node_registry_path,
+            )
+        self.refresh()
+        if messagebox is not None:
+            messagebox.showinfo(
+                "Remote Node Acknowledged",
+                f"Acknowledged {updated.get('node_name', '-')}"
+                f" as {analyst}.",
+            )
+
+    def suppress_remote_node(self) -> None:
+        remote_nodes = self._collect_remote_nodes()
+        selected = self._select_summary_record_or_show_info(
+            "remote_node",
+            remote_nodes,
+            title="Remote Nodes",
+            info_title="Remote Nodes",
+        )
+        if selected is None:
+            return
+        analyst = self._current_analyst_identity() or "operator"
+        minutes = 60
+        reason = None
+        if simpledialog is not None:
+            entered_minutes = simpledialog.askinteger(
+                "Suppress Remote Node",
+                f"Suppress node pressure for {selected.get('node_name', '-')} for how many minutes?",
+                initialvalue=60,
+                minvalue=1,
+                maxvalue=10_080,
+            )
+            if entered_minutes is None:
+                return
+            minutes = entered_minutes
+            reason = simpledialog.askstring(
+                "Suppress Remote Node",
+                "Suppression reason (optional):",
+                initialvalue="maintenance window",
+            )
+        node_name = str(selected.get("node_name") or "")
+        platform_client = getattr(self, "platform_client", None)
+        manager = getattr(self, "manager", None)
+        if platform_client is not None and hasattr(platform_client, "suppress_platform_node"):
+            updated = cast(
+                dict[str, Any],
+                platform_client.suppress_platform_node(
+                    node_name,
+                    minutes=minutes,
+                    suppressed_by=analyst,
+                    reason=reason,
+                    scopes=["remote_node_health"],
+                ),
+            )
+        elif manager is not None and hasattr(manager, "suppress_platform_node"):
+            updated = cast(
+                dict[str, Any],
+                manager.suppress_platform_node(
+                    node_name,
+                    minutes=minutes,
+                    suppressed_by=analyst,
+                    reason=reason,
+                    scopes=["remote_node_health"],
+                ),
+            )
+        else:
+            updated = suppress_platform_node(
+                node_name,
+                minutes=minutes,
+                suppressed_by=analyst,
+                reason=reason,
+                scopes=["remote_node_health"],
+                path=settings.platform_node_registry_path,
+            )
+        self.refresh()
+        if messagebox is not None:
+            messagebox.showinfo(
+                "Remote Node Suppressed",
+                f"Suppressed {updated.get('node_name', '-')} for {minutes} minutes.",
+            )
+
+    def clear_remote_node_suppression(self) -> None:
+        remote_nodes = self._collect_remote_nodes()
+        selected = self._select_summary_record_or_show_info(
+            "remote_node",
+            remote_nodes,
+            title="Remote Nodes",
+            info_title="Remote Nodes",
+        )
+        if selected is None:
+            return
+        analyst = self._current_analyst_identity() or "operator"
+        node_name = str(selected.get("node_name") or "")
+        platform_client = getattr(self, "platform_client", None)
+        manager = getattr(self, "manager", None)
+        if platform_client is not None and hasattr(platform_client, "clear_platform_node_suppression"):
+            updated = cast(dict[str, Any], platform_client.clear_platform_node_suppression(node_name))
+        elif manager is not None and hasattr(manager, "clear_platform_node_suppression"):
+            updated = cast(dict[str, Any], manager.clear_platform_node_suppression(node_name))
+        else:
+            updated = clear_platform_node_suppression(
+                node_name,
+                cleared_by=analyst,
+                path=settings.platform_node_registry_path,
+            )
+        self.refresh()
+        if messagebox is not None:
+            messagebox.showinfo(
+                "Node Suppression Cleared",
+                f"Cleared suppression for {updated.get('node_name', '-')}.",
+            )
+
+    def start_remote_node_maintenance(self) -> None:
+        remote_nodes = self._collect_remote_nodes()
+        selected = self._select_summary_record_or_show_info(
+            "remote_node",
+            remote_nodes,
+            title="Remote Nodes",
+            info_title="Remote Nodes",
+        )
+        if selected is None:
+            return
+        analyst = self._current_analyst_identity() or "operator"
+        minutes = 60
+        reason = None
+        services: list[str] = []
+        if simpledialog is not None:
+            entered_minutes = simpledialog.askinteger(
+                "Node Maintenance",
+                f"Put {selected.get('node_name', '-')} into maintenance for how many minutes?",
+                initialvalue=60,
+                minvalue=1,
+                maxvalue=10_080,
+            )
+            if entered_minutes is None:
+                return
+            minutes = entered_minutes
+            service_text = simpledialog.askstring(
+                "Node Maintenance",
+                "Services in maintenance (comma separated, optional):",
+                initialvalue="packet_monitor",
+            )
+            services = [item.strip() for item in (service_text or "").split(",") if item.strip()]
+            reason = simpledialog.askstring(
+                "Node Maintenance",
+                "Maintenance reason (optional):",
+                initialvalue="maintenance window",
+            )
+        node_name = str(selected.get("node_name") or "")
+        platform_client = getattr(self, "platform_client", None)
+        manager = getattr(self, "manager", None)
+        if platform_client is not None and hasattr(platform_client, "start_platform_node_maintenance"):
+            updated = cast(
+                dict[str, Any],
+                platform_client.start_platform_node_maintenance(
+                    node_name,
+                    minutes=minutes,
+                    maintenance_by=analyst,
+                    reason=reason,
+                    services=services,
+                ),
+            )
+        elif manager is not None and hasattr(manager, "start_platform_node_maintenance"):
+            updated = cast(
+                dict[str, Any],
+                manager.start_platform_node_maintenance(
+                    node_name,
+                    minutes=minutes,
+                    maintenance_by=analyst,
+                    reason=reason,
+                    services=services,
+                ),
+            )
+        else:
+            updated = start_platform_node_maintenance(
+                node_name,
+                minutes=minutes,
+                maintenance_by=analyst,
+                reason=reason,
+                services=services,
+                path=settings.platform_node_registry_path,
+            )
+        self.refresh()
+        if messagebox is not None:
+            messagebox.showinfo(
+                "Node Maintenance Started",
+                f"Started maintenance for {updated.get('node_name', '-')} for {minutes} minutes.",
+            )
+
+    def clear_remote_node_maintenance(self) -> None:
+        remote_nodes = self._collect_remote_nodes()
+        selected = self._select_summary_record_or_show_info(
+            "remote_node",
+            remote_nodes,
+            title="Remote Nodes",
+            info_title="Remote Nodes",
+        )
+        if selected is None:
+            return
+        node_name = str(selected.get("node_name") or "")
+        analyst = self._current_analyst_identity() or "operator"
+        platform_client = getattr(self, "platform_client", None)
+        manager = getattr(self, "manager", None)
+        if platform_client is not None and hasattr(platform_client, "clear_platform_node_maintenance"):
+            updated = cast(dict[str, Any], platform_client.clear_platform_node_maintenance(node_name))
+        elif manager is not None and hasattr(manager, "clear_platform_node_maintenance"):
+            updated = cast(dict[str, Any], manager.clear_platform_node_maintenance(node_name))
+        else:
+            updated = clear_platform_node_maintenance(
+                node_name,
+                cleared_by=analyst,
+                path=settings.platform_node_registry_path,
+            )
+        self.refresh()
+        if messagebox is not None:
+            messagebox.showinfo(
+                "Node Maintenance Cleared",
+                f"Cleared maintenance for {updated.get('node_name', '-')}.",
+            )
+
+    def request_remote_node_refresh(self) -> None:
+        remote_nodes = self._collect_remote_nodes()
+        selected = self._select_summary_record_or_show_info(
+            "remote_node",
+            remote_nodes,
+            title="Remote Nodes",
+            info_title="Remote Nodes",
+        )
+        if selected is None:
+            return
+        analyst = self._current_analyst_identity() or "operator"
+        reason = None
+        if simpledialog is not None:
+            reason = simpledialog.askstring(
+                "Request Node Refresh",
+                "Refresh request reason (optional):",
+                initialvalue="refresh health and service state",
+            )
+        node_name = str(selected.get("node_name") or "")
+        platform_client = getattr(self, "platform_client", None)
+        manager = getattr(self, "manager", None)
+        if platform_client is not None and hasattr(platform_client, "request_platform_node_refresh"):
+            updated = cast(
+                dict[str, Any],
+                platform_client.request_platform_node_refresh(node_name, requested_by=analyst, reason=reason),
+            )
+        elif manager is not None and hasattr(manager, "request_platform_node_refresh"):
+            updated = cast(
+                dict[str, Any],
+                manager.request_platform_node_refresh(node_name, requested_by=analyst, reason=reason),
+            )
+        else:
+            updated = request_platform_node_refresh(
+                node_name,
+                requested_by=analyst,
+                reason=reason,
+                path=settings.platform_node_registry_path,
+            )
+        self.refresh()
+        if messagebox is not None:
+            messagebox.showinfo(
+                "Node Refresh Requested",
+                f"Requested refresh for {updated.get('node_name', '-')}.",
+            )
+
+    def drain_remote_node(self) -> None:
+        remote_nodes = self._collect_remote_nodes()
+        selected = self._select_summary_record_or_show_info(
+            "remote_node",
+            remote_nodes,
+            title="Remote Nodes",
+            info_title="Remote Nodes",
+        )
+        if selected is None:
+            return
+        analyst = self._current_analyst_identity() or "operator"
+        reason = None
+        services: list[str] = []
+        if simpledialog is not None:
+            service_text = simpledialog.askstring(
+                "Drain Node",
+                "Services to drain (comma separated, optional):",
+                initialvalue="packet_monitor,network_monitor",
+            )
+            services = [item.strip() for item in (service_text or "").split(",") if item.strip()]
+            reason = simpledialog.askstring(
+                "Drain Node",
+                "Drain reason (optional):",
+                initialvalue="maintenance window",
+            )
+        node_name = str(selected.get("node_name") or "")
+        platform_client = getattr(self, "platform_client", None)
+        manager = getattr(self, "manager", None)
+        if platform_client is not None and hasattr(platform_client, "start_platform_node_drain"):
+            updated = cast(
+                dict[str, Any],
+                platform_client.start_platform_node_drain(
+                    node_name,
+                    drained_by=analyst,
+                    reason=reason,
+                    services=services,
+                ),
+            )
+        elif manager is not None and hasattr(manager, "start_platform_node_drain"):
+            updated = cast(
+                dict[str, Any],
+                manager.start_platform_node_drain(
+                    node_name,
+                    drained_by=analyst,
+                    reason=reason,
+                    services=services,
+                ),
+            )
+        else:
+            updated = start_platform_node_drain(
+                node_name,
+                drained_by=analyst,
+                reason=reason,
+                services=services,
+                path=settings.platform_node_registry_path,
+            )
+        self.refresh()
+        if messagebox is not None:
+            messagebox.showinfo(
+                "Node Drained",
+                f"Marked {updated.get('node_name', '-')} as drained.",
+            )
+
+    def mark_remote_node_ready(self) -> None:
+        remote_nodes = self._collect_remote_nodes()
+        selected = self._select_summary_record_or_show_info(
+            "remote_node",
+            remote_nodes,
+            title="Remote Nodes",
+            info_title="Remote Nodes",
+        )
+        if selected is None:
+            return
+        node_name = str(selected.get("node_name") or "")
+        analyst = self._current_analyst_identity() or "operator"
+        platform_client = getattr(self, "platform_client", None)
+        manager = getattr(self, "manager", None)
+        if platform_client is not None and hasattr(platform_client, "clear_platform_node_drain"):
+            updated = cast(dict[str, Any], platform_client.clear_platform_node_drain(node_name))
+        elif manager is not None and hasattr(manager, "clear_platform_node_drain"):
+            updated = cast(dict[str, Any], manager.clear_platform_node_drain(node_name))
+        else:
+            updated = clear_platform_node_drain(
+                node_name,
+                cleared_by=analyst,
+                path=settings.platform_node_registry_path,
+            )
+        self.refresh()
+        if messagebox is not None:
+            messagebox.showinfo(
+                "Node Ready",
+                f"Marked {updated.get('node_name', '-')} as ready.",
+            )
+
+    def retry_remote_node_action(self) -> None:
+        remote_nodes = self._collect_remote_nodes()
+        selected = self._select_summary_record_or_show_info(
+            "remote_node",
+            remote_nodes,
+            title="Remote Nodes",
+            info_title="Remote Nodes",
+        )
+        if selected is None:
+            return
+        retryable: list[tuple[str, str, int]] = []
+        if bool(selected.get("maintenance_retriable")) or str(selected.get("maintenance_status") or "") == "failed":
+            retryable.append(("Retry Maintenance", "maintenance", 18))
+        if bool(selected.get("refresh_retriable")) or str(selected.get("refresh_status") or "") == "failed":
+            retryable.append(("Retry Refresh", "refresh", 16))
+        if bool(selected.get("drain_retriable")) or str(selected.get("drain_status") or "") == "failed":
+            retryable.append(("Retry Drain", "drain", 14))
+        if not retryable:
+            if messagebox is not None:
+                messagebox.showinfo(
+                    "Retry Node Action",
+                    f"{selected.get('node_name', '-')} has no failed retriable actions.",
+                )
+            return
+        choice = self._choose_action_dialog(
+            title="Retry Node Action",
+            summary=(
+                f"Retry a failed action for {selected.get('node_name', '-')}.\n\n"
+                f"Available retries: {', '.join(value for _label, value, _width in retryable)}"
+            ),
+            actions=retryable,
+            default_choice="cancel",
+            no_tk_choice=retryable[0][1],
+            width=480,
+            height=190,
+            min_width=420,
+            min_height=170,
+            detail_label="Cancel",
+            detail_width=10,
+        )
+        if choice == "cancel":
+            return
+        analyst = self._current_analyst_identity() or "operator"
+        node_name = str(selected.get("node_name") or "")
+        platform_client = getattr(self, "platform_client", None)
+        manager = getattr(self, "manager", None)
+        if platform_client is not None and hasattr(platform_client, "retry_platform_node_action"):
+            updated = cast(
+                dict[str, Any],
+                platform_client.retry_platform_node_action(node_name, action=choice, requested_by=analyst),
+            )
+        elif manager is not None and hasattr(manager, "retry_platform_node_action"):
+            updated = cast(
+                dict[str, Any],
+                manager.retry_platform_node_action(node_name, action=choice, requested_by=analyst),
+            )
+        else:
+            updated = retry_platform_node_action(
+                node_name,
+                action=choice,
+                requested_by=analyst,
+                path=settings.platform_node_registry_path,
+            )
+        self.refresh()
+        if messagebox is not None:
+            messagebox.showinfo(
+                "Node Action Retried",
+                f"Requeued {choice} for {updated.get('node_name', '-')}.",
+            )
+
+    def cancel_remote_node_action(self) -> None:
+        remote_nodes = self._collect_remote_nodes()
+        selected = self._select_summary_record_or_show_info(
+            "remote_node",
+            remote_nodes,
+            title="Remote Nodes",
+            info_title="Remote Nodes",
+        )
+        if selected is None:
+            return
+        cancellable: list[tuple[str, str, int]] = []
+        if str(selected.get("maintenance_status") or "") in {"requested", "acknowledged"}:
+            cancellable.append(("Cancel Maintenance", "maintenance", 19))
+        if str(selected.get("refresh_status") or "") in {"requested", "acknowledged"}:
+            cancellable.append(("Cancel Refresh", "refresh", 16))
+        if str(selected.get("drain_status") or "") in {"requested", "acknowledged"}:
+            cancellable.append(("Cancel Drain", "drain", 14))
+        if not cancellable:
+            if messagebox is not None:
+                messagebox.showinfo(
+                    "Cancel Node Action",
+                    f"{selected.get('node_name', '-')} has no pending cancellable actions.",
+                )
+            return
+        choice = self._choose_action_dialog(
+            title="Cancel Node Action",
+            summary=(
+                f"Cancel a pending action for {selected.get('node_name', '-')}.\n\n"
+                f"Available cancellations: {', '.join(value for _label, value, _width in cancellable)}"
+            ),
+            actions=cancellable,
+            default_choice="cancel",
+            no_tk_choice=cancellable[0][1],
+            width=500,
+            height=190,
+            min_width=440,
+            min_height=170,
+            detail_label="Cancel",
+            detail_width=10,
+        )
+        if choice == "cancel":
+            return
+        analyst = self._current_analyst_identity() or "operator"
+        node_name = str(selected.get("node_name") or "")
+        platform_client = getattr(self, "platform_client", None)
+        manager = getattr(self, "manager", None)
+        if platform_client is not None and hasattr(platform_client, "cancel_platform_node_action"):
+            updated = cast(
+                dict[str, Any],
+                platform_client.cancel_platform_node_action(node_name, action=choice, cancelled_by=analyst),
+            )
+        elif manager is not None and hasattr(manager, "cancel_platform_node_action"):
+            updated = cast(
+                dict[str, Any],
+                manager.cancel_platform_node_action(node_name, action=choice, cancelled_by=analyst),
+            )
+        else:
+            updated = cancel_platform_node_action(
+                node_name,
+                action=choice,
+                cancelled_by=analyst,
+                path=settings.platform_node_registry_path,
+            )
+        self.refresh()
+        if messagebox is not None:
+            messagebox.showinfo(
+                "Node Action Cancelled",
+                f"Cancelled {choice} for {updated.get('node_name', '-')}.",
+            )
+
+    def escalate_remote_node(self) -> None:
+        remote_nodes = self._collect_remote_nodes()
+        selected = self._select_summary_record_or_show_info(
+            "remote_node",
+            remote_nodes,
+            title="Remote Nodes",
+            info_title="Remote Nodes",
+        )
+        if selected is None:
+            return
+        open_case_ids = [str(item) for item in cast(list[Any], selected.get("open_case_ids") or []) if str(item)]
+        if self._handle_existing_case_choice(
+            open_case_ids=open_case_ids,
+            context_label=f"Remote node {selected.get('node_name', '-')}",
+            context_details=[
+                f"Status: {selected.get('status', 'unknown')}",
+                f"Open case count: {len(open_case_ids)}",
+            ],
+            no_action_label="create another case",
+        ):
+            return
+        platform_client = getattr(self, "platform_client", None)
+        manager = getattr(self, "manager", None)
+        if platform_client is not None and hasattr(platform_client, "create_case_from_remote_node"):
+            case = platform_client.create_case_from_remote_node(selected)
+        else:
+            assert manager is not None
+            case = manager.create_case_from_remote_node(selected)
+        self.refresh()
+        self.case_tree.selection_set(case.case_id)
+        self._refresh_case_detail()
+        if messagebox is not None:
+            messagebox.showinfo("Case Created", f"Created case {case.case_id} for remote node {selected.get('node_name', '-')}.")
+
     def view_detection_rules(self) -> None:
         selected = self._select_detection_rule()
         if selected is None:
@@ -1798,13 +2916,169 @@ class SocDashboard:
             return
         self._pivot_from_alert(selected)
 
+    def view_operational_alerts(self) -> None:
+        alerts = [
+            self._annotate_operational_alert(item).model_dump(mode="json")
+            for item in self.manager.list_alerts()
+            if str(item.category or "").casefold() == "operational"
+        ][:50]
+        selected = self._select_summary_record_or_show_info(
+            "alert",
+            alerts,
+            title="Operational Alerts",
+            info_title="Operational Alerts",
+            limit=50,
+        )
+        if selected is None:
+            return
+        self._pivot_from_alert(selected)
+
+    def view_operational_cases(self) -> None:
+        cases = [item.model_dump(mode="json") for item in self._operational_cases()]
+        selected = self._select_summary_record_or_show_info(
+            "case",
+            cases,
+            title="Operational Cases",
+            info_title="Operational Cases",
+            limit=50,
+        )
+        if selected is None:
+            return
+        self._pivot_from_case(selected)
+
+    def acknowledge_selected_operational_alert(self) -> None:
+        selected = self._require_selected_operational_alert()
+        if selected is None:
+            return
+        alert_id, _payload = selected
+        self.manager.update_alert(
+            alert_id,
+            self._build_alert_update_payload(
+                field="status",
+                value="acknowledged",
+                acted_by=self._current_analyst_identity(),
+            ),
+        )
+        self.refresh()
+        if messagebox is not None:
+            messagebox.showinfo("Operational Alert Acknowledged", f"Acknowledged operational alert {alert_id}.")
+
+    def promote_selected_operational_alert(self) -> None:
+        selected = self._require_selected_operational_alert()
+        if selected is None:
+            return
+        alert_id, alert_payload = selected
+        if str(alert_payload.get("linked_case_id") or ""):
+            if self._open_linked_case_for_alert(
+                alert_payload=alert_payload,
+                dialog_title="Open Operational Case",
+                missing_link_message="The selected operational alert is not linked to a case.",
+                missing_case_message="The linked operational case is not available in the current view.",
+            ):
+                return
+        alert = self.manager.get_alert(alert_id)
+        _, case = self.manager.promote_alert_to_case(
+            alert_id,
+            payload=self._build_promote_payload(
+                alert,
+                acted_by=self._current_analyst_identity(),
+            ),
+        )
+        self.refresh()
+        self.case_tree.selection_set(case.case_id)
+        self._refresh_case_detail()
+        if messagebox is not None:
+            messagebox.showinfo("Operational Case Created", f"Created case {case.case_id} from operational alert {alert_id}.")
+
+    def open_selected_operational_case(self) -> None:
+        selected = self._require_selected_operational_alert()
+        if selected is None:
+            return
+        _alert_id, alert_payload = selected
+        self._open_linked_case_for_alert(
+            alert_payload=alert_payload,
+            dialog_title="Open Operational Case",
+            missing_link_message="The selected operational alert is not linked to a case.",
+            missing_case_message="The linked operational case is not available in the current view.",
+        )
+
+    def mark_selected_operational_case_investigating(self) -> None:
+        selected = self._require_selected_operational_case()
+        if selected is None:
+            return
+        case_id, _case_payload = selected
+        self.manager.update_case(
+            case_id,
+            self._build_case_update_payload(field="status", value="investigating"),
+        )
+        self.refresh()
+        if messagebox is not None:
+            messagebox.showinfo("Operational Case Updated", f"Marked operational case {case_id} as investigating.")
+
+    def close_selected_operational_case(self) -> None:
+        selected = self._require_selected_operational_case()
+        if selected is None:
+            return
+        case_id, _case_payload = selected
+        self.manager.update_case(
+            case_id,
+            self._build_case_update_payload(field="status", value="closed"),
+        )
+        self.refresh()
+        if messagebox is not None:
+            messagebox.showinfo("Operational Case Updated", f"Closed operational case {case_id}.")
+
+    def clear_operational_case_pressure(self) -> None:
+        selected = self._require_selected_operational_case()
+        if selected is None:
+            return
+        case_id, case_payload = selected
+        updated = 0
+        for alert_id in self._operational_alert_ids_for_case(case_payload):
+            self.manager.update_alert(
+                alert_id,
+                self._build_alert_update_payload(
+                    field="status",
+                    value="acknowledged",
+                    acted_by=self._current_analyst_identity(),
+                ),
+            )
+            updated += 1
+        self.refresh()
+        if messagebox is not None:
+            messagebox.showinfo(
+                "Operational Pressure Cleared",
+                f"Acknowledged {updated} operational alerts linked to case {case_id}.",
+            )
+
+    def view_operational_case_alerts(self) -> None:
+        selected = self._require_selected_operational_case()
+        if selected is None:
+            return
+        _case_id, case_payload = selected
+        alert_rows = [
+            alert
+            for alert_id in self._operational_alert_ids_for_case(case_payload)
+            for alert in [self.all_alert_rows_by_id.get(alert_id)]
+            if alert is not None
+        ]
+        selected_alert = self._select_summary_record_or_show_info(
+            "alert",
+            alert_rows,
+            title="Operational Case Alerts",
+            info_title="Operational Case Alerts",
+            limit=50,
+        )
+        if selected_alert is None:
+            return
+        self._pivot_from_alert(selected_alert)
+
     def view_detection_rule_alerts(self) -> None:
         selected_rule = self._select_detection_rule()
         if selected_rule is None:
             return
         rule_id = str(selected_rule.get("rule_id") or "")
-        alerts = [item.model_dump(mode="json") for item in self.manager.query_alerts(correlation_rule=rule_id, limit=50)]
-        grouped_alerts = self._group_rule_alerts(alerts)
+        grouped_alerts = self._resolve_detection_rule_alert_groups(rule_id)
         selected_group = self._select_summary_record_or_show_info(
             "alert_group",
             grouped_alerts,
@@ -1814,14 +3088,34 @@ class SocDashboard:
         )
         if selected_group is None:
             return
+        selected_group = self._resolve_detection_rule_alert_group_detail(rule_id, selected_group)
         if self._handle_existing_case_guard(
             open_case_ids=[str(item) for item in cast(list[Any], selected_group.get("open_case_ids") or []) if str(item)],
             context_label=f"Alert group {selected_group.get('group_key', rule_id)}",
         ):
             return
+        group_alerts = cast(list[dict[str, Any]], selected_group.get("alerts") or [])
+        source_events = self._collect_rule_source_events(group_alerts)
+        timeline_filters = self._endpoint_timeline_filters_from_alert_group(selected_group, source_events=source_events)
+        choice = self._choose_rule_group_pivot(
+            title=f"Alert Group {selected_group.get('group_key', rule_id)}",
+            grouped_label="alerts",
+            grouped_count=len(group_alerts),
+            timeline_available=bool(timeline_filters),
+        )
+        if choice == "case" and timeline_filters:
+            self._promote_rule_group_to_endpoint_timeline_case(selected_group, timeline_filters=timeline_filters)
+            return
+        if choice == "timeline" and timeline_filters:
+            self._pivot_from_rule_group_timeline(
+                selected_group,
+                timeline_filters=timeline_filters,
+                info_title=f"Alerts for {selected_group.get('group_key', rule_id)}",
+            )
+            return
         selected_alert = self._select_summary_record_or_show_info(
             "alert",
-            cast(list[dict[str, Any]], selected_group.get("alerts") or []),
+            group_alerts,
             title=f"Alerts for {selected_group.get('group_key', rule_id)}",
             info_title=f"Alerts for {selected_group.get('group_key', rule_id)}",
             limit=50,
@@ -1835,9 +3129,7 @@ class SocDashboard:
         if selected_rule is None:
             return
         rule_id = str(selected_rule.get("rule_id") or "")
-        alert_rows = [item.model_dump(mode="json") for item in self.manager.query_alerts(correlation_rule=rule_id, limit=50)]
-        source_events = self._collect_rule_source_events(alert_rows)
-        grouped_evidence = self._group_rule_evidence(source_events)
+        grouped_evidence = self._resolve_detection_rule_evidence_groups(rule_id)
         selected_group = self._select_summary_record_or_show_info(
             "evidence_group",
             grouped_evidence,
@@ -1847,14 +3139,33 @@ class SocDashboard:
         )
         if selected_group is None:
             return
+        selected_group = self._resolve_detection_rule_evidence_group_detail(rule_id, selected_group)
         if self._handle_existing_case_guard(
             open_case_ids=[str(item) for item in cast(list[Any], selected_group.get("open_case_ids") or []) if str(item)],
             context_label=f"Evidence group {selected_group.get('group_key', rule_id)}",
         ):
             return
+        group_events = cast(list[dict[str, Any]], selected_group.get("events") or [])
+        timeline_filters = self._endpoint_timeline_filters_from_evidence_group(selected_group, source_events=group_events)
+        choice = self._choose_rule_group_pivot(
+            title=f"Evidence Group {selected_group.get('group_key', rule_id)}",
+            grouped_label="events",
+            grouped_count=len(group_events),
+            timeline_available=bool(timeline_filters),
+        )
+        if choice == "case" and timeline_filters:
+            self._promote_rule_group_to_endpoint_timeline_case(selected_group, timeline_filters=timeline_filters)
+            return
+        if choice == "timeline" and timeline_filters:
+            self._pivot_from_rule_group_timeline(
+                selected_group,
+                timeline_filters=timeline_filters,
+                info_title=f"Evidence for {selected_group.get('group_key', rule_id)}",
+            )
+            return
         selected_event = self._select_summary_record_or_show_info(
             "event",
-            cast(list[dict[str, Any]], selected_group.get("events") or []),
+            group_events,
             title=f"Evidence for {selected_group.get('group_key', rule_id)}",
             info_title=f"Evidence for {selected_group.get('group_key', rule_id)}",
             limit=50,
@@ -1946,6 +3257,10 @@ class SocDashboard:
         packet_sessions: Sequence[dict[str, Any]] | None = None,
         observations: Sequence[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
+        if packet_sessions is None and observations is None:
+            remote_collector = getattr(self.network_monitor, "list_combined_evidence", None)
+            if callable(remote_collector):
+                return [dict(item) for item in cast(list[dict[str, Any]], remote_collector(limit=100))]
         session_rows = list(packet_sessions) if packet_sessions is not None else self.packet_monitor.list_recent_sessions(limit=100)
         observation_rows = list(observations) if observations is not None else self.network_monitor.list_recent_observations(limit=100)
         combined: dict[str, dict[str, Any]] = {}
@@ -2019,6 +3334,480 @@ class SocDashboard:
             else:
                 row["remote_ip_display"] = remote_ip
         return rows
+
+    def _collect_endpoint_timeline(self, *, limit: int = 100, **filters: Any) -> list[dict[str, Any]]:
+        if not hasattr(self.manager, "list_endpoint_timeline"):
+            return []
+        rows = [
+            self._normalize_endpoint_timeline_row(item)
+            for item in cast(list[Any], self.manager.list_endpoint_timeline(limit=limit, **filters))
+        ]
+        return rows
+
+    def _collect_case_endpoint_timeline(
+        self,
+        case_payload: Mapping[str, Any],
+        *,
+        limit: int = 100,
+        **filters: Any,
+    ) -> list[dict[str, Any]]:
+        manager = getattr(self, "manager", None)
+        case_id = str(case_payload.get("case_id") or "")
+        if case_id and manager is not None and hasattr(manager, "list_case_endpoint_timeline"):
+            payload = cast(dict[str, Any], manager.list_case_endpoint_timeline(case_id, limit=limit, **filters))
+            return [
+                self._normalize_endpoint_timeline_row(item)
+                for item in cast(list[Any], payload.get("events") or [])
+            ]
+        return self._collect_endpoint_timeline(limit=limit, **filters)
+
+    def _collect_endpoint_timeline_clusters(self, *, cluster_by: str = "process", limit: int = 100, **filters: Any) -> list[dict[str, Any]]:
+        if not hasattr(self.manager, "list_endpoint_timeline_clusters"):
+            if hasattr(self.manager, "cluster_endpoint_timeline"):
+                rows = cast(list[dict[str, Any]], self.manager.cluster_endpoint_timeline(cluster_by=cluster_by, limit=limit, **filters))
+            else:
+                return []
+        else:
+            payload = cast(dict[str, Any], self.manager.list_endpoint_timeline_clusters(cluster_by=cluster_by, limit=limit, **filters))
+            rows = [dict(item) for item in cast(list[dict[str, Any]], payload.get("clusters") or [])]
+        for row in rows:
+            label = str(row.get("label") or row.get("cluster_key") or "-")
+            open_case_count = int(row.get("open_case_count") or 0)
+            row["title"] = f"{label} (open cases: {open_case_count})" if open_case_count else label
+        return rows
+
+    def _resolve_endpoint_timeline_cluster_detail(self, cluster_payload: Mapping[str, Any]) -> dict[str, Any]:
+        manager = getattr(self, "manager", None)
+        cluster_key = str(cluster_payload.get("cluster_key") or "")
+        cluster_by = str(cluster_payload.get("cluster_by") or "process")
+        if cluster_key and manager is not None and hasattr(manager, "get_endpoint_timeline_cluster"):
+            filters: dict[str, Any] = {"cluster_by": cluster_by}
+            device_ids = cast(list[str], cluster_payload.get("device_ids") or [])
+            process_names = cast(list[str], cluster_payload.get("process_names") or [])
+            process_guids = cast(list[str], cluster_payload.get("process_guids") or [])
+            remote_ips = cast(list[str], cluster_payload.get("remote_ips") or [])
+            if device_ids:
+                filters["device_id"] = device_ids[0]
+            if process_guids:
+                filters["process_guid"] = process_guids[0]
+            elif process_names:
+                filters["process_name"] = process_names[0]
+            if cluster_by == "remote_ip" and remote_ips:
+                filters["remote_ip"] = remote_ips[0]
+            payload = cast(dict[str, Any], manager.get_endpoint_timeline_cluster(cluster_key=cluster_key, **filters) or {})
+            if payload:
+                label = str(payload.get("label") or payload.get("cluster_key") or "-")
+                open_case_count = int(payload.get("open_case_count") or 0)
+                payload["title"] = f"{label} (open cases: {open_case_count})" if open_case_count else label
+                return dict(payload)
+        return dict(cluster_payload)
+
+    def _collect_hunt_telemetry_clusters(self, *, cluster_by: str = "remote_ip", limit: int = 100, **filters: Any) -> list[dict[str, Any]]:
+        manager = getattr(self, "manager", None)
+        if manager is None or not hasattr(manager, "list_hunt_telemetry_clusters"):
+            return []
+        rows = [dict(item) for item in cast(list[dict[str, Any]], manager.list_hunt_telemetry_clusters(cluster_by=cluster_by, limit=limit, **filters))]
+        for row in rows:
+            label = str(row.get("label") or row.get("cluster_key") or "-")
+            open_case_count = int(row.get("open_case_count") or 0)
+            row["title"] = f"{label} (open cases: {open_case_count})" if open_case_count else label
+        return rows
+
+    def _selected_hunt_telemetry_cluster_mode(self) -> str:
+        variable = getattr(self, "hunt_cluster_mode_var", None)
+        if variable is None or not hasattr(variable, "get"):
+            return self._normalize_hunt_cluster_mode(getattr(self, "saved_hunt_cluster_mode", None))
+        return self._normalize_hunt_cluster_mode(str(variable.get() or "").strip())
+
+    def _active_hunt_telemetry_cluster_filters(self) -> tuple[str, dict[str, Any]]:
+        cluster_by = self._selected_hunt_telemetry_cluster_mode()
+        variable = getattr(self, "hunt_cluster_value_var", None)
+        filter_value = str(variable.get() or "").strip() if variable is not None and hasattr(variable, "get") else ""
+        filters: dict[str, Any] = {}
+        if filter_value:
+            filters[cluster_by] = filter_value
+        return cluster_by, filters
+
+    def _set_hunt_telemetry_cluster_filter(self, mode: str | None, value: str | None) -> None:
+        normalized_mode = self._normalize_hunt_cluster_mode(mode)
+        normalized_value = str(value or "").strip() or None
+        self.saved_hunt_cluster_mode = normalized_mode
+        self.saved_hunt_cluster_value = normalized_value
+        if hasattr(self, "hunt_cluster_mode_var"):
+            self.hunt_cluster_mode_var.set(normalized_mode)
+        if hasattr(self, "hunt_cluster_value_var"):
+            self.hunt_cluster_value_var.set(normalized_value or "")
+        latest = cast(dict[str, Any], getattr(self, "_latest_dashboard", None) or {})
+        if latest:
+            view_state = cast(dict[str, Any], latest.get("view_state") or {})
+            latest["view_state"] = {
+                **view_state,
+                "hunt_cluster_mode": normalized_mode,
+                "hunt_cluster_value": normalized_value,
+            }
+        self._persist_dashboard_view_state()
+
+    def _set_hunt_telemetry_cluster_selection(self, cluster_key: str | None, action: str | None = None) -> None:
+        normalized_key = str(cluster_key or "").strip() or None
+        normalized_action = self._normalize_hunt_cluster_action(action)
+        self.saved_hunt_cluster_key = normalized_key
+        self.saved_hunt_cluster_action = normalized_action
+        latest = cast(dict[str, Any], getattr(self, "_latest_dashboard", None) or {})
+        if latest:
+            view_state = cast(dict[str, Any], latest.get("view_state") or {})
+            latest["view_state"] = {
+                **view_state,
+                "hunt_cluster_key": normalized_key,
+                "hunt_cluster_action": normalized_action,
+            }
+        self._persist_dashboard_view_state()
+
+    def _resolve_hunt_telemetry_cluster_detail(self, cluster_payload: Mapping[str, Any]) -> dict[str, Any]:
+        manager = getattr(self, "manager", None)
+        cluster_key = str(cluster_payload.get("cluster_key") or "")
+        cluster_by = str(cluster_payload.get("cluster_by") or "remote_ip")
+        if not cluster_key or manager is None:
+            return dict(cluster_payload)
+        filters: dict[str, Any] = {"cluster_by": cluster_by}
+        for field, key in (
+            ("device_ids", "device_id"),
+            ("process_names", "process_name"),
+            ("process_guids", "process_guid"),
+            ("remote_ips", "remote_ip"),
+            ("signers", "signer_name"),
+            ("filenames", "filename"),
+            ("session_keys", "session_key"),
+        ):
+            values = cast(list[str], cluster_payload.get(field) or [])
+            if values:
+                filters[key] = values[0]
+        if hasattr(manager, "get_hunt_telemetry_cluster"):
+            payload = cast(dict[str, Any], manager.get_hunt_telemetry_cluster(cluster_key, **filters) or {})
+        elif hasattr(manager, "resolve_hunt_telemetry_cluster"):
+            payload = cast(dict[str, Any], manager.resolve_hunt_telemetry_cluster(cluster_key=cluster_key, **filters) or {})
+        else:
+            payload = {}
+        if payload:
+            label = str(payload.get("label") or payload.get("cluster_key") or "-")
+            open_case_count = int(payload.get("open_case_count") or 0)
+            payload["title"] = f"{label} (open cases: {open_case_count})" if open_case_count else label
+            return dict(payload)
+        return dict(cluster_payload)
+
+    def _collect_remote_nodes(self) -> list[dict[str, Any]]:
+        platform_client = getattr(self, "platform_client", None)
+        if platform_client is not None and hasattr(platform_client, "list_remote_nodes"):
+            rows = [dict(item) for item in cast(list[dict[str, Any]], platform_client.list_remote_nodes(limit=500))]
+        else:
+            dashboard = cast(dict[str, Any], getattr(self, "_latest_dashboard", None) or self.manager.dashboard())
+            platform = cast(dict[str, Any], dashboard.get("platform") or {})
+            topology = cast(dict[str, Any], platform.get("topology") or {})
+            rows = [dict(item) for item in cast(list[dict[str, Any]], topology.get("remote_nodes") or [])]
+        for row in rows:
+            platform_client = getattr(self, "platform_client", None)
+            if platform_client is not None and hasattr(platform_client, "resolve_remote_node_cases"):
+                resolved_cases = platform_client.resolve_remote_node_cases(row)
+            else:
+                resolved_cases = self.manager.resolve_remote_node_cases(row)
+            related_cases = [item.model_dump(mode="json") for item in resolved_cases]
+            row["related_case_ids"] = [item.get("case_id") for item in related_cases if item.get("case_id")]
+            row["open_case_ids"] = [
+                item.get("case_id")
+                for item in related_cases
+                if item.get("case_id") and str(item.get("status") or "") != SocCaseStatus.closed.value
+            ]
+            row["open_case_count"] = len(cast(list[str], row["open_case_ids"]))
+            metadata = cast(dict[str, Any], row.get("metadata") or {})
+            row["acknowledged_by"] = metadata.get("acknowledged_by")
+            row["acknowledged_at"] = metadata.get("acknowledged_at")
+            row["action_history"] = [
+                dict(item)
+                for item in cast(list[Any], metadata.get("action_history") or [])
+                if isinstance(item, dict)
+            ]
+            suppressed_until = str(metadata.get("suppressed_until") or "")
+            suppressed = False
+            if suppressed_until:
+                try:
+                    suppressed = datetime.fromisoformat(suppressed_until) > datetime.now(UTC)
+                except ValueError:
+                    suppressed = False
+            row["suppressed_until"] = metadata.get("suppressed_until")
+            row["suppressed_by"] = metadata.get("suppressed_by")
+            row["suppression_reason"] = metadata.get("suppression_reason")
+            pressure_suppressions = cast(list[dict[str, Any]], metadata.get("pressure_suppressions") or [])
+            active_scopes: list[str] = []
+            for item in pressure_suppressions:
+                if not isinstance(item, dict):
+                    continue
+                suppressed_scope_until = str(item.get("suppressed_until") or "")
+                try:
+                    if suppressed_scope_until and datetime.fromisoformat(suppressed_scope_until) > datetime.now(UTC):
+                        active_scopes.extend([str(scope) for scope in cast(list[Any], item.get("scopes") or []) if str(scope)])
+                except ValueError:
+                    continue
+            row["suppression_scopes"] = sorted(set(active_scopes))
+            row["suppressed"] = suppressed or bool(active_scopes)
+            maintenance_state = cast(dict[str, Any], row.get("maintenance") or {})
+            maintenance_until = str(metadata.get("maintenance_until") or "")
+            maintenance_active = bool(maintenance_state.get("active"))
+            if not maintenance_active and not maintenance_state:
+                if maintenance_until:
+                    try:
+                        maintenance_active = datetime.fromisoformat(maintenance_until) > datetime.now(UTC)
+                    except ValueError:
+                        maintenance_active = False
+            row["maintenance_active"] = maintenance_active
+            row["maintenance_until"] = metadata.get("maintenance_until")
+            row["maintenance_by"] = metadata.get("maintenance_by")
+            row["maintenance_reason"] = metadata.get("maintenance_reason")
+            row["maintenance_services"] = [str(item) for item in cast(list[Any], metadata.get("maintenance_services") or []) if str(item)]
+            maintenance_status = cast(dict[str, Any], row.get("maintenance") or {}).get("status")
+            if not maintenance_status:
+                if metadata.get("maintenance_failed_at"):
+                    maintenance_status = "failed"
+                elif maintenance_until and maintenance_active and metadata.get("maintenance_acknowledged_at"):
+                    maintenance_status = "acknowledged"
+                elif maintenance_until and maintenance_active:
+                    maintenance_status = "requested"
+                elif metadata.get("maintenance_completed_at"):
+                    maintenance_status = "completed"
+                else:
+                    maintenance_status = "inactive"
+            row["maintenance_status"] = str(maintenance_status)
+            row["maintenance_acknowledged_at"] = metadata.get("maintenance_acknowledged_at")
+            row["maintenance_completed_at"] = metadata.get("maintenance_completed_at")
+            row["maintenance_result"] = metadata.get("maintenance_result")
+            row["maintenance_completion_note"] = metadata.get("maintenance_completion_note")
+            row["maintenance_failed_at"] = metadata.get("maintenance_failed_at")
+            row["maintenance_last_error"] = metadata.get("maintenance_last_error")
+            row["maintenance_retry_count"] = int(metadata.get("maintenance_retry_count") or 0)
+            row["maintenance_retriable"] = bool(metadata.get("maintenance_retriable"))
+            row["refresh_pending"] = bool(metadata.get("refresh_pending"))
+            refresh_status = cast(dict[str, Any], row.get("refresh") or {}).get("status")
+            if not refresh_status:
+                if metadata.get("refresh_pending") and metadata.get("refresh_acknowledged_at"):
+                    refresh_status = "acknowledged"
+                elif metadata.get("refresh_failed_at"):
+                    refresh_status = "failed"
+                elif metadata.get("refresh_pending"):
+                    refresh_status = "requested"
+                elif metadata.get("refresh_completed_at") or metadata.get("refresh_fulfilled_at"):
+                    refresh_status = "completed"
+                else:
+                    refresh_status = "inactive"
+            row["refresh_status"] = str(refresh_status)
+            row["refresh_requested_at"] = metadata.get("refresh_requested_at")
+            row["refresh_requested_by"] = metadata.get("refresh_requested_by")
+            row["refresh_request_reason"] = metadata.get("refresh_request_reason")
+            row["refresh_acknowledged_at"] = metadata.get("refresh_acknowledged_at")
+            row["refresh_completed_at"] = metadata.get("refresh_completed_at")
+            row["refresh_fulfilled_at"] = metadata.get("refresh_fulfilled_at")
+            row["refresh_result"] = metadata.get("refresh_result")
+            row["refresh_completion_note"] = metadata.get("refresh_completion_note")
+            row["refresh_failed_at"] = metadata.get("refresh_failed_at")
+            row["refresh_last_error"] = metadata.get("refresh_last_error")
+            row["refresh_retry_count"] = int(metadata.get("refresh_retry_count") or 0)
+            row["refresh_retriable"] = bool(metadata.get("refresh_retriable"))
+            drain_state = cast(dict[str, Any], row.get("drain") or {})
+            row["drained"] = bool(drain_state.get("active"))
+            if not row["drained"] and not drain_state:
+                row["drained"] = bool(metadata.get("drain_at"))
+            drain_status = drain_state.get("status")
+            if not drain_status:
+                if metadata.get("drain_at") and metadata.get("drain_acknowledged_at"):
+                    drain_status = "acknowledged"
+                elif metadata.get("drain_failed_at"):
+                    drain_status = "failed"
+                elif metadata.get("drain_at"):
+                    drain_status = "requested"
+                elif metadata.get("drain_completed_at"):
+                    drain_status = "completed"
+                else:
+                    drain_status = "inactive"
+            row["drain_status"] = str(drain_status)
+            row["drain_at"] = metadata.get("drain_at")
+            row["drained_by"] = metadata.get("drained_by")
+            row["drain_reason"] = metadata.get("drain_reason")
+            row["drain_services"] = [str(item) for item in cast(list[Any], metadata.get("drain_services") or []) if str(item)]
+            row["drain_requested_at"] = metadata.get("drain_requested_at")
+            row["drain_acknowledged_at"] = metadata.get("drain_acknowledged_at")
+            row["drain_completed_at"] = metadata.get("drain_completed_at")
+            row["drain_result"] = metadata.get("drain_result")
+            row["drain_completion_note"] = metadata.get("drain_completion_note")
+            row["drain_failed_at"] = metadata.get("drain_failed_at")
+            row["drain_last_error"] = metadata.get("drain_last_error")
+            row["drain_retry_count"] = int(metadata.get("drain_retry_count") or 0)
+            row["drain_retriable"] = bool(metadata.get("drain_retriable"))
+            row["action_failures"] = [
+                name
+                for name, status in (
+                    ("maintenance", row["maintenance_status"]),
+                    ("refresh", row["refresh_status"]),
+                    ("drain", row["drain_status"]),
+                )
+                if str(status) == "failed"
+            ]
+            action_pressure = cast(dict[str, Any], row.get("action_pressure") or {})
+            if not action_pressure:
+                action_pressure = self._derive_remote_node_action_pressure(row, history=cast(list[dict[str, Any]], row["action_history"]))
+            row["action_pressure"] = action_pressure
+            row["repeated_failures"] = cast(dict[str, int], action_pressure.get("repeated_failures") or {})
+            row["retry_pressure"] = cast(dict[str, int], action_pressure.get("retry_pressure") or {})
+            row["stuck_actions"] = cast(list[dict[str, Any]], action_pressure.get("stuck_actions") or [])
+            row["repeated_failure_active"] = bool(
+                row.get("repeated_failure_active") or action_pressure.get("repeated_failure_active")
+            )
+            row["retry_pressure_active"] = bool(
+                row.get("retry_pressure_active") or action_pressure.get("retry_pressure_active")
+            )
+            row["stuck_actions_active"] = bool(
+                row.get("stuck_actions_active") or action_pressure.get("stuck_actions_active")
+            )
+            title = str(row.get("node_name") or "-")
+            if row["open_case_count"]:
+                title = f"{title} (open cases: {row['open_case_count']})"
+            if row["suppressed"]:
+                title = f"{title} [suppressed]"
+            if row["maintenance_active"]:
+                title = f"{title} [maintenance]"
+            if row["refresh_pending"]:
+                title = f"{title} [refresh requested]"
+            if row["drained"]:
+                title = f"{title} [drained]"
+            if row["action_failures"]:
+                title = f"{title} [action failed]"
+            if row["repeated_failure_active"]:
+                title = f"{title} [repeat failures]"
+            if row["retry_pressure_active"]:
+                title = f"{title} [retry pressure]"
+            if row["stuck_actions_active"]:
+                title = f"{title} [action stuck]"
+            row["title"] = title
+        return rows
+
+    def _resolve_remote_node_detail(self, node_payload: dict[str, Any]) -> dict[str, Any]:
+        platform_client = getattr(self, "platform_client", None)
+        node_name = str(node_payload.get("node_name") or "")
+        if not node_name or platform_client is None or not hasattr(platform_client, "get_platform_node_detail"):
+            return node_payload
+        detail = cast(dict[str, Any], platform_client.get_platform_node_detail(node_name))
+        return detail or node_payload
+
+    @staticmethod
+    def _derive_remote_node_action_pressure(
+        row: dict[str, Any],
+        *,
+        history: Sequence[dict[str, Any]],
+    ) -> dict[str, Any]:
+        now = datetime.now(UTC)
+        window_start = now - timedelta(hours=max(settings.soc_remote_node_action_history_window_hours, 0.0))
+        recent_history: list[dict[str, Any]] = []
+        for item in history:
+            if not isinstance(item, dict):
+                continue
+            timestamp = str(item.get("at") or "").strip()
+            if not timestamp:
+                continue
+            try:
+                parsed = datetime.fromisoformat(timestamp)
+            except ValueError:
+                continue
+            if parsed >= window_start:
+                recent_history.append(item)
+        repeated_failures = {
+            action: count
+            for action, count in Counter(
+                str(item.get("action") or "").strip()
+                for item in recent_history
+                if str(item.get("transition") or "").strip().casefold() == "failed"
+                and str(item.get("action") or "").strip()
+            ).items()
+            if count >= max(settings.soc_remote_node_action_failure_repeat_threshold, 1)
+        }
+        retry_pressure = {
+            action: count
+            for action, count in Counter(
+                str(item.get("action") or "").strip()
+                for item in recent_history
+                if str(item.get("transition") or "").strip().casefold() == "retried"
+                and str(item.get("action") or "").strip()
+            ).items()
+            if count >= max(settings.soc_remote_node_action_retry_threshold, 1)
+        }
+        stuck_actions: list[dict[str, Any]] = []
+        for action_name in ("refresh", "maintenance", "drain"):
+            status = str(row.get(f"{action_name}_status") or "").strip().casefold()
+            if status not in {"requested", "acknowledged"}:
+                continue
+            started_at = str(row.get(f"{action_name}_acknowledged_at") or row.get(f"{action_name}_requested_at") or "").strip()
+            if not started_at:
+                continue
+            try:
+                parsed_started = datetime.fromisoformat(started_at)
+            except ValueError:
+                continue
+            age_minutes = round((now - parsed_started).total_seconds() / 60.0, 1)
+            if age_minutes < max(settings.soc_remote_node_action_stuck_minutes, 0.0):
+                continue
+            stuck_actions.append(
+                {
+                    "action": action_name,
+                    "status": status,
+                    "age_minutes": age_minutes,
+                    "requested_at": row.get(f"{action_name}_requested_at"),
+                    "acknowledged_at": row.get(f"{action_name}_acknowledged_at"),
+                }
+            )
+        stuck_actions.sort(key=lambda item: (-cast(float, item["age_minutes"]), str(item["action"])))
+        return {
+            "repeated_failures": dict(sorted(repeated_failures.items())),
+            "retry_pressure": dict(sorted(retry_pressure.items())),
+            "stuck_actions": stuck_actions,
+            "repeated_failure_active": bool(repeated_failures),
+            "retry_pressure_active": bool(retry_pressure),
+            "stuck_actions_active": bool(stuck_actions),
+        }
+
+    @staticmethod
+    def _filter_remote_nodes_by_action_history(
+        rows: Sequence[dict[str, Any]],
+        filter_choice: str,
+    ) -> list[dict[str, Any]]:
+        normalized = filter_choice.strip().casefold()
+        if normalized in {"", "all"}:
+            return [dict(item) for item in rows]
+        filtered: list[dict[str, Any]] = []
+        for row in rows:
+            if normalized == "failed" and cast(list[str], row.get("action_failures") or []):
+                filtered.append(dict(row))
+                continue
+            history = cast(list[dict[str, Any]], row.get("action_history") or [])
+            if any(str(item.get("transition") or "").casefold() == normalized for item in history if isinstance(item, dict)):
+                filtered.append(dict(row))
+        return filtered
+
+    @staticmethod
+    def _filter_remote_nodes_by_action_pressure(
+        rows: Sequence[dict[str, Any]],
+        filter_choice: str,
+    ) -> list[dict[str, Any]]:
+        normalized = filter_choice.strip().casefold()
+        if normalized in {"", "all", "all_active"}:
+            return [
+                dict(item)
+                for item in rows
+                if bool(item.get("repeated_failure_active"))
+                or bool(item.get("retry_pressure_active"))
+                or bool(item.get("stuck_actions_active"))
+            ]
+        if normalized == "repeated_failures":
+            return [dict(item) for item in rows if bool(item.get("repeated_failure_active"))]
+        if normalized == "retry_pressure":
+            return [dict(item) for item in rows if bool(item.get("retry_pressure_active"))]
+        if normalized == "stuck_actions":
+            return [dict(item) for item in rows if bool(item.get("stuck_actions_active"))]
+        return []
 
     def _resolve_network_evidence_events(self, evidence_payload: dict[str, Any]) -> list[dict[str, Any]]:
         remote_ip = str(evidence_payload.get("remote_ip") or "")
@@ -2279,6 +4068,152 @@ class SocDashboard:
         self.case_tree.selection_set(case.case_id)
         self._refresh_case_detail()
 
+    def promote_endpoint_timeline_to_case(self) -> None:
+        cluster_by = self._choose_endpoint_timeline_cluster_mode()
+        clusters = self._collect_endpoint_timeline_clusters(cluster_by=cluster_by, limit=100)
+        selected = self._select_summary_record("endpoint_timeline_cluster", clusters, title="Endpoint Timeline Clusters")
+        if selected is None:
+            self._show_info_dialog(
+                "Endpoint Timeline Clusters",
+                self._format_summary_records("endpoint_timeline_cluster", clusters, limit=50),
+            )
+            return
+        selected = self._resolve_endpoint_timeline_cluster_detail(selected)
+        open_case_ids = [str(item) for item in cast(list[Any], selected.get("open_case_ids") or []) if str(item)]
+        if self._handle_existing_case_choice(
+            open_case_ids=open_case_ids,
+            context_label=f"Endpoint timeline cluster {selected.get('label', selected.get('cluster_key', '-'))}",
+            context_details=[
+                f"Cluster: {selected.get('cluster_key', '-')}",
+                f"Events: {selected.get('event_count', 0)}",
+                f"Open case count: {len(open_case_ids)}",
+            ],
+            no_action_label="create another case",
+        ):
+            return
+        request_payload = self._build_endpoint_timeline_case_request(selected)
+        if hasattr(self.manager, "create_case_from_endpoint_timeline"):
+            case = self.manager.create_case_from_endpoint_timeline(request_payload)
+        else:
+            case = self.manager.create_case(self._build_endpoint_timeline_case_payload(selected))
+        if messagebox is not None:
+            messagebox.showinfo(
+                "Case Created",
+                f"Created case {case.case_id} from endpoint timeline {selected.get('label', selected.get('cluster_key', '-'))}.",
+            )
+        self.refresh()
+        self.case_tree.selection_set(case.case_id)
+        self._refresh_case_detail()
+
+    def promote_hunt_telemetry_cluster_to_case(self) -> None:
+        cluster_by, cluster_filters = self._active_hunt_telemetry_cluster_filters()
+        clusters = self._collect_hunt_telemetry_clusters(cluster_by=cluster_by, limit=100, **cluster_filters)
+        selected = self._select_summary_record("hunt_telemetry_cluster", clusters, title="Hunt Telemetry Clusters")
+        if selected is None:
+            self._show_info_dialog(
+                "Hunt Telemetry Clusters",
+                self._format_summary_records("hunt_telemetry_cluster", clusters, limit=50),
+            )
+            return
+        selected = self._resolve_hunt_telemetry_cluster_detail(selected)
+        self._create_case_from_hunt_telemetry_cluster(selected)
+
+    def _handle_hunt_telemetry_cluster_selection(self, cluster_payload: Mapping[str, Any]) -> None:
+        action = self._choose_hunt_telemetry_cluster_action(cluster_payload)
+        self._set_hunt_telemetry_cluster_selection(str(cluster_payload.get("cluster_key") or ""), action)
+        if action == "existing_case":
+            self._open_hunt_telemetry_cluster_existing_case(cluster_payload)
+            return
+        if action == "case":
+            self._create_case_from_hunt_telemetry_cluster(cluster_payload)
+            return
+        if action == "details":
+            self._show_info_dialog("Hunt Telemetry Cluster", self._format_hunt_telemetry_cluster_detail(dict(cluster_payload)))
+            return
+        self._open_hunt_telemetry_cluster_events(cluster_payload)
+
+    def _choose_hunt_telemetry_cluster_action(self, cluster_payload: Mapping[str, Any]) -> str:
+        open_case_ids = [str(item) for item in cast(list[Any], cluster_payload.get("open_case_ids") or []) if str(item)]
+        actions: list[tuple[str, str, int]] = [("Open Events", "events", 14), ("Create Case", "case", 14)]
+        if open_case_ids:
+            actions.insert(1, ("Open Existing Case", "existing_case", 18))
+        actions.append(("View Details", "details", 14))
+        default_choice = self._normalize_hunt_cluster_action(getattr(self, "saved_hunt_cluster_action", None))
+        if default_choice == "existing_case" and not open_case_ids:
+            default_choice = "events"
+        choice = self._choose_action_dialog(
+            title="Hunt Telemetry Cluster",
+            summary=(
+                f"Choose an action for {cluster_payload.get('label', cluster_payload.get('cluster_key', '-'))}.\n\n"
+                f"Cluster by: {cluster_payload.get('cluster_by', '-')}\n"
+                f"Events: {cluster_payload.get('event_count', 0)}\n"
+                f"Open cases: {len(open_case_ids)}"
+            ),
+            actions=actions,
+            default_choice=default_choice,
+            no_tk_choice=default_choice,
+            width=520,
+            height=220,
+            min_width=480,
+            min_height=190,
+            detail_label="Action",
+            detail_width=14,
+        )
+        return choice if choice in {"events", "existing_case", "case", "details"} else "events"
+
+    def _open_hunt_telemetry_cluster_existing_case(self, cluster_payload: Mapping[str, Any]) -> None:
+        open_case_ids = [str(item) for item in cast(list[Any], cluster_payload.get("open_case_ids") or []) if str(item)]
+        if not open_case_ids:
+            return
+        existing_case = self._resolve_case_for_network_evidence(open_case_ids)
+        if existing_case is None:
+            return
+        self._pivot_from_case(existing_case)
+
+    def _open_hunt_telemetry_cluster_events(self, cluster_payload: Mapping[str, Any]) -> None:
+        event_rows = self._resolve_hunt_telemetry_cluster_events(dict(cluster_payload))
+        event_selected = self._select_summary_record_or_show_info(
+            "event",
+            event_rows,
+            title="Hunt Cluster Events",
+            info_title="Hunt Cluster Events",
+            info_text=self._format_hunt_telemetry_cluster_detail(dict(cluster_payload)),
+            limit=50,
+        )
+        if event_selected is None:
+            return
+        self._pivot_from_event(event_selected)
+
+    def _create_case_from_hunt_telemetry_cluster(self, cluster_payload: Mapping[str, Any]) -> None:
+        selected = dict(cluster_payload)
+        open_case_ids = [str(item) for item in cast(list[Any], selected.get("open_case_ids") or []) if str(item)]
+        if self._handle_existing_case_choice(
+            open_case_ids=open_case_ids,
+            context_label=f"Hunt telemetry cluster {selected.get('label', selected.get('cluster_key', '-'))}",
+            context_details=[
+                f"Cluster: {selected.get('cluster_key', '-')}",
+                f"Events: {selected.get('event_count', 0)}",
+                f"Open case count: {len(open_case_ids)}",
+            ],
+            no_action_label="create another case",
+        ):
+            return
+        request_payload = self._build_hunt_telemetry_cluster_case_request(selected)
+        if hasattr(self.manager, "create_case_from_hunt_telemetry_cluster"):
+            case = self.manager.create_case_from_hunt_telemetry_cluster(request_payload)
+        elif hasattr(self.manager, "create_case_from_telemetry_cluster"):
+            case = self.manager.create_case_from_telemetry_cluster(request_payload)
+        else:
+            case = self.manager.create_case(self._build_hunt_telemetry_cluster_case_payload(selected))
+        if messagebox is not None:
+            messagebox.showinfo(
+                "Case Created",
+                f"Created case {case.case_id} from hunt telemetry cluster {selected.get('label', selected.get('cluster_key', '-'))}.",
+            )
+        self.refresh()
+        self.case_tree.selection_set(case.case_id)
+        self._refresh_case_detail()
+
     def _resolve_case_for_network_evidence(self, case_ids: Sequence[str]) -> dict[str, Any] | None:
         for case_id in case_ids:
             existing = self.case_rows_by_id.get(case_id)
@@ -2424,9 +4359,10 @@ class SocDashboard:
         *,
         source_events: Sequence[dict[str, Any]],
         linked_case: dict[str, Any] | None,
+        timeline_available: bool = False,
     ) -> str:
         has_linked_case = linked_case is not None
-        if not source_events and not has_linked_case:
+        if not source_events and not has_linked_case and not timeline_available:
             return "details"
         alert_id = str(alert_payload.get("alert_id") or "-")
         alert_title = str(alert_payload.get("title") or "-")
@@ -2434,11 +4370,14 @@ class SocDashboard:
             f"Alert: {alert_id}\n"
             f"Title: {alert_title}\n\n"
             f"Source events: {len(source_events)}\n"
-            f"Linked case: {'yes' if has_linked_case else 'no'}"
+            f"Linked case: {'yes' if has_linked_case else 'no'}\n"
+            f"Endpoint timeline: {'yes' if timeline_available else 'no'}"
         )
         actions: list[tuple[str, str, int]] = []
         if source_events:
             actions.append(("Open Source Events", "events", 18))
+        if timeline_available:
+            actions.append(("Open Endpoint Timeline", "timeline", 20))
         if has_linked_case:
             actions.append(("Open Linked Case", "case", 18))
         return self._choose_action_dialog(
@@ -2446,7 +4385,7 @@ class SocDashboard:
             summary=summary,
             actions=actions,
             default_choice="details",
-            no_tk_choice="events" if source_events else "case",
+            no_tk_choice="events" if source_events else ("timeline" if timeline_available else "case"),
             width=620,
             height=260,
             min_width=540,
@@ -2455,14 +4394,49 @@ class SocDashboard:
             detail_width=14,
         )
 
+    def _call_case_activity_pivot(
+        self,
+        case_payload: dict[str, Any],
+        *,
+        linked_alerts: Sequence[dict[str, Any]],
+        source_events: Sequence[dict[str, Any]],
+        timeline_available: bool = False,
+        hunt_available: bool = False,
+        grouped_rule_alerts: Sequence[dict[str, Any]] = (),
+        grouped_rule_evidence: Sequence[dict[str, Any]] = (),
+    ) -> str:
+        try:
+            return self._choose_case_activity_pivot(
+                case_payload,
+                linked_alerts=linked_alerts,
+                source_events=source_events,
+                timeline_available=timeline_available,
+                hunt_available=hunt_available,
+                grouped_rule_alerts=grouped_rule_alerts,
+                grouped_rule_evidence=grouped_rule_evidence,
+            )
+        except TypeError:
+            return self._choose_case_activity_pivot(
+                case_payload,
+                linked_alerts=linked_alerts,
+                source_events=source_events,
+                timeline_available=timeline_available,
+                grouped_rule_alerts=grouped_rule_alerts,
+                grouped_rule_evidence=grouped_rule_evidence,
+            )
+
     def _choose_case_activity_pivot(
         self,
         case_payload: dict[str, Any],
         *,
         linked_alerts: Sequence[dict[str, Any]],
         source_events: Sequence[dict[str, Any]],
+        timeline_available: bool = False,
+        hunt_available: bool = False,
+        grouped_rule_alerts: Sequence[dict[str, Any]] = (),
+        grouped_rule_evidence: Sequence[dict[str, Any]] = (),
     ) -> str:
-        if not linked_alerts and not source_events:
+        if not linked_alerts and not source_events and not timeline_available and not hunt_available and not grouped_rule_alerts and not grouped_rule_evidence:
             return "details"
         case_id = str(case_payload.get("case_id") or "-")
         case_title = str(case_payload.get("title") or "-")
@@ -2470,24 +4444,577 @@ class SocDashboard:
             f"Case: {case_id}\n"
             f"Title: {case_title}\n\n"
             f"Linked alerts: {len(linked_alerts)}\n"
-            f"Source events: {len(source_events)}"
+            f"Source events: {len(source_events)}\n"
+            f"Endpoint timeline: {'yes' if timeline_available else 'no'}\n"
+            f"Hunt telemetry: {'yes' if hunt_available else 'no'}\n"
+            f"Rule alert groups: {len(grouped_rule_alerts)}\n"
+            f"Rule evidence groups: {len(grouped_rule_evidence)}"
         )
         actions: list[tuple[str, str, int]] = []
         if linked_alerts:
             actions.append(("Open Linked Alerts", "alerts", 18))
         if source_events:
             actions.append(("Open Source Events", "events", 18))
+        if timeline_available:
+            actions.append(("Open Endpoint Timeline", "timeline", 20))
+        if hunt_available:
+            actions.append(("Open Hunt Clusters", "hunt", 18))
+        if grouped_rule_alerts:
+            actions.append(("Open Rule Alert Groups", "rule_alerts", 20))
+        if grouped_rule_evidence:
+            actions.append(("Open Rule Evidence Groups", "rule_evidence", 22))
         return self._choose_action_dialog(
             title="Case Activity",
             summary=summary,
             actions=actions,
             default_choice="details",
-            no_tk_choice="alerts" if linked_alerts else "events",
+            no_tk_choice="alerts" if linked_alerts else ("events" if source_events else ("timeline" if timeline_available else "hunt")),
             width=620,
             height=260,
             min_width=540,
             min_height=220,
             detail_label="Activity Details",
+            detail_width=14,
+        )
+
+    def _group_case_rule_alerts(self, linked_alerts: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+        rule_alerts = [item for item in linked_alerts if str(item.get("correlation_rule") or "")]
+        return self._group_rule_alerts(rule_alerts)
+
+    def _group_case_rule_evidence(self, source_events: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+        endpoint_events = [item for item in source_events if str(item.get("event_type") or "").startswith("endpoint.telemetry.")]
+        return self._group_rule_evidence(endpoint_events)
+
+    def _resolve_detection_rule_alert_groups(self, rule_id: str) -> list[dict[str, Any]]:
+        manager = getattr(self, "manager", None)
+        if manager is not None and hasattr(manager, "list_detection_rule_alert_groups"):
+            payload = cast(list[dict[str, Any]], manager.list_detection_rule_alert_groups(rule_id) or [])
+            if payload:
+                return [dict(item) for item in payload]
+        alerts = [item.model_dump(mode="json") for item in self.manager.query_alerts(correlation_rule=rule_id, limit=50)]
+        return self._group_rule_alerts(alerts)
+
+    def _resolve_detection_rule_alert_group_detail(
+        self,
+        rule_id: str,
+        group_payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        manager = getattr(self, "manager", None)
+        group_key = str(group_payload.get("group_key") or "")
+        if rule_id and group_key and manager is not None and hasattr(manager, "get_detection_rule_alert_group"):
+            payload = cast(dict[str, Any], manager.get_detection_rule_alert_group(rule_id, group_key) or {})
+            if payload:
+                return dict(payload)
+        return dict(group_payload)
+
+    def _resolve_detection_rule_evidence_groups(self, rule_id: str) -> list[dict[str, Any]]:
+        manager = getattr(self, "manager", None)
+        if manager is not None and hasattr(manager, "list_detection_rule_evidence_groups"):
+            payload = cast(list[dict[str, Any]], manager.list_detection_rule_evidence_groups(rule_id) or [])
+            if payload:
+                return [dict(item) for item in payload]
+        alert_rows = [item.model_dump(mode="json") for item in self.manager.query_alerts(correlation_rule=rule_id, limit=50)]
+        source_events = self._collect_rule_source_events(alert_rows)
+        return self._group_rule_evidence(source_events)
+
+    def _resolve_detection_rule_evidence_group_detail(
+        self,
+        rule_id: str,
+        group_payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        manager = getattr(self, "manager", None)
+        group_key = str(group_payload.get("group_key") or "")
+        if rule_id and group_key and manager is not None and hasattr(manager, "get_detection_rule_evidence_group"):
+            payload = cast(dict[str, Any], manager.get_detection_rule_evidence_group(rule_id, group_key) or {})
+            if payload:
+                return dict(payload)
+        return dict(group_payload)
+
+    def _resolve_case_rule_alert_groups(
+        self,
+        case_payload: Mapping[str, Any],
+        linked_alerts: Sequence[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        manager = getattr(self, "manager", None)
+        case_id = str(case_payload.get("case_id") or "")
+        if case_id and manager is not None and hasattr(manager, "list_case_rule_alert_groups"):
+            payload = cast(list[dict[str, Any]], manager.list_case_rule_alert_groups(case_id) or [])
+            if payload:
+                return [dict(item) for item in payload]
+        return self._group_case_rule_alerts(linked_alerts)
+
+    def _resolve_case_rule_alert_group_detail(
+        self,
+        case_payload: Mapping[str, Any],
+        group_payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        manager = getattr(self, "manager", None)
+        case_id = str(case_payload.get("case_id") or "")
+        group_key = str(group_payload.get("group_key") or "")
+        if case_id and group_key and manager is not None and hasattr(manager, "get_case_rule_alert_group"):
+            payload = cast(dict[str, Any], manager.get_case_rule_alert_group(case_id, group_key) or {})
+            if payload:
+                return dict(payload)
+        return dict(group_payload)
+
+    def _resolve_case_rule_evidence_groups(
+        self,
+        case_payload: Mapping[str, Any],
+        source_events: Sequence[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        manager = getattr(self, "manager", None)
+        case_id = str(case_payload.get("case_id") or "")
+        if case_id and manager is not None and hasattr(manager, "list_case_rule_evidence_groups"):
+            payload = cast(list[dict[str, Any]], manager.list_case_rule_evidence_groups(case_id) or [])
+            if payload:
+                return [dict(item) for item in payload]
+        return self._group_case_rule_evidence(source_events)
+
+    def _resolve_case_rule_evidence_group_detail(
+        self,
+        case_payload: Mapping[str, Any],
+        group_payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        manager = getattr(self, "manager", None)
+        case_id = str(case_payload.get("case_id") or "")
+        group_key = str(group_payload.get("group_key") or "")
+        if case_id and group_key and manager is not None and hasattr(manager, "get_case_rule_evidence_group"):
+            payload = cast(dict[str, Any], manager.get_case_rule_evidence_group(case_id, group_key) or {})
+            if payload:
+                return dict(payload)
+        return dict(group_payload)
+
+    def _resolve_case_endpoint_timeline_clusters(
+        self,
+        case_payload: Mapping[str, Any],
+        *,
+        source_events: Sequence[dict[str, Any]],
+        cluster_by: str = "process",
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        manager = getattr(self, "manager", None)
+        case_id = str(case_payload.get("case_id") or "")
+        if case_id and manager is not None and hasattr(manager, "list_case_endpoint_timeline_clusters"):
+            payload = cast(
+                dict[str, Any],
+                manager.list_case_endpoint_timeline_clusters(case_id, cluster_by=cluster_by, limit=limit),
+            )
+            rows = [dict(item) for item in cast(list[dict[str, Any]], payload.get("clusters") or [])]
+            for row in rows:
+                label = str(row.get("label") or row.get("cluster_key") or "-")
+                open_case_count = int(row.get("open_case_count") or 0)
+                row["title"] = f"{label} (open cases: {open_case_count})" if open_case_count else label
+            return rows
+        return []
+
+    def _resolve_case_endpoint_timeline_cluster_detail(
+        self,
+        case_payload: Mapping[str, Any],
+        cluster_payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        manager = getattr(self, "manager", None)
+        case_id = str(case_payload.get("case_id") or "")
+        cluster_key = str(cluster_payload.get("cluster_key") or "")
+        cluster_by = str(cluster_payload.get("cluster_by") or "process")
+        if case_id and cluster_key and manager is not None and hasattr(manager, "get_case_endpoint_timeline_cluster"):
+            payload = cast(
+                dict[str, Any],
+                manager.get_case_endpoint_timeline_cluster(case_id, cluster_by=cluster_by, cluster_key=cluster_key) or {},
+            )
+            if payload:
+                label = str(payload.get("label") or payload.get("cluster_key") or "-")
+                open_case_count = int(payload.get("open_case_count") or 0)
+                payload["title"] = f"{label} (open cases: {open_case_count})" if open_case_count else label
+                return dict(payload)
+        return dict(cluster_payload)
+
+    def _resolve_case_hunt_telemetry_clusters(
+        self,
+        case_payload: Mapping[str, Any],
+        *,
+        source_events: Sequence[dict[str, Any]],
+        cluster_by: str = "remote_ip",
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        manager = getattr(self, "manager", None)
+        case_id = str(case_payload.get("case_id") or "")
+        if case_id and manager is not None and hasattr(manager, "list_case_hunt_telemetry_clusters"):
+            payload = cast(
+                dict[str, Any],
+                manager.list_case_hunt_telemetry_clusters(case_id, cluster_by=cluster_by, limit=limit),
+            )
+            rows = [dict(item) for item in cast(list[dict[str, Any]], payload.get("clusters") or [])]
+            for row in rows:
+                label = str(row.get("label") or row.get("cluster_key") or "-")
+                open_case_count = int(row.get("open_case_count") or 0)
+                row["title"] = f"{label} (open cases: {open_case_count})" if open_case_count else label
+            return rows
+        filters = self._case_hunt_telemetry_filters_from_case(case_payload, source_events=source_events, cluster_by=cluster_by)
+        return self._collect_hunt_telemetry_clusters(cluster_by=cluster_by, limit=limit, **filters)
+
+    def _resolve_case_hunt_telemetry_cluster_detail(
+        self,
+        case_payload: Mapping[str, Any],
+        cluster_payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        manager = getattr(self, "manager", None)
+        case_id = str(case_payload.get("case_id") or "")
+        cluster_key = str(cluster_payload.get("cluster_key") or "")
+        cluster_by = str(cluster_payload.get("cluster_by") or "remote_ip")
+        if case_id and cluster_key and manager is not None and hasattr(manager, "get_case_hunt_telemetry_cluster"):
+            payload = cast(
+                dict[str, Any],
+                manager.get_case_hunt_telemetry_cluster(case_id, cluster_by=cluster_by, cluster_key=cluster_key) or {},
+            )
+            if payload:
+                label = str(payload.get("label") or payload.get("cluster_key") or "-")
+                open_case_count = int(payload.get("open_case_count") or 0)
+                payload["title"] = f"{label} (open cases: {open_case_count})" if open_case_count else label
+                return dict(payload)
+        return self._resolve_hunt_telemetry_cluster_detail(cluster_payload)
+
+    def _pivot_from_case_timeline_clusters(
+        self,
+        case_payload: dict[str, Any],
+        linked_alerts: Sequence[dict[str, Any]],
+        source_events: Sequence[dict[str, Any]],
+        timeline_clusters: Sequence[dict[str, Any]],
+    ) -> None:
+        selected_cluster = self._select_summary_record_or_show_info(
+            "endpoint_timeline_cluster",
+            timeline_clusters,
+            title="Endpoint Timeline Clusters",
+            info_title="Case Linked Activity",
+            info_text=self._format_case_linked_activity(case_payload, linked_alerts, source_events),
+            limit=50,
+        )
+        if selected_cluster is None:
+            return
+        selected_cluster = self._resolve_case_endpoint_timeline_cluster_detail(case_payload, selected_cluster)
+        choice = self._choose_action_dialog(
+            title=f"Endpoint Timeline Cluster {selected_cluster.get('cluster_key', '-')}",
+            summary=(
+                f"Cluster: {selected_cluster.get('cluster_key', '-')}\n"
+                f"Events: {selected_cluster.get('event_count', 0)}\n"
+                f"Open case count: {int(selected_cluster.get('open_case_count') or 0)}"
+            ),
+            actions=[("Open Timeline", "timeline", 16), ("Create Timeline Case", "case", 18)],
+            default_choice="details",
+            no_tk_choice="timeline",
+            width=620,
+            height=240,
+            min_width=540,
+            min_height=200,
+            detail_label="Cluster Details",
+            detail_width=14,
+        )
+        if choice == "case":
+            if self._handle_existing_case_choice(
+                open_case_ids=[str(item) for item in cast(list[Any], selected_cluster.get("open_case_ids") or []) if str(item)],
+                context_label=f"Endpoint timeline cluster {selected_cluster.get('label', selected_cluster.get('cluster_key', '-'))}",
+                context_details=[
+                    f"Cluster: {selected_cluster.get('cluster_key', '-')}",
+                    f"Events: {selected_cluster.get('event_count', 0)}",
+                    f"Open case count: {int(selected_cluster.get('open_case_count') or 0)}",
+                ],
+                no_action_label="create another case",
+            ):
+                return
+            self._promote_case_timeline_cluster_to_case(case_payload, selected_cluster)
+            return
+        timeline_rows = self._resolve_case_timeline_cluster_events(case_payload, selected_cluster)
+        selected_event = self._select_summary_record_or_show_info(
+            "endpoint_timeline",
+            timeline_rows,
+            title="Endpoint Timeline",
+            info_title="Case Linked Activity",
+            info_text=self._format_endpoint_timeline_cluster_detail(selected_cluster),
+            limit=50,
+        )
+        if selected_event is None:
+            return
+        self._pivot_from_event(selected_event)
+
+    def _promote_case_timeline_cluster_to_case(
+        self,
+        case_payload: Mapping[str, Any],
+        cluster_payload: Mapping[str, Any],
+    ) -> None:
+        manager = getattr(self, "manager", None)
+        case_id = str(case_payload.get("case_id") or "")
+        assignee = self._current_analyst_identity()
+        if case_id and manager is not None and hasattr(manager, "create_case_from_case_endpoint_timeline_cluster"):
+            cluster_request = SocCaseEndpointTimelineClusterCaseRequest(
+                cluster_by=str(cluster_payload.get("cluster_by") or "process"),
+                cluster_key=str(cluster_payload.get("cluster_key") or ""),
+                assignee=assignee,
+            )
+            case = manager.create_case_from_case_endpoint_timeline_cluster(case_id, cluster_request)
+        elif manager is not None and hasattr(manager, "create_case_from_endpoint_timeline"):
+            timeline_request = self._build_endpoint_timeline_case_request(dict(cluster_payload))
+            case = manager.create_case_from_endpoint_timeline(timeline_request)
+        else:
+            case = self.manager.create_case(self._build_endpoint_timeline_case_payload(dict(cluster_payload), assignee=assignee))
+        if messagebox is not None:
+            messagebox.showinfo(
+                "Case Created",
+                f"Created case {case.case_id} from endpoint timeline cluster {cluster_payload.get('label', cluster_payload.get('cluster_key', '-'))}.",
+            )
+        self.refresh()
+        if hasattr(self, "case_tree"):
+            self.case_tree.selection_set(case.case_id)
+        self._refresh_case_detail()
+
+    def _pivot_from_case_hunt_telemetry_clusters(
+        self,
+        case_payload: dict[str, Any],
+        linked_alerts: Sequence[dict[str, Any]],
+        source_events: Sequence[dict[str, Any]],
+    ) -> None:
+        cluster_by = self._choose_hunt_telemetry_cluster_mode()
+        clusters = self._resolve_case_hunt_telemetry_clusters(
+            case_payload,
+            source_events=source_events,
+            cluster_by=cluster_by,
+            limit=100,
+        )
+        selected_cluster = self._select_summary_record_or_show_info(
+            "hunt_telemetry_cluster",
+            clusters,
+            title="Hunt Telemetry Clusters",
+            info_title="Case Linked Activity",
+            info_text=self._format_case_linked_activity(case_payload, linked_alerts, source_events),
+            limit=50,
+        )
+        if selected_cluster is None:
+            return
+        selected_cluster = self._resolve_case_hunt_telemetry_cluster_detail(case_payload, selected_cluster)
+        choice = self._choose_action_dialog(
+            title=f"Hunt Cluster {selected_cluster.get('cluster_key', '-')}",
+            summary=(
+                f"Cluster: {selected_cluster.get('cluster_key', '-')}\n"
+                f"Mode: {selected_cluster.get('cluster_by', '-')}\n"
+                f"Events: {selected_cluster.get('event_count', 0)}\n"
+                f"Open case count: {int(selected_cluster.get('open_case_count') or 0)}"
+            ),
+            actions=[("Open Events", "events", 14), ("Create Cluster Case", "case", 18)],
+            default_choice="details",
+            no_tk_choice="events",
+            width=620,
+            height=240,
+            min_width=540,
+            min_height=200,
+            detail_label="Cluster Details",
+            detail_width=14,
+        )
+        if choice == "case":
+            if self._handle_existing_case_choice(
+                open_case_ids=[str(item) for item in cast(list[Any], selected_cluster.get("open_case_ids") or []) if str(item)],
+                context_label=f"Hunt telemetry cluster {selected_cluster.get('label', selected_cluster.get('cluster_key', '-'))}",
+                context_details=[
+                    f"Cluster: {selected_cluster.get('cluster_key', '-')}",
+                    f"Mode: {selected_cluster.get('cluster_by', '-')}",
+                    f"Events: {selected_cluster.get('event_count', 0)}",
+                    f"Open case count: {int(selected_cluster.get('open_case_count') or 0)}",
+                ],
+                no_action_label="create another case",
+            ):
+                return
+            self._promote_case_hunt_telemetry_cluster_to_case(case_payload, selected_cluster)
+            return
+        event_rows = self._resolve_hunt_telemetry_cluster_events(selected_cluster)
+        selected_event = self._select_summary_record_or_show_info(
+            "event",
+            event_rows,
+            title="Hunt Cluster Events",
+            info_title="Case Linked Activity",
+            info_text=self._format_hunt_telemetry_cluster_detail(selected_cluster),
+            limit=50,
+        )
+        if selected_event is None:
+            return
+        self._pivot_from_event(selected_event)
+
+    def _promote_case_hunt_telemetry_cluster_to_case(
+        self,
+        case_payload: Mapping[str, Any],
+        cluster_payload: Mapping[str, Any],
+    ) -> None:
+        manager = getattr(self, "manager", None)
+        case_id = str(case_payload.get("case_id") or "")
+        assignee = self._current_analyst_identity()
+        if case_id and manager is not None and hasattr(manager, "create_case_from_case_hunt_telemetry_cluster"):
+            case_cluster_request = SocCaseTelemetryClusterCaseRequest(
+                cluster_by=str(cluster_payload.get("cluster_by") or "remote_ip"),
+                cluster_key=str(cluster_payload.get("cluster_key") or ""),
+                assignee=assignee,
+            )
+            case = manager.create_case_from_case_hunt_telemetry_cluster(case_id, case_cluster_request)
+        elif manager is not None and hasattr(manager, "create_case_from_hunt_telemetry_cluster"):
+            hunt_cluster_request = self._build_hunt_telemetry_cluster_case_request(dict(cluster_payload))
+            case = manager.create_case_from_hunt_telemetry_cluster(hunt_cluster_request)
+        elif manager is not None and hasattr(manager, "create_case_from_telemetry_cluster"):
+            hunt_cluster_request = self._build_hunt_telemetry_cluster_case_request(dict(cluster_payload))
+            case = manager.create_case_from_telemetry_cluster(hunt_cluster_request)
+        else:
+            case = self.manager.create_case(self._build_hunt_telemetry_cluster_case_payload(dict(cluster_payload), assignee=assignee))
+        if messagebox is not None:
+            messagebox.showinfo(
+                "Case Created",
+                f"Created case {case.case_id} from hunt telemetry cluster {cluster_payload.get('label', cluster_payload.get('cluster_key', '-'))}.",
+            )
+        self.refresh()
+        if hasattr(self, "case_tree"):
+            self.case_tree.selection_set(case.case_id)
+        self._refresh_case_detail()
+
+    def _pivot_from_case_rule_alert_groups(
+        self,
+        case_payload: dict[str, Any],
+        grouped_rule_alerts: Sequence[dict[str, Any]],
+        linked_alerts: Sequence[dict[str, Any]],
+        source_events: Sequence[dict[str, Any]],
+    ) -> None:
+        selected_group = self._select_summary_record_or_show_info(
+            "alert_group",
+            grouped_rule_alerts,
+            title="Rule Alert Groups",
+            info_title="Case Linked Activity",
+            info_text=self._format_case_linked_activity(case_payload, linked_alerts, source_events),
+        )
+        if selected_group is None:
+            return
+        selected_group = self._resolve_case_rule_alert_group_detail(case_payload, selected_group)
+        group_alerts = cast(list[dict[str, Any]], selected_group.get("alerts") or [])
+        group_source_events = self._collect_rule_source_events(group_alerts)
+        timeline_filters = self._endpoint_timeline_filters_from_alert_group(selected_group, source_events=group_source_events)
+        choice = self._choose_rule_group_pivot(
+            title=f"Rule Alert Group {selected_group.get('group_key', '-')}",
+            grouped_label="alerts",
+            grouped_count=len(group_alerts),
+            timeline_available=bool(timeline_filters),
+        )
+        if choice == "case" and timeline_filters:
+            if self._handle_existing_case_choice(
+                open_case_ids=[str(item) for item in cast(list[Any], selected_group.get("open_case_ids") or []) if str(item)],
+                context_label=f"Rule alert group {selected_group.get('group_key', '-')}",
+                context_details=[
+                    f"Group: {selected_group.get('group_key', '-')}",
+                    f"Alerts: {len(group_alerts)}",
+                    f"Open case count: {int(selected_group.get('open_case_count') or 0)}",
+                ],
+                no_action_label="create another case",
+            ):
+                return
+            self._promote_case_rule_alert_group_to_case(case_payload, selected_group, timeline_filters=timeline_filters)
+            return
+        if choice == "timeline" and timeline_filters:
+            self._pivot_from_rule_group_timeline(
+                selected_group,
+                timeline_filters=timeline_filters,
+                info_title="Rule Alert Groups",
+            )
+            return
+        selected_alert = self._select_summary_record_or_show_info(
+            "alert",
+            group_alerts,
+            title=f"Alerts for {selected_group.get('group_key', '-')}",
+            info_title="Rule Alert Groups",
+            info_text=self._format_summary_records("alert_group", [selected_group], limit=1),
+            limit=50,
+        )
+        if selected_alert is None:
+            return
+        self._pivot_from_alert(selected_alert)
+
+    def _pivot_from_case_rule_evidence_groups(
+        self,
+        case_payload: dict[str, Any],
+        grouped_rule_evidence: Sequence[dict[str, Any]],
+        linked_alerts: Sequence[dict[str, Any]],
+        source_events: Sequence[dict[str, Any]],
+    ) -> None:
+        selected_group = self._select_summary_record_or_show_info(
+            "evidence_group",
+            grouped_rule_evidence,
+            title="Rule Evidence Groups",
+            info_title="Case Linked Activity",
+            info_text=self._format_case_linked_activity(case_payload, linked_alerts, source_events),
+        )
+        if selected_group is None:
+            return
+        selected_group = self._resolve_case_rule_evidence_group_detail(case_payload, selected_group)
+        group_events = cast(list[dict[str, Any]], selected_group.get("events") or [])
+        timeline_filters = self._endpoint_timeline_filters_from_evidence_group(selected_group, source_events=group_events)
+        choice = self._choose_rule_group_pivot(
+            title=f"Rule Evidence Group {selected_group.get('group_key', '-')}",
+            grouped_label="events",
+            grouped_count=len(group_events),
+            timeline_available=bool(timeline_filters),
+        )
+        if choice == "case" and timeline_filters:
+            if self._handle_existing_case_choice(
+                open_case_ids=[str(item) for item in cast(list[Any], selected_group.get("open_case_ids") or []) if str(item)],
+                context_label=f"Rule evidence group {selected_group.get('group_key', '-')}",
+                context_details=[
+                    f"Group: {selected_group.get('group_key', '-')}",
+                    f"Events: {len(group_events)}",
+                    f"Open case count: {int(selected_group.get('open_case_count') or 0)}",
+                ],
+                no_action_label="create another case",
+            ):
+                return
+            self._promote_case_rule_evidence_group_to_case(case_payload, selected_group, timeline_filters=timeline_filters)
+            return
+        if choice == "timeline" and timeline_filters:
+            self._pivot_from_rule_group_timeline(
+                selected_group,
+                timeline_filters=timeline_filters,
+                info_title="Rule Evidence Groups",
+            )
+            return
+        selected_event = self._select_summary_record_or_show_info(
+            "event",
+            group_events,
+            title=f"Evidence for {selected_group.get('group_key', '-')}",
+            info_title="Rule Evidence Groups",
+            info_text=self._format_summary_records("evidence_group", [selected_group], limit=1),
+            limit=50,
+        )
+        if selected_event is None:
+            return
+        self._pivot_from_event(selected_event)
+
+    def _choose_rule_group_pivot(
+        self,
+        *,
+        title: str,
+        grouped_label: str,
+        grouped_count: int,
+        timeline_available: bool,
+    ) -> str:
+        if not timeline_available:
+            return "grouped"
+        summary = (
+            f"{title}\n\n"
+            f"Grouped {grouped_label}: {grouped_count}\n"
+            f"Endpoint timeline: {'yes' if timeline_available else 'no'}"
+        )
+        return self._choose_action_dialog(
+            title=title,
+            summary=summary,
+            actions=[
+                (f"Open Grouped {grouped_label.title()}", "grouped", 22),
+                ("Open Endpoint Timeline", "timeline", 20),
+                ("Create Timeline Case", "case", 18),
+            ],
+            default_choice="details",
+            no_tk_choice="grouped",
+            width=620,
+            height=220,
+            min_width=540,
+            min_height=180,
+            detail_label="Group Details",
             detail_width=14,
         )
 
@@ -2559,14 +5086,474 @@ class SocDashboard:
 
     def _resolve_event_cases(self, event_payload: dict[str, Any]) -> list[dict[str, Any]]:
         event_id = str(event_payload.get("event_id") or "")
-        if not event_id or not hasattr(self.manager, "list_cases"):
+        manager = getattr(self, "manager", None)
+        if not event_id or manager is None or not hasattr(manager, "list_cases"):
             return []
-        all_cases = [item.model_dump(mode="json") for item in self.manager.list_cases()]
+        all_cases = [item.model_dump(mode="json") for item in manager.list_cases()]
         return [
             case
             for case in all_cases
             if event_id in cast(list[str], case.get("source_event_ids") or [])
         ]
+
+    @staticmethod
+    def _endpoint_timeline_field_value(payload: Mapping[str, Any], field: str) -> str | None:
+        value = payload.get(field)
+        if value not in (None, ""):
+            return str(value)
+        details = payload.get("details")
+        if isinstance(details, Mapping):
+            detail_value = details.get(field)
+            if detail_value not in (None, ""):
+                return str(detail_value)
+        return None
+
+    def _endpoint_timeline_filters_from_case(
+        self,
+        case_payload: Mapping[str, Any],
+        *,
+        source_events: Sequence[dict[str, Any]],
+    ) -> dict[str, Any]:
+        filters: dict[str, Any] = {}
+        observable_fields = {
+            "device": "device_id",
+            "process_name": "process_name",
+            "process_guid": "process_guid",
+            "remote_ip": "remote_ip",
+            "signer": "signer_name",
+            "sha256": "sha256",
+        }
+        observables = [str(item).strip() for item in cast(list[Any], case_payload.get("observables") or []) if str(item).strip()]
+        for observable in observables:
+            prefix, separator, raw_value = observable.partition(":")
+            if separator:
+                target_field = observable_fields.get(prefix.strip().casefold())
+                value = raw_value.strip()
+                if target_field and value and target_field not in filters:
+                    filters[target_field] = value
+                    continue
+            try:
+                remote_ip = str(ip_address(observable))
+            except ValueError:
+                continue
+            filters.setdefault("remote_ip", remote_ip)
+        for source_event in source_events:
+            normalized = self._normalize_endpoint_timeline_row(source_event)
+            event_type = str(normalized.get("event_type") or "")
+            if not event_type.startswith("endpoint.telemetry."):
+                continue
+            for field in ("device_id", "process_guid", "process_name", "remote_ip", "signer_name", "sha256"):
+                if field in filters:
+                    continue
+                field_value = self._endpoint_timeline_field_value(normalized, field)
+                if field_value:
+                    filters[field] = field_value
+        return filters
+
+    def _case_hunt_telemetry_filters_from_case(
+        self,
+        case_payload: Mapping[str, Any],
+        *,
+        source_events: Sequence[dict[str, Any]],
+        cluster_by: str | None = None,
+    ) -> dict[str, Any]:
+        filters = self._endpoint_timeline_filters_from_case(case_payload, source_events=source_events)
+        observable_fields = {
+            "filename": "filename",
+            "artifact_path": "artifact_path",
+            "session": "session_key",
+            "session_key": "session_key",
+        }
+        observables = [str(item).strip() for item in cast(list[Any], case_payload.get("observables") or []) if str(item).strip()]
+        for observable in observables:
+            prefix, separator, raw_value = observable.partition(":")
+            if not separator:
+                continue
+            target_field = observable_fields.get(prefix.strip().casefold())
+            value = raw_value.strip()
+            if target_field and value and target_field not in filters:
+                filters[target_field] = value
+        for source_event in source_events:
+            normalized = self._normalize_endpoint_timeline_row(source_event)
+            for field in ("device_id", "process_guid", "process_name", "remote_ip", "signer_name", "sha256", "filename", "artifact_path", "session_key"):
+                if field in filters:
+                    continue
+                field_value = self._endpoint_timeline_field_value(normalized, field)
+                if field_value:
+                    filters[field] = field_value
+        if cluster_by == "remote_ip":
+            remote_ip = filters.get("remote_ip")
+            filters = {key: value for key, value in {"remote_ip": remote_ip}.items() if value}
+        elif cluster_by == "device_id":
+            device_id = filters.get("device_id")
+            filters = {key: value for key, value in {"device_id": device_id}.items() if value}
+        elif any(filters.get(key) for key in ("process_guid", "process_name", "sha256")):
+            filters.pop("remote_ip", None)
+        return filters
+
+    def _endpoint_timeline_filters_from_alert(
+        self,
+        alert_payload: Mapping[str, Any],
+        *,
+        source_events: Sequence[dict[str, Any]],
+        linked_case: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if linked_case is not None:
+            return self._endpoint_timeline_filters_from_case(linked_case, source_events=source_events)
+        return self._endpoint_timeline_filters_from_case({"observables": []}, source_events=source_events)
+
+    def _endpoint_timeline_filters_from_alert_group(
+        self,
+        group_payload: Mapping[str, Any],
+        *,
+        source_events: Sequence[dict[str, Any]],
+    ) -> dict[str, Any]:
+        alerts = cast(list[dict[str, Any]], group_payload.get("alerts") or [])
+        linked_case: Mapping[str, Any] | None = None
+        for alert_payload in alerts:
+            linked_case_id = str(alert_payload.get("linked_case_id") or "")
+            if not linked_case_id:
+                continue
+            linked_case = self.case_rows_by_id.get(linked_case_id)
+            if linked_case is not None:
+                break
+        representative_alert = alerts[0] if alerts else {}
+        return self._endpoint_timeline_filters_from_alert(
+            representative_alert,
+            source_events=source_events,
+            linked_case=linked_case,
+        )
+
+    def _endpoint_timeline_filters_from_evidence_group(
+        self,
+        group_payload: Mapping[str, Any],
+        *,
+        source_events: Sequence[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return self._endpoint_timeline_filters_from_case({"observables": []}, source_events=source_events)
+
+    def _summarize_rule_group_timeline(
+        self,
+        group_payload: Mapping[str, Any],
+        *,
+        timeline_rows: Sequence[dict[str, Any]],
+    ) -> dict[str, Any]:
+        alerts = cast(list[dict[str, Any]], group_payload.get("alerts") or [])
+        related_alert_ids = [str(item.get("alert_id")) for item in alerts if str(item.get("alert_id") or "")]
+        return {
+            "cluster_key": group_payload.get("group_key", "-"),
+            "label": group_payload.get("title", group_payload.get("group_key", "-")),
+            "cluster_by": "rule_group",
+            "event_count": len(timeline_rows),
+            "event_ids": [str(item.get("event_id")) for item in timeline_rows if str(item.get("event_id") or "")],
+            "event_types": dict(Counter(str(item.get("event_type") or "-") for item in timeline_rows)),
+            "device_ids": sorted(
+                {
+                    str(value)
+                    for item in timeline_rows
+                    for value in [self._endpoint_timeline_field_value(item, "device_id")]
+                    if value
+                }
+            ),
+            "process_names": sorted(
+                {
+                    str(value)
+                    for item in timeline_rows
+                    for value in [self._endpoint_timeline_field_value(item, "process_name")]
+                    if value
+                }
+            ),
+            "process_guids": sorted(
+                {
+                    str(value)
+                    for item in timeline_rows
+                    for value in [self._endpoint_timeline_field_value(item, "process_guid")]
+                    if value
+                }
+            ),
+            "remote_ips": sorted(
+                {
+                    str(value)
+                    for item in timeline_rows
+                    for value in [self._endpoint_timeline_field_value(item, "remote_ip")]
+                    if value
+                }
+            ),
+            "filenames": sorted(
+                {
+                    str(value)
+                    for item in timeline_rows
+                    for value in [self._endpoint_timeline_field_value(item, "filename")]
+                    if value
+                }
+            ),
+            "related_alert_ids": related_alert_ids,
+            "related_case_ids": group_payload.get("related_case_ids") or [],
+            "open_case_ids": group_payload.get("open_case_ids") or [],
+            "open_case_count": group_payload.get("open_case_count") or 0,
+        }
+
+    def _build_endpoint_timeline_case_request_from_rule_group(
+        self,
+        group_payload: Mapping[str, Any],
+        *,
+        timeline_filters: Mapping[str, Any],
+    ) -> SocEndpointTimelineCaseRequest:
+        group_label = str(group_payload.get("title") or group_payload.get("group_key") or "-")
+        limit = max(int(group_payload.get("event_count") or group_payload.get("alert_count") or 0), 1)
+        payload: dict[str, Any] = {
+            "device_id": timeline_filters.get("device_id"),
+            "process_name": timeline_filters.get("process_name"),
+            "process_guid": timeline_filters.get("process_guid"),
+            "remote_ip": timeline_filters.get("remote_ip"),
+            "signer_name": timeline_filters.get("signer_name"),
+            "sha256": timeline_filters.get("sha256"),
+            "title": f"Investigate endpoint timeline {group_label}",
+            "summary": f"Investigate endpoint-backed rule group {group_label}.",
+            "severity": SocSeverity.high.value,
+            "limit": limit,
+            "assignee": self._current_analyst_identity(),
+        }
+        return SocEndpointTimelineCaseRequest.model_validate(payload)
+
+    def _promote_rule_group_to_endpoint_timeline_case(
+        self,
+        group_payload: Mapping[str, Any],
+        *,
+        timeline_filters: Mapping[str, Any],
+    ) -> None:
+        request_payload = self._build_endpoint_timeline_case_request_from_rule_group(
+            group_payload,
+            timeline_filters=timeline_filters,
+        )
+        if hasattr(self.manager, "create_case_from_endpoint_timeline"):
+            case = self.manager.create_case_from_endpoint_timeline(request_payload)
+        else:
+            timeline_rows = self._collect_endpoint_timeline(limit=request_payload.limit, **timeline_filters)
+            timeline_summary = self._summarize_rule_group_timeline(group_payload, timeline_rows=timeline_rows)
+            case = self.manager.create_case(self._build_endpoint_timeline_case_payload(timeline_summary))
+        if messagebox is not None:
+            messagebox.showinfo(
+                "Case Created",
+                f"Created case {case.case_id} from rule group {group_payload.get('group_key', '-')}.",
+            )
+        self.refresh()
+        if hasattr(self, "case_tree"):
+            self.case_tree.selection_set(case.case_id)
+        self._refresh_case_detail()
+
+    def _promote_case_rule_alert_group_to_case(
+        self,
+        case_payload: Mapping[str, Any],
+        group_payload: Mapping[str, Any],
+        *,
+        timeline_filters: Mapping[str, Any],
+    ) -> None:
+        manager = getattr(self, "manager", None)
+        case_id = str(case_payload.get("case_id") or "")
+        assignee = self._current_analyst_identity()
+        if case_id and manager is not None and hasattr(manager, "create_case_from_case_rule_alert_group"):
+            request_payload = SocCaseRuleGroupCaseRequest(
+                group_key=str(group_payload.get("group_key") or ""),
+                assignee=assignee,
+            )
+            case = manager.create_case_from_case_rule_alert_group(case_id, request_payload)
+        else:
+            self._promote_rule_group_to_endpoint_timeline_case(group_payload, timeline_filters=timeline_filters)
+            return
+        if messagebox is not None:
+            messagebox.showinfo(
+                "Case Created",
+                f"Created case {case.case_id} from case rule alert group {group_payload.get('group_key', '-')}.",
+            )
+        self.refresh()
+        if hasattr(self, "case_tree"):
+            self.case_tree.selection_set(case.case_id)
+        self._refresh_case_detail()
+
+    def _promote_case_rule_evidence_group_to_case(
+        self,
+        case_payload: Mapping[str, Any],
+        group_payload: Mapping[str, Any],
+        *,
+        timeline_filters: Mapping[str, Any],
+    ) -> None:
+        manager = getattr(self, "manager", None)
+        case_id = str(case_payload.get("case_id") or "")
+        assignee = self._current_analyst_identity()
+        if case_id and manager is not None and hasattr(manager, "create_case_from_case_rule_evidence_group"):
+            request_payload = SocCaseRuleGroupCaseRequest(
+                group_key=str(group_payload.get("group_key") or ""),
+                assignee=assignee,
+            )
+            case = manager.create_case_from_case_rule_evidence_group(case_id, request_payload)
+        else:
+            self._promote_rule_group_to_endpoint_timeline_case(group_payload, timeline_filters=timeline_filters)
+            return
+        if messagebox is not None:
+            messagebox.showinfo(
+                "Case Created",
+                f"Created case {case.case_id} from case rule evidence group {group_payload.get('group_key', '-')}.",
+            )
+        self.refresh()
+        if hasattr(self, "case_tree"):
+            self.case_tree.selection_set(case.case_id)
+        self._refresh_case_detail()
+
+    def _pivot_from_rule_group_timeline(
+        self,
+        group_payload: Mapping[str, Any],
+        *,
+        timeline_filters: Mapping[str, Any],
+        info_title: str,
+    ) -> None:
+        timeline_rows = self._collect_endpoint_timeline(limit=100, **timeline_filters)
+        timeline_summary = self._summarize_rule_group_timeline(group_payload, timeline_rows=timeline_rows)
+        selected_event = self._select_summary_record_or_show_info(
+            "endpoint_timeline",
+            timeline_rows,
+            title="Endpoint Timeline",
+            info_title=info_title,
+            info_text=self._format_endpoint_timeline_cluster_detail(timeline_summary),
+            limit=50,
+        )
+        if selected_event is None:
+            return
+        self._pivot_from_event(selected_event)
+
+    def _pivot_from_alert_timeline(
+        self,
+        alert_payload: dict[str, Any],
+        *,
+        timeline_filters: Mapping[str, Any],
+    ) -> None:
+        timeline_rows = self._collect_endpoint_timeline(limit=100, **timeline_filters)
+        selected_event = self._select_summary_record_or_show_info(
+            "endpoint_timeline",
+            timeline_rows,
+            title="Endpoint Timeline",
+            info_title="Alert Details",
+            info_text=self._format_alert_detail(alert_payload),
+            limit=50,
+        )
+        if selected_event is None:
+            return
+        self._pivot_from_event(selected_event)
+
+    def _pivot_from_endpoint_timeline(
+        self,
+        case_payload: dict[str, Any],
+        *,
+        timeline_filters: Mapping[str, Any],
+    ) -> None:
+        timeline_rows = self._collect_case_endpoint_timeline(case_payload, limit=100, **timeline_filters)
+        linked_alerts = self._resolve_linked_alerts(case_payload)
+        source_events = self._resolve_case_source_events(case_payload)
+        selected_event = self._select_summary_record_or_show_info(
+            "endpoint_timeline",
+            timeline_rows,
+            title="Endpoint Timeline",
+            info_title="Case Linked Activity",
+            info_text=self._format_case_linked_activity(
+                case_payload,
+                linked_alerts,
+                source_events,
+                endpoint_timeline=timeline_rows,
+            ),
+            limit=50,
+        )
+        if selected_event is None:
+            return
+        self._pivot_from_event(selected_event)
+
+    def _resolve_case_timeline_cluster_events(
+        self,
+        case_payload: Mapping[str, Any],
+        cluster_payload: Mapping[str, Any],
+    ) -> list[dict[str, Any]]:
+        filters: dict[str, Any] = {}
+        device_ids = cast(list[str], cluster_payload.get("device_ids") or [])
+        process_names = cast(list[str], cluster_payload.get("process_names") or [])
+        process_guids = cast(list[str], cluster_payload.get("process_guids") or [])
+        remote_ips = cast(list[str], cluster_payload.get("remote_ips") or [])
+        if device_ids:
+            filters["device_id"] = device_ids[0]
+        if process_guids:
+            filters["process_guid"] = process_guids[0]
+        elif process_names:
+            filters["process_name"] = process_names[0]
+        if str(cluster_payload.get("cluster_by") or "") == "remote_ip" and remote_ips:
+            filters["remote_ip"] = remote_ips[0]
+        limit = max(int(cluster_payload.get("event_count") or 0), 1)
+        return self._collect_case_endpoint_timeline(case_payload, limit=limit, **filters)
+
+    def _resolve_endpoint_timeline_cluster_events(self, cluster_payload: dict[str, Any]) -> list[dict[str, Any]]:
+        manager = getattr(self, "manager", None)
+        if manager is None or not hasattr(manager, "list_endpoint_timeline"):
+            return []
+        filters: dict[str, Any] = {"limit": max(int(cluster_payload.get("event_count") or 0), 1)}
+        device_ids = cast(list[str], cluster_payload.get("device_ids") or [])
+        process_names = cast(list[str], cluster_payload.get("process_names") or [])
+        process_guids = cast(list[str], cluster_payload.get("process_guids") or [])
+        remote_ips = cast(list[str], cluster_payload.get("remote_ips") or [])
+        if device_ids:
+            filters["device_id"] = device_ids[0]
+        if process_guids:
+            filters["process_guid"] = process_guids[0]
+        elif process_names:
+            filters["process_name"] = process_names[0]
+        if str(cluster_payload.get("cluster_by") or "") == "remote_ip" and remote_ips:
+            filters["remote_ip"] = remote_ips[0]
+        return [
+            self._normalize_endpoint_timeline_row(item)
+            for item in cast(list[Any], manager.list_endpoint_timeline(**filters))
+        ]
+
+    def _resolve_hunt_telemetry_cluster_events(self, cluster_payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+        if cluster_payload.get("events"):
+            return [dict(item) for item in cast(list[dict[str, Any]], cluster_payload.get("events") or [])]
+        resolved = self._resolve_hunt_telemetry_cluster_detail(cluster_payload)
+        if resolved.get("events"):
+            return [dict(item) for item in cast(list[dict[str, Any]], resolved.get("events") or [])]
+        return []
+
+    def _choose_endpoint_timeline_cluster_mode(self) -> str:
+        choice = self._choose_action_dialog(
+            title="Endpoint Timeline Cluster Mode",
+            summary="Choose how to cluster the endpoint timeline.",
+            actions=[
+                ("Process", "process", 12),
+            ],
+            default_choice="remote_ip",
+            no_tk_choice="process",
+            width=460,
+            height=170,
+            min_width=420,
+            min_height=150,
+            detail_label="Remote IP",
+            detail_width=12,
+        )
+        return choice if choice in {"process", "remote_ip"} else "process"
+
+    def _choose_hunt_telemetry_cluster_mode(self) -> str:
+        choice = self._choose_action_dialog(
+            title="Telemetry Cluster Mode",
+            summary="Choose how to cluster normalized hunt telemetry.",
+            actions=[
+                ("Remote IP", "remote_ip", 12),
+                ("Device", "device_id", 12),
+                ("Process GUID", "process_guid", 12),
+            ],
+            default_choice="remote_ip",
+            no_tk_choice="remote_ip",
+            width=500,
+            height=190,
+            min_width=460,
+            min_height=170,
+            detail_label="Remote IP",
+            detail_width=12,
+        )
+        return choice if choice in {"remote_ip", "device_id", "process_guid"} else "remote_ip"
 
     def _resolve_packet_session_events(self, session_payload: dict[str, Any]) -> list[dict[str, Any]]:
         if hasattr(self.manager, "resolve_packet_session_events"):
@@ -2722,6 +5709,133 @@ class SocDashboard:
         return SocCaseCreate.model_validate(payload)
 
     @staticmethod
+    def _build_endpoint_timeline_case_payload(cluster_payload: dict[str, Any], *, assignee: str | None = None) -> SocCaseCreate:
+        source_event_ids = [str(item) for item in cast(list[Any], cluster_payload.get("event_ids") or []) if str(item)]
+        linked_alert_ids = [str(item) for item in cast(list[Any], cluster_payload.get("related_alert_ids") or []) if str(item)]
+        observables: list[str] = []
+        observables.extend(f"device:{item}" for item in cast(list[Any], cluster_payload.get("device_ids") or []) if str(item))
+        observables.extend(f"process_name:{item}" for item in cast(list[Any], cluster_payload.get("process_names") or []) if str(item))
+        observables.extend(f"process_guid:{item}" for item in cast(list[Any], cluster_payload.get("process_guids") or []) if str(item))
+        observables.extend(f"remote_ip:{item}" for item in cast(list[Any], cluster_payload.get("remote_ips") or []) if str(item))
+        observables.extend(f"filename:{item}" for item in cast(list[Any], cluster_payload.get("filenames") or []) if str(item))
+        payload: dict[str, Any] = {
+            "title": f"Investigate endpoint timeline {cluster_payload.get('label', cluster_payload.get('cluster_key', '-'))}",
+            "summary": (
+                f"Investigate endpoint timeline cluster {cluster_payload.get('label', cluster_payload.get('cluster_key', '-'))}. "
+                f"Event count: {cluster_payload.get('event_count', 0)}. "
+                f"Window: {cluster_payload.get('first_seen_at', '-')} to {cluster_payload.get('last_seen_at', '-')}."
+            ),
+            "severity": SocSeverity.high.value,
+            "source_event_ids": source_event_ids,
+            "linked_alert_ids": linked_alert_ids,
+            "observables": observables,
+        }
+        if assignee:
+            payload["assignee"] = assignee
+        return SocCaseCreate.model_validate(payload)
+
+    def _build_endpoint_timeline_case_request(self, cluster_payload: dict[str, Any]) -> SocEndpointTimelineCaseRequest:
+        payload: dict[str, Any] = {
+            "device_id": next(iter(cast(list[str], cluster_payload.get("device_ids") or [])), None),
+            "process_name": next(iter(cast(list[str], cluster_payload.get("process_names") or [])), None),
+            "process_guid": next(iter(cast(list[str], cluster_payload.get("process_guids") or [])), None),
+            "remote_ip": next(iter(cast(list[str], cluster_payload.get("remote_ips") or [])), None),
+            "title": f"Investigate endpoint timeline {cluster_payload.get('label', cluster_payload.get('cluster_key', '-'))}",
+            "summary": (
+                f"Investigate endpoint timeline cluster {cluster_payload.get('label', cluster_payload.get('cluster_key', '-'))}. "
+                f"Event count: {cluster_payload.get('event_count', 0)}."
+            ),
+            "severity": SocSeverity.high.value,
+            "limit": max(int(cluster_payload.get("event_count") or 0), 1),
+            "assignee": self._current_analyst_identity(),
+        }
+        return SocEndpointTimelineCaseRequest.model_validate(payload)
+
+    @staticmethod
+    def _build_hunt_telemetry_cluster_case_payload(cluster_payload: dict[str, Any], *, assignee: str | None = None) -> SocCaseCreate:
+        source_event_ids = [str(item) for item in cast(list[Any], cluster_payload.get("event_ids") or []) if str(item)]
+        linked_alert_ids = [str(item) for item in cast(list[Any], cluster_payload.get("related_alert_ids") or []) if str(item)]
+        observables: list[str] = [f"cluster:{cluster_payload.get('cluster_by', '-')}:"
+                                  f"{cluster_payload.get('cluster_key', '-')}"]
+        observables.extend(f"device:{item}" for item in cast(list[Any], cluster_payload.get("device_ids") or []) if str(item))
+        observables.extend(f"process_name:{item}" for item in cast(list[Any], cluster_payload.get("process_names") or []) if str(item))
+        observables.extend(f"process_guid:{item}" for item in cast(list[Any], cluster_payload.get("process_guids") or []) if str(item))
+        observables.extend(f"remote_ip:{item}" for item in cast(list[Any], cluster_payload.get("remote_ips") or []) if str(item))
+        observables.extend(f"filename:{item}" for item in cast(list[Any], cluster_payload.get("filenames") or []) if str(item))
+        observables.extend(f"session:{item}" for item in cast(list[Any], cluster_payload.get("session_keys") or []) if str(item))
+        observables.extend(f"signer:{item}" for item in cast(list[Any], cluster_payload.get("signers") or []) if str(item))
+        payload: dict[str, Any] = {
+            "title": f"Investigate {cluster_payload.get('cluster_by', 'telemetry')} cluster {cluster_payload.get('label', cluster_payload.get('cluster_key', '-'))}",
+            "summary": (
+                f"Investigate hunt telemetry cluster {cluster_payload.get('label', cluster_payload.get('cluster_key', '-'))}. "
+                f"Event count: {cluster_payload.get('event_count', 0)}. "
+                f"Window: {cluster_payload.get('first_seen_at', '-')} to {cluster_payload.get('last_seen_at', '-')}."
+            ),
+            "severity": str(cluster_payload.get("severity") or SocSeverity.high.value),
+            "source_event_ids": source_event_ids,
+            "linked_alert_ids": linked_alert_ids,
+            "observables": observables,
+        }
+        if assignee:
+            payload["assignee"] = assignee
+        return SocCaseCreate.model_validate(payload)
+
+    def _build_hunt_telemetry_cluster_case_request(self, cluster_payload: dict[str, Any]) -> SocTelemetryClusterCaseRequest:
+        payload: dict[str, Any] = {
+            "cluster_by": str(cluster_payload.get("cluster_by") or "remote_ip"),
+            "cluster_key": str(cluster_payload.get("cluster_key") or ""),
+            "device_id": next(iter(cast(list[str], cluster_payload.get("device_ids") or [])), None),
+            "process_name": next(iter(cast(list[str], cluster_payload.get("process_names") or [])), None),
+            "process_guid": next(iter(cast(list[str], cluster_payload.get("process_guids") or [])), None),
+            "remote_ip": next(iter(cast(list[str], cluster_payload.get("remote_ips") or [])), None),
+            "filename": next(iter(cast(list[str], cluster_payload.get("filenames") or [])), None),
+            "session_key": next(iter(cast(list[str], cluster_payload.get("session_keys") or [])), None),
+            "signer_name": next(iter(cast(list[str], cluster_payload.get("signers") or [])), None),
+            "title": f"Investigate {cluster_payload.get('cluster_by', 'telemetry')} cluster {cluster_payload.get('label', cluster_payload.get('cluster_key', '-'))}",
+            "summary": (
+                f"Investigate hunt telemetry cluster {cluster_payload.get('label', cluster_payload.get('cluster_key', '-'))}. "
+                f"Event count: {cluster_payload.get('event_count', 0)}."
+            ),
+            "severity": str(cluster_payload.get("severity") or SocSeverity.high.value),
+            "assignee": self._current_analyst_identity(),
+        }
+        return SocTelemetryClusterCaseRequest.model_validate(payload)
+
+    def _build_remote_node_case_payload(self, node_payload: dict[str, Any]) -> SocCaseCreate:
+        node_name = str(node_payload.get("node_name") or "unknown-node")
+        node_role = str(node_payload.get("node_role") or "unknown")
+        node_status = str(node_payload.get("status") or "unknown")
+        service_health = cast(dict[str, Any], node_payload.get("service_health") or {})
+        services = cast(dict[str, dict[str, Any]], service_health.get("services") or {})
+        affected_services = [
+            name
+            for name, item in services.items()
+            if bool(item.get("enabled")) and str(item.get("status") or "unknown") in {"degraded", "pending"}
+        ]
+        observables = [f"node:{node_name}", f"role:{node_role}", f"node_status:{node_status}"]
+        observables.extend(f"service:{name}" for name in affected_services[:10])
+        metadata = cast(dict[str, Any], node_payload.get("metadata") or {})
+        notes: list[str] = []
+        if metadata.get("acknowledged_by"):
+            notes.append(
+                f"Acknowledged by {metadata.get('acknowledged_by')} at {metadata.get('acknowledged_at') or '-'}."
+            )
+        payload: dict[str, Any] = {
+            "title": f"Investigate remote node {node_name}",
+            "summary": (
+                f"Investigate remote node {node_name} ({node_role}) with status {node_status}. "
+                f"Affected services: {', '.join(affected_services) if affected_services else 'none reported'}."
+            ),
+            "severity": (SocSeverity.high if node_status in {"degraded", "stale"} else SocSeverity.medium).value,
+            "observables": observables,
+            "notes": notes,
+        }
+        assignee = self._current_analyst_identity()
+        if assignee:
+            payload["assignee"] = assignee
+        return SocCaseCreate.model_validate(payload)
+
+    @staticmethod
     def _format_detection_rule_detail(rule_payload: dict[str, Any]) -> str:
         _related_alerts, related_cases, open_cases = SocDashboard._format_investigation_counts(rule_payload)
         return (
@@ -2737,6 +5851,234 @@ class SocDashboard:
             f"Parameters: {json.dumps(rule_payload.get('parameters') or {}, sort_keys=True)}\n\n"
             f"Description:\n{rule_payload.get('description', '-')}"
         )
+
+    @staticmethod
+    def _format_remote_node_detail(node_payload: dict[str, Any]) -> str:
+        service_health = cast(dict[str, Any], node_payload.get("service_health") or {})
+        services = cast(dict[str, dict[str, Any]], service_health.get("services") or {})
+        metadata = cast(dict[str, Any], node_payload.get("metadata") or {})
+        related_alerts, related_cases, open_cases = SocDashboard._format_investigation_counts(node_payload)
+        suppressed = bool(node_payload.get("suppressed"))
+        suppressed_until = node_payload.get("suppressed_until") or metadata.get("suppressed_until") or "-"
+        suppressed_by = node_payload.get("suppressed_by") or metadata.get("suppressed_by") or "-"
+        suppression_reason = node_payload.get("suppression_reason") or metadata.get("suppression_reason") or "-"
+        suppression_scopes = ", ".join(cast(list[str], node_payload.get("suppression_scopes") or [])) or "-"
+        maintenance_active = bool(node_payload.get("maintenance_active"))
+        maintenance_status = node_payload.get("maintenance_status") or cast(dict[str, Any], node_payload.get("maintenance") or {}).get("status") or "-"
+        maintenance_until = node_payload.get("maintenance_until") or metadata.get("maintenance_until") or "-"
+        maintenance_by = node_payload.get("maintenance_by") or metadata.get("maintenance_by") or "-"
+        maintenance_reason = node_payload.get("maintenance_reason") or metadata.get("maintenance_reason") or "-"
+        maintenance_services = ", ".join(cast(list[str], node_payload.get("maintenance_services") or [])) or "-"
+        maintenance_acknowledged_at = node_payload.get("maintenance_acknowledged_at") or metadata.get("maintenance_acknowledged_at") or "-"
+        maintenance_completed_at = node_payload.get("maintenance_completed_at") or metadata.get("maintenance_completed_at") or "-"
+        maintenance_result = node_payload.get("maintenance_result") or metadata.get("maintenance_result") or "-"
+        maintenance_completion_note = node_payload.get("maintenance_completion_note") or metadata.get("maintenance_completion_note") or "-"
+        maintenance_failed_at = node_payload.get("maintenance_failed_at") or metadata.get("maintenance_failed_at") or "-"
+        maintenance_last_error = node_payload.get("maintenance_last_error") or metadata.get("maintenance_last_error") or "-"
+        maintenance_retry_count = node_payload.get("maintenance_retry_count") or metadata.get("maintenance_retry_count") or 0
+        maintenance_retriable = node_payload.get("maintenance_retriable")
+        if maintenance_retriable is None:
+            maintenance_retriable = metadata.get("maintenance_retriable", False)
+        refresh_pending = bool(node_payload.get("refresh_pending"))
+        refresh_status = node_payload.get("refresh_status") or cast(dict[str, Any], node_payload.get("refresh") or {}).get("status") or "-"
+        refresh_requested_at = node_payload.get("refresh_requested_at") or metadata.get("refresh_requested_at") or "-"
+        refresh_requested_by = node_payload.get("refresh_requested_by") or metadata.get("refresh_requested_by") or "-"
+        refresh_request_reason = node_payload.get("refresh_request_reason") or metadata.get("refresh_request_reason") or "-"
+        refresh_acknowledged_at = node_payload.get("refresh_acknowledged_at") or metadata.get("refresh_acknowledged_at") or "-"
+        refresh_completed_at = node_payload.get("refresh_completed_at") or metadata.get("refresh_completed_at") or "-"
+        refresh_fulfilled_at = node_payload.get("refresh_fulfilled_at") or metadata.get("refresh_fulfilled_at") or "-"
+        refresh_result = node_payload.get("refresh_result") or metadata.get("refresh_result") or "-"
+        refresh_completion_note = node_payload.get("refresh_completion_note") or metadata.get("refresh_completion_note") or "-"
+        refresh_failed_at = node_payload.get("refresh_failed_at") or metadata.get("refresh_failed_at") or "-"
+        refresh_last_error = node_payload.get("refresh_last_error") or metadata.get("refresh_last_error") or "-"
+        refresh_retry_count = node_payload.get("refresh_retry_count") or metadata.get("refresh_retry_count") or 0
+        refresh_retriable = node_payload.get("refresh_retriable")
+        if refresh_retriable is None:
+            refresh_retriable = metadata.get("refresh_retriable", False)
+        drained = bool(node_payload.get("drained"))
+        drain_status = node_payload.get("drain_status") or cast(dict[str, Any], node_payload.get("drain") or {}).get("status") or "-"
+        drain_requested_at = node_payload.get("drain_requested_at") or metadata.get("drain_requested_at") or "-"
+        drain_at = node_payload.get("drain_at") or metadata.get("drain_at") or "-"
+        drain_acknowledged_at = node_payload.get("drain_acknowledged_at") or metadata.get("drain_acknowledged_at") or "-"
+        drain_completed_at = node_payload.get("drain_completed_at") or metadata.get("drain_completed_at") or "-"
+        drain_result = node_payload.get("drain_result") or metadata.get("drain_result") or "-"
+        drain_completion_note = node_payload.get("drain_completion_note") or metadata.get("drain_completion_note") or "-"
+        drain_failed_at = node_payload.get("drain_failed_at") or metadata.get("drain_failed_at") or "-"
+        drain_last_error = node_payload.get("drain_last_error") or metadata.get("drain_last_error") or "-"
+        drain_retry_count = node_payload.get("drain_retry_count") or metadata.get("drain_retry_count") or 0
+        drain_retriable = node_payload.get("drain_retriable")
+        if drain_retriable is None:
+            drain_retriable = metadata.get("drain_retriable", False)
+        drained_by = node_payload.get("drained_by") or metadata.get("drained_by") or "-"
+        drain_reason = node_payload.get("drain_reason") or metadata.get("drain_reason") or "-"
+        drain_services = ", ".join(cast(list[str], node_payload.get("drain_services") or [])) or "-"
+        action_failures = ", ".join(cast(list[str], node_payload.get("action_failures") or [])) or "-"
+        action_pressure = cast(dict[str, Any], node_payload.get("action_pressure") or {})
+        repeated_failures = ", ".join(
+            f"{action} x{count}" for action, count in cast(dict[str, int], action_pressure.get("repeated_failures") or {}).items()
+        ) or "-"
+        retry_pressure = ", ".join(
+            f"{action} x{count}" for action, count in cast(dict[str, int], action_pressure.get("retry_pressure") or {}).items()
+        ) or "-"
+        stuck_action_lines = [
+            f"- {item.get('action', '-')} status={item.get('status', '-')}, age={item.get('age_minutes', '-')}m"
+            for item in cast(list[dict[str, Any]], action_pressure.get("stuck_actions") or [])
+            if isinstance(item, dict)
+        ] or ["- none"]
+        action_history_rows = cast(list[dict[str, Any]], node_payload.get("action_history") or metadata.get("action_history") or [])
+        action_history_lines = [
+            (
+                f"- {item.get('at', '-')}: {item.get('action', '-')}/{item.get('transition', '-')}"
+                f" actor={item.get('actor', '-')}"
+                + (f" result={item.get('result')}" if item.get("result") is not None else "")
+                + (f" note={item.get('note')}" if item.get("note") else "")
+            )
+            for item in action_history_rows[-10:]
+            if isinstance(item, dict)
+        ] or ["- none"]
+        service_lines = [
+            f"- {name}: status={item.get('status', 'unknown')}, enabled={item.get('enabled', False)}"
+            for name, item in services.items()
+        ] or ["- none"]
+        metadata_lines = [f"- {key}: {value}" for key, value in metadata.items()] or ["- none"]
+        return (
+            f"Remote Node: {node_payload.get('node_name', '-')}\n"
+            f"Role: {node_payload.get('node_role', '-')}\n"
+            f"Status: {node_payload.get('status', 'unknown')}\n"
+            f"Last Seen: {node_payload.get('last_seen_at', '-')}\n"
+            f"{related_alerts}\n"
+            f"{related_cases}\n"
+            f"{open_cases}\n"
+            f"Suppressed: {suppressed}\n"
+            f"Suppressed Until: {suppressed_until}\n"
+            f"Suppressed By: {suppressed_by}\n"
+            f"Suppression Reason: {suppression_reason}\n"
+            f"Suppression Scopes: {suppression_scopes}\n"
+            f"Action Failures: {action_failures}\n"
+            f"Repeated Failures: {repeated_failures}\n"
+            f"Retry Pressure: {retry_pressure}\n"
+            f"Maintenance Active: {maintenance_active}\n"
+            f"Maintenance Status: {maintenance_status}\n"
+            f"Maintenance Until: {maintenance_until}\n"
+            f"Maintenance By: {maintenance_by}\n"
+            f"Maintenance Reason: {maintenance_reason}\n"
+            f"Maintenance Services: {maintenance_services}\n"
+            f"Maintenance Acknowledged At: {maintenance_acknowledged_at}\n"
+            f"Maintenance Completed At: {maintenance_completed_at}\n"
+            f"Maintenance Result: {maintenance_result}\n"
+            f"Maintenance Completion Note: {maintenance_completion_note}\n"
+            f"Maintenance Failed At: {maintenance_failed_at}\n"
+            f"Maintenance Last Error: {maintenance_last_error}\n"
+            f"Maintenance Retry Count: {maintenance_retry_count}\n"
+            f"Maintenance Retriable: {maintenance_retriable}\n"
+            f"Refresh Pending: {refresh_pending}\n"
+            f"Refresh Status: {refresh_status}\n"
+            f"Refresh Requested At: {refresh_requested_at}\n"
+            f"Refresh Requested By: {refresh_requested_by}\n"
+            f"Refresh Request Reason: {refresh_request_reason}\n"
+            f"Refresh Acknowledged At: {refresh_acknowledged_at}\n"
+            f"Refresh Completed At: {refresh_completed_at}\n"
+            f"Refresh Fulfilled At: {refresh_fulfilled_at}\n"
+            f"Refresh Result: {refresh_result}\n"
+            f"Refresh Completion Note: {refresh_completion_note}\n"
+            f"Refresh Failed At: {refresh_failed_at}\n"
+            f"Refresh Last Error: {refresh_last_error}\n"
+            f"Refresh Retry Count: {refresh_retry_count}\n"
+            f"Refresh Retriable: {refresh_retriable}\n"
+            f"Drained: {drained}\n"
+            f"Drain Status: {drain_status}\n"
+            f"Drain Requested At: {drain_requested_at}\n"
+            f"Drain At: {drain_at}\n"
+            f"Drain Acknowledged At: {drain_acknowledged_at}\n"
+            f"Drain Completed At: {drain_completed_at}\n"
+            f"Drain Result: {drain_result}\n"
+            f"Drain Completion Note: {drain_completion_note}\n"
+            f"Drain Failed At: {drain_failed_at}\n"
+            f"Drain Last Error: {drain_last_error}\n"
+            f"Drain Retry Count: {drain_retry_count}\n"
+            f"Drain Retriable: {drain_retriable}\n"
+            f"Drained By: {drained_by}\n"
+            f"Drain Reason: {drain_reason}\n"
+            f"Drain Services: {drain_services}\n"
+            f"\nStuck Actions:\n{chr(10).join(stuck_action_lines)}\n"
+            f"\nAction History:\n{chr(10).join(action_history_lines)}\n"
+            f"Service Health: {service_health.get('overall_status', 'unknown')}\n\n"
+            f"Services:\n{chr(10).join(service_lines)}\n\n"
+            f"Metadata:\n{chr(10).join(metadata_lines)}"
+        )
+
+    @staticmethod
+    def _format_endpoint_timeline_cluster_detail(cluster_payload: dict[str, Any]) -> str:
+        related_alerts, related_cases, open_cases = SocDashboard._format_investigation_counts(cluster_payload)
+        event_types = cast(dict[str, Any], cluster_payload.get("event_types") or {})
+        event_type_lines = [f"- {key}: {value}" for key, value in sorted(event_types.items())] or ["- none"]
+        return (
+            f"Endpoint Timeline Cluster: {cluster_payload.get('label', cluster_payload.get('cluster_key', '-'))}\n"
+            f"Cluster By: {cluster_payload.get('cluster_by', '-')}\n"
+            f"Cluster Key: {cluster_payload.get('cluster_key', '-')}\n"
+            f"Event Count: {cluster_payload.get('event_count', 0)}\n"
+            f"First Seen: {cluster_payload.get('first_seen_at', '-')}\n"
+            f"Last Seen: {cluster_payload.get('last_seen_at', '-')}\n"
+            f"Devices: {', '.join(cast(list[str], cluster_payload.get('device_ids') or [])) or '-'}\n"
+            f"Process Names: {', '.join(cast(list[str], cluster_payload.get('process_names') or [])) or '-'}\n"
+            f"Process GUIDs: {', '.join(cast(list[str], cluster_payload.get('process_guids') or [])) or '-'}\n"
+            f"Remote IPs: {', '.join(cast(list[str], cluster_payload.get('remote_ips') or [])) or '-'}\n"
+            f"Filenames: {', '.join(cast(list[str], cluster_payload.get('filenames') or [])) or '-'}\n"
+            f"{related_alerts}\n"
+            f"{related_cases}\n"
+            f"{open_cases}\n\n"
+            f"Event Types:\n{chr(10).join(event_type_lines)}"
+        )
+
+    @staticmethod
+    def _format_hunt_telemetry_cluster_detail(cluster_payload: dict[str, Any]) -> str:
+        related_alerts, related_cases, open_cases = SocDashboard._format_investigation_counts(cluster_payload)
+        event_types = cast(dict[str, Any], cluster_payload.get("event_types") or {})
+        document_types = cast(dict[str, Any], cluster_payload.get("document_types") or {})
+        telemetry_kinds = cast(dict[str, Any], cluster_payload.get("telemetry_kinds") or {})
+        event_type_lines = [f"- {key}: {value}" for key, value in sorted(event_types.items())] or ["- none"]
+        document_type_lines = [f"- {key}: {value}" for key, value in sorted(document_types.items())] or ["- none"]
+        telemetry_kind_lines = [f"- {key}: {value}" for key, value in sorted(telemetry_kinds.items())] or ["- none"]
+        return (
+            f"Hunt Telemetry Cluster: {cluster_payload.get('label', cluster_payload.get('cluster_key', '-'))}\n"
+            f"Cluster By: {cluster_payload.get('cluster_by', '-')}\n"
+            f"Cluster Key: {cluster_payload.get('cluster_key', '-')}\n"
+            f"Severity: {cluster_payload.get('severity', '-')}\n"
+            f"Event Count: {cluster_payload.get('event_count', 0)}\n"
+            f"First Seen: {cluster_payload.get('first_seen_at', '-')}\n"
+            f"Last Seen: {cluster_payload.get('last_seen_at', '-')}\n"
+            f"Devices: {', '.join(cast(list[str], cluster_payload.get('device_ids') or [])) or '-'}\n"
+            f"Process Names: {', '.join(cast(list[str], cluster_payload.get('process_names') or [])) or '-'}\n"
+            f"Process GUIDs: {', '.join(cast(list[str], cluster_payload.get('process_guids') or [])) or '-'}\n"
+            f"Remote IPs: {', '.join(cast(list[str], cluster_payload.get('remote_ips') or [])) or '-'}\n"
+            f"Filenames: {', '.join(cast(list[str], cluster_payload.get('filenames') or [])) or '-'}\n"
+            f"Session Keys: {', '.join(cast(list[str], cluster_payload.get('session_keys') or [])) or '-'}\n"
+            f"Signers: {', '.join(cast(list[str], cluster_payload.get('signers') or [])) or '-'}\n"
+            f"{related_alerts}\n"
+            f"{related_cases}\n"
+            f"{open_cases}\n\n"
+            f"Telemetry Kinds:\n{chr(10).join(telemetry_kind_lines)}\n\n"
+            f"Document Types:\n{chr(10).join(document_type_lines)}\n\n"
+            f"Event Types:\n{chr(10).join(event_type_lines)}"
+        )
+
+    @staticmethod
+    def _normalize_endpoint_timeline_row(event_like: Any) -> dict[str, Any]:
+        if isinstance(event_like, dict):
+            payload = dict(event_like)
+        elif hasattr(event_like, "model_dump"):
+            payload = cast(dict[str, Any], event_like.model_dump(mode="json"))
+        else:
+            payload = {}
+        recorded_at = (
+            payload.get("recorded_at")
+            or payload.get("created_at")
+            or cast(dict[str, Any], payload.get("details") or {}).get("observed_at")
+            or cast(dict[str, Any], payload.get("details") or {}).get("last_seen_at")
+            or "-"
+        )
+        payload["recorded_at"] = recorded_at
+        return payload
 
     @staticmethod
     def _coerce_detection_parameter(value: str) -> object:
@@ -2970,6 +6312,51 @@ class SocDashboard:
     def _format_summary_records(kind: str, rows: Sequence[dict[str, Any]], *, limit: int = 30) -> str:
         if not rows:
             return f"No {kind} records are available."
+        if kind == "endpoint_timeline":
+            lines = [f"{kind.title()} records ({len(rows)}):", ""]
+            for row in rows[:limit]:
+                lines.append(
+                    f"- {row.get('event_id', '-')}: "
+                    f"{row.get('event_type', '-')} | "
+                    f"{row.get('recorded_at', row.get('created_at', '-'))} | "
+                    f"{row.get('title', '-')}"
+                )
+            remaining = len(rows) - min(len(rows), limit)
+            if remaining > 0:
+                lines.append("")
+                lines.append(f"...and {remaining} more")
+            return "\n".join(lines)
+        if kind == "endpoint_timeline_cluster":
+            lines = [f"{kind.title()} records ({len(rows)}):", ""]
+            for row in rows[:limit]:
+                lines.append(
+                    f"- {row.get('cluster_key', '-')}: "
+                    f"{row.get('cluster_by', '-')} | "
+                    f"events={row.get('event_count', 0)} | "
+                    f"open_cases={row.get('open_case_count', 0)} | "
+                    f"{row.get('title', row.get('label', '-'))}"
+                )
+            remaining = len(rows) - min(len(rows), limit)
+            if remaining > 0:
+                lines.append("")
+                lines.append(f"...and {remaining} more")
+            return "\n".join(lines)
+        if kind == "hunt_telemetry_cluster":
+            lines = [f"{kind.title()} records ({len(rows)}):", ""]
+            for row in rows[:limit]:
+                lines.append(
+                    f"- {row.get('cluster_key', '-')}: "
+                    f"{row.get('cluster_by', '-')} | "
+                    f"events={row.get('event_count', 0)} | "
+                    f"severity={row.get('severity', '-')} | "
+                    f"open_cases={row.get('open_case_count', 0)} | "
+                    f"{row.get('title', row.get('label', '-'))}"
+                )
+            remaining = len(rows) - min(len(rows), limit)
+            if remaining > 0:
+                lines.append("")
+                lines.append(f"...and {remaining} more")
+            return "\n".join(lines)
         if kind == "packet_session":
             lines = [f"{kind.title()} records ({len(rows)}):", ""]
             for row in rows[:limit]:
@@ -2978,6 +6365,21 @@ class SocDashboard:
                     f"{row.get('remote_ip_display', row.get('remote_ip', '-'))} | "
                     f"{row.get('last_seen_at', '-')} | "
                     f"packets={row.get('total_packets', row.get('last_packet_count', 0))}"
+                )
+            remaining = len(rows) - min(len(rows), limit)
+            if remaining > 0:
+                lines.append("")
+                lines.append(f"...and {remaining} more")
+            return "\n".join(lines)
+        if kind == "remote_node":
+            lines = [f"{kind.title()} records ({len(rows)}):", ""]
+            for row in rows[:limit]:
+                lines.append(
+                    f"- {row.get('node_name', '-')}: "
+                    f"{row.get('node_role', '-')} | "
+                    f"{row.get('status', 'unknown')} | "
+                    f"open_cases={row.get('open_case_count', 0)} | "
+                    f"{row.get('last_seen_at', '-')}"
                 )
             remaining = len(rows) - min(len(rows), limit)
             if remaining > 0:
@@ -3009,6 +6411,7 @@ class SocDashboard:
             "packet_session": ("session_key", "remote_ip", "last_seen_at", "total_packets"),
             "network_evidence": ("remote_ip", "severity", "last_seen_at", "title"),
             "detection_rule": ("rule_id", "enabled", "hit_count", "title"),
+            "remote_node": ("node_name", "node_role", "status", "title"),
             "evidence_group": ("group_key", "event_count", "severity", "title"),
             "alert_group": ("group_key", "alert_count", "severity", "title"),
         }
@@ -3027,6 +6430,28 @@ class SocDashboard:
 
     @staticmethod
     def _format_summary_selection_label(kind: str, row: dict[str, Any]) -> str:
+        if kind == "endpoint_timeline":
+            return (
+                f"{row.get('event_id', '-')} | "
+                f"{row.get('event_type', '-')} | "
+                f"{row.get('recorded_at', row.get('created_at', '-'))} | "
+                f"{row.get('title', '-')}"
+            )
+        if kind == "endpoint_timeline_cluster":
+            return (
+                f"{row.get('cluster_key', '-')} | "
+                f"{row.get('cluster_by', '-')} | "
+                f"events={row.get('event_count', 0)} | "
+                f"{row.get('title', row.get('label', '-'))}"
+            )
+        if kind == "hunt_telemetry_cluster":
+            return (
+                f"{row.get('cluster_key', '-')} | "
+                f"{row.get('cluster_by', '-')} | "
+                f"events={row.get('event_count', 0)} | "
+                f"{row.get('severity', '-')} | "
+                f"{row.get('title', row.get('label', '-'))}"
+            )
         if kind == "packet_session":
             return (
                 f"{row.get('session_key', '-')} | "
@@ -3034,15 +6459,26 @@ class SocDashboard:
                 f"{row.get('last_seen_at', '-')} | "
                 f"{row.get('total_packets', row.get('last_packet_count', 0))}"
             )
+        if kind == "remote_node":
+            return (
+                f"{row.get('node_name', '-')} | "
+                f"{row.get('node_role', '-')} | "
+                f"{row.get('status', 'unknown')} | "
+                f"{row.get('open_case_count', 0)} open"
+            )
         labels: dict[str, tuple[str, str, str, str]] = {
             "event": ("event_id", "event_type", "severity", "title"),
             "alert": ("alert_id", "status", "severity", "title"),
             "case": ("case_id", "status", "severity", "title"),
             "host": ("key", "severity", "title", "summary"),
             "tracker_block": ("event_id", "event_type", "severity", "title"),
+            "endpoint_timeline": ("event_id", "event_type", "recorded_at", "title"),
+            "endpoint_timeline_cluster": ("cluster_key", "cluster_by", "event_count", "title"),
+            "hunt_telemetry_cluster": ("cluster_key", "cluster_by", "severity", "title"),
             "packet_session": ("session_key", "remote_ip", "last_seen_at", "total_packets"),
             "network_evidence": ("remote_ip", "severity", "last_seen_at", "title"),
             "detection_rule": ("rule_id", "enabled", "hit_count", "title"),
+            "remote_node": ("node_name", "node_role", "status", "title"),
             "evidence_group": ("group_key", "event_count", "severity", "title"),
             "alert_group": ("group_key", "alert_count", "severity", "title"),
         }
@@ -3069,6 +6505,13 @@ class SocDashboard:
         if preset_name == "handoff":
             stale_rows = cast(list[dict[str, Any]], cast(dict[str, Any], dashboard["triage"]).get("assigned_stale_alerts") or [])
             return [self.manager.get_alert(str(item["alert_id"])) for item in stale_rows if item.get("alert_id")]
+        if preset_name == "operational":
+            return [
+                self._annotate_operational_alert(item)
+                for item in self.manager.list_alerts()
+                if str(item.category or "").casefold() == "operational"
+                and self._matches_operational_reason_filter(getattr(item, "correlation_key", None))
+            ]
         return list(self.manager.query_alerts(**self._alert_query_kwargs()))
 
     def _case_rows_for_view(self, dashboard: dict[str, Any]) -> list[Any]:
@@ -3079,7 +6522,200 @@ class SocDashboard:
         if preset_name == "handoff":
             stale_cases = cast(list[dict[str, Any]], cast(dict[str, Any], dashboard["triage"]).get("stale_active_cases") or [])
             return [self.manager.get_case(str(item["case_id"])) for item in stale_cases if item.get("case_id")]
+        if preset_name == "operational":
+            return self._operational_cases()
         return list(self.manager.query_cases(**self._case_query_kwargs()))
+
+    def _operational_cases(self) -> list[Any]:
+        operational_alerts = {
+            item.alert_id: item
+            for item in self.manager.list_alerts()
+            if str(item.category or "").casefold() == "operational"
+            and self._matches_operational_reason_filter(getattr(item, "correlation_key", None))
+        }
+        operational_alert_ids = set(operational_alerts)
+        if not operational_alert_ids:
+            return []
+        return [
+            self._annotate_operational_case(item, operational_alerts=operational_alerts)
+            for item in self.manager.list_cases()
+            if operational_alert_ids.intersection(cast(list[str], getattr(item, "linked_alert_ids", []) or []))
+        ]
+
+    def _choose_operational_summary_reason(self, focus_target: str) -> str:
+        dashboard = cast(dict[str, Any], getattr(self, "_latest_dashboard", None) or {})
+        operational_status = cast(dict[str, Any], dashboard.get("operational_status") or {})
+        reason_counts = cast(dict[str, int], operational_status.get("reason_counts") or {})
+        if not reason_counts:
+            return "all"
+        ordered_reasons = sorted(reason_counts.items(), key=lambda item: (-int(item[1]), str(item[0])))
+        summary = (
+            f"Operational {focus_target.title()}\n\n"
+            f"Choose a reason filter for the operational {focus_target} queue."
+        )
+        summary_lines = [summary, "", "Current pressure:"]
+        summary_lines.extend(f"- {reason}: {count}" for reason, count in ordered_reasons[:8])
+        actions: list[tuple[str, str, int]] = [("All", "all", 12)]
+        actions.extend((reason.title(), reason, max(14, len(reason) + 2)) for reason, _count in ordered_reasons[:5])
+        return self._choose_action_dialog(
+            title=f"Operational {focus_target.title()} Filter",
+            summary="\n".join(summary_lines),
+            actions=actions,
+            default_choice="cancel",
+            no_tk_choice="all",
+            width=520,
+            height=320,
+            min_width=460,
+            min_height=280,
+            detail_label="Cancel",
+            detail_width=12,
+        )
+
+    def _matches_operational_reason_filter(self, route_key: str | None) -> bool:
+        reason_filter = str(getattr(self, "operational_reason_filter", "") or "").strip().casefold()
+        if not reason_filter:
+            return True
+        return self._operational_route_reason(route_key).casefold() == reason_filter
+
+    def _set_operational_reason_filter(self, value: str | None) -> None:
+        normalized = str(value or "").strip() or None
+        self.operational_reason_filter = normalized
+        self.saved_operational_reason_filter = normalized
+        latest = cast(dict[str, Any], getattr(self, "_latest_dashboard", None) or {})
+        if latest:
+            view_state = cast(dict[str, Any], latest.get("view_state") or {})
+            latest["view_state"] = {
+                **view_state,
+                "operational_reason_filter": normalized,
+            }
+        self._persist_dashboard_view_state()
+
+    def _persisted_operational_reason_filter(self) -> str | None:
+        saved_filter = getattr(self, "saved_operational_reason_filter", None)
+        if saved_filter is not None:
+            return saved_filter
+        latest = cast(dict[str, Any], getattr(self, "_latest_dashboard", None) or {})
+        view_state = cast(dict[str, Any], latest.get("view_state") or {})
+        persisted = str(view_state.get("operational_reason_filter") or "").strip() or None
+        if persisted is not None:
+            return persisted
+        try:
+            client = self._dashboard_view_state_client()
+            payload = client.read()
+        except Exception:
+            return None
+        return str(payload.get("operational_reason_filter") or "").strip() or None
+
+    def _dashboard_view_state_client(self) -> DashboardViewStateClient:
+        existing = getattr(self, "dashboard_view_state_client", None)
+        if existing is not None:
+            return cast(DashboardViewStateClient, existing)
+        client = build_dashboard_view_state_client(
+            manager=getattr(self, "manager", None),
+            path=settings.soc_dashboard_view_state_path,
+        )
+        self.dashboard_view_state_client = client
+        return client
+
+    def _persist_dashboard_view_state(self) -> None:
+        payload = {
+            "operational_reason_filter": getattr(self, "saved_operational_reason_filter", None),
+            "hunt_cluster_mode": getattr(self, "saved_hunt_cluster_mode", None) or "remote_ip",
+            "hunt_cluster_value": getattr(self, "saved_hunt_cluster_value", None),
+            "hunt_cluster_key": getattr(self, "saved_hunt_cluster_key", None),
+            "hunt_cluster_action": getattr(self, "saved_hunt_cluster_action", None) or "events",
+        }
+        try:
+            result = cast(
+                dict[str, Any],
+                self._dashboard_view_state_client().write(SocDashboardViewStateUpdate(**payload)),
+            )
+        except Exception:
+            return
+        latest = cast(dict[str, Any], getattr(self, "_latest_dashboard", None) or {})
+        if latest:
+            view_state = cast(dict[str, Any], latest.get("view_state") or {})
+            latest["view_state"] = {
+                **view_state,
+                **result,
+            }
+
+    @staticmethod
+    def _format_operational_summary_label(base_label: str, active_filter: str | None) -> str:
+        normalized = str(active_filter or "").strip()
+        if not normalized:
+            return base_label
+        return f"{base_label} [{normalized}]"
+
+    @staticmethod
+    def _operational_route_reason(route_key: str | None) -> str:
+        route = (route_key or "").strip().casefold()
+        if not route:
+            return "operational"
+        if route.startswith("remote-node:action-failed:"):
+            return "action failed"
+        if route.startswith("remote-node:action-failure-pattern:"):
+            return "repeated failures"
+        if route.startswith("remote-node:action-retry-pressure:"):
+            return "retry pressure"
+        if route.startswith("remote-node:action-stuck:"):
+            return "stuck action"
+        if route.startswith("remote-node:remote_node_degraded:") or route.startswith("remote-node:remote-node-degraded:"):
+            return "node degraded"
+        if route.startswith("remote-node:remote_node_stale:") or route.startswith("remote-node:remote-node-stale:"):
+            return "node stale"
+        if route == "handoff-stale-alerts":
+            return "handoff required"
+        if route == "stale-active-cases":
+            return "case escalation"
+        if route.startswith("assignee-pressure:"):
+            return "assignee pressure"
+        return "operational"
+
+    @classmethod
+    def _annotate_operational_alert(cls, alert: Any) -> Any:
+        reason = cls._operational_route_reason(getattr(alert, "correlation_key", None))
+        title = str(getattr(alert, "title", "") or "")
+        prefix = f"[{reason}] "
+        if title.startswith(prefix):
+            return alert
+        return cls._clone_record_with_updates(alert, {"title": f"{prefix}{title}"})
+
+    @classmethod
+    def _annotate_operational_case(cls, case: Any, *, operational_alerts: Mapping[str, Any]) -> Any:
+        linked_alert_ids = cast(list[str], getattr(case, "linked_alert_ids", []) or [])
+        reason = next(
+            (
+                cls._operational_route_reason(getattr(operational_alerts.get(alert_id), "correlation_key", None))
+                for alert_id in linked_alert_ids
+                if operational_alerts.get(alert_id) is not None
+            ),
+            "operational",
+        )
+        title = str(getattr(case, "title", "") or "")
+        prefix = f"[{reason}] "
+        if title.startswith(prefix):
+            return case
+        return cls._clone_record_with_updates(case, {"title": f"{prefix}{title}"})
+
+    @staticmethod
+    def _clone_record_with_updates(record: Any, updates: Mapping[str, Any]) -> Any:
+        model_copy = getattr(record, "model_copy", None)
+        if callable(model_copy):
+            return model_copy(update=dict(updates))
+        model_dump = getattr(record, "model_dump", None)
+        if callable(model_dump):
+            payload = dict(model_dump(mode="json"))
+        else:
+            payload = {
+                name: getattr(record, name)
+                for name in dir(record)
+                if not name.startswith("_") and not callable(getattr(record, name, None))
+            }
+        payload.update(dict(updates))
+        wrapper = SimpleNamespace(**payload)
+        wrapper.model_dump = lambda mode="json", _payload=payload: dict(_payload)
+        return wrapper
 
     @staticmethod
     def _parse_severity(value: str) -> SocSeverity | None:
@@ -3100,10 +6736,33 @@ class SocDashboard:
         summary = dashboard["summary"]
         workload = cast(dict[str, Any], dashboard.get("workload") or {})
         assignee_workload = cast(list[dict[str, Any]], dashboard.get("assignee_workload") or [])
+        operational_status = cast(dict[str, Any], dashboard.get("operational_status") or {})
+        hunt_cluster_status = cast(dict[str, Any], dashboard.get("hunt_cluster_status") or {})
         packet_session_status = cast(dict[str, Any], dashboard.get("packet_session_status") or {})
         network_evidence_status = cast(dict[str, Any], dashboard.get("network_evidence_status") or {})
+        platform = cast(dict[str, Any], dashboard.get("platform") or {})
+        service_health = cast(dict[str, Any], platform.get("service_health") or {})
+        topology = cast(dict[str, Any], platform.get("topology") or {})
         top_event_types = dashboard.get("top_event_types") or {}
+        operational_reason_counts = cast(dict[str, int], operational_status.get("reason_counts") or {})
+        hunt_cluster_mode_counts = cast(dict[str, int], hunt_cluster_status.get("cluster_mode_counts") or {})
+        active_hunt_cluster_mode = str(hunt_cluster_status.get("active_mode") or "remote_ip").strip() or "remote_ip"
+        active_hunt_cluster_value = str(hunt_cluster_status.get("active_value") or "").strip()
+        active_hunt_cluster_filter = (
+            f"{active_hunt_cluster_mode}={active_hunt_cluster_value}" if active_hunt_cluster_value else "none"
+        )
+        active_operational_filter = str(operational_status.get("active_filter") or "").strip() or "none"
         most_common = ", ".join(f"{name}: {count}" for name, count in list(top_event_types.items())[:3]) or "none"
+        operational_mix = ", ".join(
+            f"{name}={count}" for name, count in list(operational_reason_counts.items())[:2]
+        ) or "none"
+        hunt_cluster_mix = ", ".join(
+            f"{name}={count}" for name, count in (
+                ("remote_ip", int(hunt_cluster_mode_counts.get("remote_ip", 0))),
+                ("device_id", int(hunt_cluster_mode_counts.get("device_id", 0))),
+                ("process_guid", int(hunt_cluster_mode_counts.get("process_guid", 0))),
+            )
+        ) or "none"
         loaded_assignees = sum(
             1
             for item in assignee_workload
@@ -3113,6 +6772,17 @@ class SocDashboard:
             f"Open alerts: {summary['open_alerts']} | "
             f"Open cases: {summary['open_cases']} | "
             f"Host findings: {host_findings_count} | "
+            f"Hunt clusters: {hunt_cluster_status.get('count', 0)} | "
+            f"Hunt cluster mix: {hunt_cluster_mix} | "
+            f"Hunt filter: {active_hunt_cluster_filter} | "
+            f"Operational alerts: {operational_status.get('alert_count', 0)} | "
+            f"Operational cases: {operational_status.get('case_count', 0)} | "
+            f"Operational mix: {operational_mix} | "
+            f"Operational filter: {active_operational_filter} | "
+            f"Platform services: {service_health.get('healthy_services', 0)}/{service_health.get('enabled_services', 0)} healthy | "
+            f"Nodes: {topology.get('healthy_nodes', 0)}/{topology.get('total_nodes', 0)} healthy | "
+            f"Node action pressure: {topology.get('repeated_failure_nodes', 0)} repeat-failure, "
+            f"{topology.get('retry_pressure_nodes', 0)} retry, {topology.get('stuck_action_nodes', 0)} stuck | "
             f"Packet sessions: {packet_session_status.get('session_count', 0)} | "
             f"Network evidence: {network_evidence_status.get('observation_count', 0)} | "
             f"Stale assigned alerts: {workload.get('stale_assigned_alerts', 0)} | "
@@ -3126,8 +6796,21 @@ class SocDashboard:
         assignee_workload = cast(list[dict[str, Any]], dashboard.get("assignee_workload") or [])
         aging = cast(dict[str, dict[str, int]], dashboard.get("aging_buckets") or {})
         tracker_status = cast(dict[str, Any], dashboard.get("tracker_feed_status") or {})
+        operational_status = cast(dict[str, Any], dashboard.get("operational_status") or {})
+        hunt_cluster_status = cast(dict[str, Any], dashboard.get("hunt_cluster_status") or {})
         packet_session_status = cast(dict[str, Any], dashboard.get("packet_session_status") or {})
         network_evidence_status = cast(dict[str, Any], dashboard.get("network_evidence_status") or {})
+        platform = cast(dict[str, Any], dashboard.get("platform") or {})
+        service_health = cast(dict[str, Any], platform.get("service_health") or {})
+        topology = cast(dict[str, Any], platform.get("topology") or {})
+        operational_reason_counts = cast(dict[str, int], operational_status.get("reason_counts") or {})
+        hunt_cluster_mode_counts = cast(dict[str, int], hunt_cluster_status.get("cluster_mode_counts") or {})
+        active_hunt_cluster_mode = str(hunt_cluster_status.get("active_mode") or "remote_ip").strip() or "remote_ip"
+        active_hunt_cluster_value = str(hunt_cluster_status.get("active_value") or "").strip()
+        active_hunt_cluster_filter = (
+            f"{active_hunt_cluster_mode}={active_hunt_cluster_value}" if active_hunt_cluster_value else "none"
+        )
+        active_operational_filter = str(operational_status.get("active_filter") or "").strip() or "none"
         alert_aging = aging.get("alerts") or {}
         case_aging = aging.get("cases") or {}
         lines = ["Assignee Summary:"]
@@ -3164,6 +6847,44 @@ class SocDashboard:
                 f"- last result: {tracker_status.get('last_refresh_result') or 'unknown'}",
                 f"- last error: {tracker_status.get('last_error') or 'none'}",
                 "",
+                "Operational Load:",
+                f"- alerts: {operational_status.get('alert_count', 0)}",
+                f"- cases: {operational_status.get('case_count', 0)}",
+                f"- active filter: {active_operational_filter}",
+            ]
+        )
+        if operational_reason_counts:
+            for reason, count in operational_reason_counts.items():
+                lines.append(f"- {reason}: {count}")
+        else:
+            lines.append("- breakdown: none")
+        lines.extend(
+            [
+                "",
+                "Hunt Clusters:",
+                f"- count: {hunt_cluster_status.get('count', 0)}",
+                f"- active filter: {active_hunt_cluster_filter}",
+                f"- remote_ip: {hunt_cluster_mode_counts.get('remote_ip', 0)}",
+                f"- device_id: {hunt_cluster_mode_counts.get('device_id', 0)}",
+                f"- process_guid: {hunt_cluster_mode_counts.get('process_guid', 0)}",
+            ]
+        )
+        recent_hunt_clusters = cast(list[dict[str, Any]], hunt_cluster_status.get("recent_clusters") or [])
+        if recent_hunt_clusters:
+            lines.extend(
+                (
+                    f"- {item.get('label', item.get('cluster_key', '-'))}: "
+                    f"severity={item.get('severity', '-')}, "
+                    f"events={item.get('event_count', 0)}, "
+                    f"open_cases={item.get('open_case_count', 0)}"
+                )
+                for item in recent_hunt_clusters[:5]
+            )
+        else:
+            lines.append("- recent: none")
+        lines.extend(
+            [
+                "",
                 "Packet Sessions:",
                 f"- session count: {packet_session_status.get('session_count', 0)}",
             ]
@@ -3176,6 +6897,43 @@ class SocDashboard:
             )
         else:
             lines.append("- none")
+        lines.extend(
+            [
+                "",
+                "Platform Services:",
+                f"- node: {platform.get('node_name', '-')}",
+                f"- role: {platform.get('node_role', '-')}",
+                f"- deployment: {platform.get('deployment_mode', '-')}",
+                f"- overall status: {service_health.get('overall_status', 'unknown')}",
+                f"- healthy/enabled: {service_health.get('healthy_services', 0)}/{service_health.get('enabled_services', 0)}",
+                (
+                    f"- nodes: {topology.get('total_nodes', 0)} total, {topology.get('remote_node_count', 0)} remote, "
+                    f"{topology.get('healthy_nodes', 0)} healthy, {topology.get('degraded_nodes', 0)} degraded, "
+                    f"{topology.get('stale_nodes', 0)} stale, {topology.get('failed_action_nodes', 0)} action-failed, "
+                    f"{topology.get('repeated_failure_nodes', 0)} repeat-failure, "
+                    f"{topology.get('retry_pressure_nodes', 0)} retry-pressure, "
+                    f"{topology.get('stuck_action_nodes', 0)} stuck"
+                ),
+            ]
+        )
+        service_rows = cast(dict[str, dict[str, Any]], service_health.get("services") or {})
+        if service_rows:
+            for name, item in list(service_rows.items())[:8]:
+                lines.append(
+                    f"- {name}: status={item.get('status', 'unknown')}, enabled={item.get('enabled', False)}"
+                )
+        else:
+            lines.append("- no service health available")
+        remote_nodes = cast(list[dict[str, Any]], topology.get("remote_nodes") or [])
+        if remote_nodes:
+            for item in remote_nodes[:5]:
+                lines.append(
+                    f"- {item.get('node_name', '-')}: role={item.get('node_role', '-')}, status={item.get('status', 'unknown')}, "
+                    f"action_failures={', '.join(cast(list[str], item.get('action_failures') or [])) or '-'}, "
+                    f"repeat_failures={bool(item.get('repeated_failure_active'))}, "
+                    f"retry_pressure={bool(item.get('retry_pressure_active'))}, "
+                    f"stuck_actions={bool(item.get('stuck_actions_active'))}"
+                )
         lines.extend(
             [
                 "",
@@ -3442,6 +7200,55 @@ class SocDashboard:
             return False
         self._pivot_from_case(linked_case)
         return True
+
+    def _require_selected_operational_alert(self) -> tuple[str, dict[str, Any]] | None:
+        selected = self._require_selected_record(
+            tree=self.alert_tree,
+            rows_by_id=self.alert_rows_by_id,
+            missing_selection_title="Operational Alert",
+            missing_selection_message="Select an operational alert before using this action.",
+            missing_record_title="Operational Alert",
+            missing_record_message="The selected alert is no longer available in the current view.",
+        )
+        if selected is None:
+            return None
+        alert_id, alert_payload = selected
+        if str(alert_payload.get("category") or "").casefold() != "operational":
+            if messagebox is not None:
+                messagebox.showwarning(
+                    "Operational Alert",
+                    "The selected alert is not an operational alert.",
+                )
+            return None
+        return alert_id, alert_payload
+
+    def _require_selected_operational_case(self) -> tuple[str, dict[str, Any]] | None:
+        selected = self._require_selected_record(
+            tree=self.case_tree,
+            rows_by_id=self.case_rows_by_id,
+            missing_selection_title="Operational Case",
+            missing_selection_message="Select an operational case before using this action.",
+            missing_record_title="Operational Case",
+            missing_record_message="The selected case is no longer available in the current view.",
+        )
+        if selected is None:
+            return None
+        case_id, case_payload = selected
+        if not self._operational_alert_ids_for_case(case_payload):
+            if messagebox is not None:
+                messagebox.showwarning(
+                    "Operational Case",
+                    "The selected case is not an operational case.",
+                )
+            return None
+        return case_id, case_payload
+
+    def _operational_alert_ids_for_case(self, case_payload: dict[str, Any]) -> list[str]:
+        return [
+            str(alert_id)
+            for alert_id in cast(list[Any], case_payload.get("linked_alert_ids") or [])
+            if str(alert_id) and str(cast(dict[str, Any], self.all_alert_rows_by_id.get(str(alert_id)) or {}).get("category") or "").casefold() == "operational"
+        ]
 
     def _copy_selected_detail(
         self,
@@ -3729,6 +7536,7 @@ class SocDashboard:
         content = "\n\n".join(
             [
                 f"Security Gateway Dashboard Export\nPreset: {preset}\nGenerated: {datetime.now().isoformat()}",
+                self._format_view_state_summary(dashboard) if dashboard else "No dashboard view state loaded.",
                 self._format_status_line(dashboard) if dashboard else "No dashboard state loaded.",
                 self._format_workload_detail(dashboard) if dashboard else "No workload data loaded.",
                 self._format_summary_records("alert", alert_rows, limit=50),
@@ -3740,6 +7548,22 @@ class SocDashboard:
         target = self._write_dashboard_export(prefix=f"dashboard-{preset}", content=content)
         if messagebox is not None:
             messagebox.showinfo("Export Current View", f"Saved dashboard export to {target}.")
+
+    @staticmethod
+    def _format_view_state_summary(dashboard: dict[str, Any]) -> str:
+        view_state = cast(dict[str, Any], dashboard.get("view_state") or {})
+        saved_operational_filter = str(view_state.get("operational_reason_filter") or "").strip() or "none"
+        saved_hunt_mode = SocDashboard._normalize_hunt_cluster_mode(cast(str | None, view_state.get("hunt_cluster_mode")))
+        saved_hunt_value = str(view_state.get("hunt_cluster_value") or "").strip() or "none"
+        saved_hunt_key = str(view_state.get("hunt_cluster_key") or "").strip() or "none"
+        saved_hunt_action = SocDashboard._normalize_hunt_cluster_action(cast(str | None, view_state.get("hunt_cluster_action")))
+        return (
+            "View State:\n"
+            f"- saved operational filter: {saved_operational_filter}\n"
+            f"- saved hunt filter: {saved_hunt_mode}={saved_hunt_value}\n"
+            f"- saved hunt cluster: {saved_hunt_key}\n"
+            f"- saved hunt action: {saved_hunt_action}"
+        )
 
     @staticmethod
     def _format_correlation_detail(correlation_payload: dict[str, Any]) -> str:
@@ -3829,6 +7653,8 @@ class SocDashboard:
         case_payload: dict[str, Any],
         linked_alerts: Sequence[dict[str, Any]],
         source_events: Sequence[dict[str, Any]],
+        *,
+        endpoint_timeline: Sequence[dict[str, Any]] | None = None,
     ) -> str:
         lines = [
             f"Case: {case_payload.get('case_id', '-')}",
@@ -3852,6 +7678,17 @@ class SocDashboard:
                 )
         else:
             lines.append("- none")
+        if endpoint_timeline is not None:
+            lines.extend(["", "Endpoint Timeline:"])
+            if endpoint_timeline:
+                for event in endpoint_timeline[:20]:
+                    lines.append(
+                        f"- {event.get('event_id', '-')}: {event.get('event_type', '-')} | {event.get('recorded_at', '-')} | {event.get('title', '-')}"
+                    )
+                if len(endpoint_timeline) > 20:
+                    lines.append(f"- ... {len(endpoint_timeline) - 20} more")
+            else:
+                lines.append("- none")
         return "\n".join(lines)
 
     @staticmethod
@@ -3961,5 +7798,81 @@ class SocDashboard:
         return payload if isinstance(payload, dict) else {}
 
 
+class RemoteSocDashboardConnector:
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        bearer_token: str | None = None,
+        timeout_seconds: float = 5.0,
+        transport: Any = None,
+    ) -> None:
+        self.manager = RemoteSecurityOperationsClient(
+            base_url=base_url,
+            bearer_token=bearer_token,
+            timeout_seconds=timeout_seconds,
+            transport=transport,
+        )
+        self.tracker_intel = RemoteTrackerIntelClient(
+            base_url=base_url,
+            bearer_token=bearer_token,
+            timeout_seconds=timeout_seconds,
+            transport=transport,
+        )
+        self.packet_monitor = RemotePacketMonitorClient(
+            base_url=base_url,
+            bearer_token=bearer_token,
+            timeout_seconds=timeout_seconds,
+            transport=transport,
+        )
+        self.network_monitor = RemoteNetworkMonitorClient(
+            base_url=base_url,
+            bearer_token=bearer_token,
+            timeout_seconds=timeout_seconds,
+            transport=transport,
+        )
+        self.platform_client = RemotePlatformClient(
+            base_url=base_url,
+            bearer_token=bearer_token,
+            timeout_seconds=timeout_seconds,
+            transport=transport,
+        )
+        self.view_state_client = HttpDashboardViewStateClient(
+            base_url=base_url,
+            bearer_token=bearer_token,
+            timeout_seconds=timeout_seconds,
+            transport=transport,
+        )
+
+    def create_dashboard(self, manager: SecurityOperationsManager | None = None) -> SocDashboard:
+        return SocDashboard(
+            manager=manager or self.manager,
+            dashboard_view_state_client=self.view_state_client,
+            tracker_intel=self.tracker_intel,
+            packet_monitor=self.packet_monitor,
+            network_monitor=self.network_monitor,
+            platform_client=self.platform_client,
+        )
+
+    def run(self, manager: SecurityOperationsManager | None = None) -> None:
+        self.create_dashboard(manager=manager).run()
+
+
 def run_soc_dashboard(manager: SecurityOperationsManager | None = None) -> None:
     SocDashboard(manager=manager).run()
+
+
+def run_remote_soc_dashboard(
+    *,
+    base_url: str,
+    bearer_token: str | None = None,
+    manager: SecurityOperationsManager | None = None,
+    timeout_seconds: float = 5.0,
+    transport: Any = None,
+) -> None:
+    RemoteSocDashboardConnector(
+        base_url=base_url,
+        bearer_token=bearer_token,
+        timeout_seconds=timeout_seconds,
+        transport=transport,
+    ).run(manager=manager)

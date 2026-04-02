@@ -46,14 +46,19 @@ class AutomationSupervisor:
         network_monitor_enabled: bool = False,
         network_monitor_every_ticks: int = 1,
         network_monitor_callback: Callable[[dict[str, Any]], None] | None = None,
+        network_snapshot_callback: Callable[[dict[str, Any]], None] | None = None,
         packet_monitor: PacketMonitor | None = None,
         packet_monitor_enabled: bool = False,
         packet_monitor_every_ticks: int = 1,
         packet_monitor_callback: Callable[[dict[str, Any]], None] | None = None,
+        packet_snapshot_callback: Callable[[dict[str, Any]], None] | None = None,
         stream_monitor: StreamArtifactMonitor | None = None,
         stream_monitor_enabled: bool = False,
         stream_monitor_every_ticks: int = 1,
         stream_monitor_callback: Callable[[dict[str, Any]], None] | None = None,
+        node_heartbeat_enabled: bool = False,
+        node_heartbeat_every_ticks: int = 1,
+        node_heartbeat_callback: Callable[[], dict[str, Any]] | None = None,
         operational_callback: Callable[[], dict[str, Any]] | None = None,
     ):
         self._vault = vault
@@ -65,27 +70,39 @@ class AutomationSupervisor:
         self._malware_scanner = malware_scanner
         self._interval = interval_seconds
         self._tracker_feed_refresh_enabled = tracker_feed_refresh_enabled
+        self._tracker_feed_refresh_base_enabled = tracker_feed_refresh_enabled
         self._tracker_feed_refresh_every_ticks = max(1, tracker_feed_refresh_every_ticks)
         self._malware_feed_refresh_enabled = malware_feed_refresh_enabled
+        self._malware_feed_refresh_base_enabled = malware_feed_refresh_enabled
         self._malware_feed_refresh_every_ticks = max(1, malware_feed_refresh_every_ticks)
         self._malware_rule_feed_refresh_enabled = malware_rule_feed_refresh_enabled
+        self._malware_rule_feed_refresh_base_enabled = malware_rule_feed_refresh_enabled
         self._malware_rule_feed_refresh_every_ticks = max(1, malware_rule_feed_refresh_every_ticks)
         self._host_monitor = host_monitor
         self._host_monitor_enabled = host_monitor_enabled
+        self._host_monitor_base_enabled = host_monitor_enabled
         self._host_monitor_every_ticks = max(1, host_monitor_every_ticks)
         self._host_monitor_callback = host_monitor_callback
         self._network_monitor = network_monitor
         self._network_monitor_enabled = network_monitor_enabled
+        self._network_monitor_base_enabled = network_monitor_enabled
         self._network_monitor_every_ticks = max(1, network_monitor_every_ticks)
         self._network_monitor_callback = network_monitor_callback
+        self._network_snapshot_callback = network_snapshot_callback
         self._packet_monitor = packet_monitor
         self._packet_monitor_enabled = packet_monitor_enabled
+        self._packet_monitor_base_enabled = packet_monitor_enabled
         self._packet_monitor_every_ticks = max(1, packet_monitor_every_ticks)
         self._packet_monitor_callback = packet_monitor_callback
+        self._packet_snapshot_callback = packet_snapshot_callback
         self._stream_monitor = stream_monitor
         self._stream_monitor_enabled = stream_monitor_enabled
+        self._stream_monitor_base_enabled = stream_monitor_enabled
         self._stream_monitor_every_ticks = max(1, stream_monitor_every_ticks)
         self._stream_monitor_callback = stream_monitor_callback
+        self._node_heartbeat_enabled = node_heartbeat_enabled
+        self._node_heartbeat_every_ticks = max(1, node_heartbeat_every_ticks)
+        self._node_heartbeat_callback = node_heartbeat_callback
         self._operational_callback = operational_callback
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
@@ -113,6 +130,10 @@ class AutomationSupervisor:
         self._stream_monitor_last_run: Optional[datetime] = None
         self._stream_monitor_last_result: Optional[str] = None
         self._stream_monitor_last_error: Optional[str] = None
+        self._node_heartbeat_last_run: Optional[datetime] = None
+        self._node_heartbeat_last_result: Optional[str] = None
+        self._node_heartbeat_last_error: Optional[str] = None
+        self._drained_services: set[str] = set()
 
     def start(self) -> None:
         if self.running:
@@ -148,6 +169,7 @@ class AutomationSupervisor:
             packet_monitor = self._maybe_run_packet_monitor(
                 force_run=self._stream_activity_detected(stream_monitor)
             )
+            node_heartbeat = self._maybe_emit_node_heartbeat()
             operational = self._maybe_emit_operational_notifications()
             self._audit.log(
                 "automation.tick",
@@ -161,6 +183,7 @@ class AutomationSupervisor:
                     "network_monitor": network_monitor,
                     "packet_monitor": packet_monitor,
                     "stream_monitor": stream_monitor,
+                    "node_heartbeat": node_heartbeat,
                     "operational": operational,
                 },
             )
@@ -335,6 +358,9 @@ class AutomationSupervisor:
             self._network_monitor_last_run = datetime.now(UTC)
             self._network_monitor_last_result = "success"
             self._network_monitor_last_error = None
+            snapshot = result.get("snapshot")
+            if self._network_snapshot_callback is not None and isinstance(snapshot, dict):
+                self._network_snapshot_callback(snapshot)
             for finding in result.get("emitted_findings", []):
                 self._emit_network_monitor_finding(finding)
             for finding in result.get("resolved_findings", []):
@@ -429,6 +455,9 @@ class AutomationSupervisor:
             self._packet_monitor_last_result = str(result["snapshot"].get("capture_status", "success"))
             packet_error = result["snapshot"].get("error")
             self._packet_monitor_last_error = str(packet_error) if packet_error else None
+            snapshot = result.get("snapshot")
+            if self._packet_snapshot_callback is not None and isinstance(snapshot, dict):
+                self._packet_snapshot_callback(snapshot)
             for finding in result.get("emitted_findings", []):
                 self._emit_packet_monitor_finding(finding)
             for finding in result.get("resolved_findings", []):
@@ -520,6 +549,48 @@ class AutomationSupervisor:
         except Exception as exc:  # noqa: BLE001
             self._audit.log("automation.operational_notification_error", {"error": str(exc)})
             return {"enabled": True, "result": "failed", "error": str(exc)}
+
+    def _maybe_emit_node_heartbeat(self) -> dict[str, Any]:
+        if not self._node_heartbeat_enabled:
+            return {"enabled": False}
+        if self._node_heartbeat_callback is None:
+            return {"enabled": True, "result": "unavailable"}
+        if self._should_wait_for_tick(
+            tick_count=self._tick_count,
+            every_ticks=self._node_heartbeat_every_ticks,
+            last_run=self._node_heartbeat_last_run,
+        ):
+            return {
+                "enabled": True,
+                "result": "skipped",
+                "reason": "waiting_for_refresh_tick",
+                "every_ticks": self._node_heartbeat_every_ticks,
+                "tick_count": self._tick_count,
+            }
+        try:
+            result = self._node_heartbeat_callback()
+            self._node_heartbeat_last_run = datetime.now(UTC)
+            self._node_heartbeat_last_result = str(result.get("result", "success"))
+            heartbeat_error = result.get("error")
+            self._node_heartbeat_last_error = str(heartbeat_error) if heartbeat_error else None
+            self._audit.log("automation.node_heartbeat", result)
+            return {"enabled": True, **result}
+        except Exception as exc:  # noqa: BLE001
+            self._node_heartbeat_last_run = datetime.now(UTC)
+            self._node_heartbeat_last_result = "failed"
+            self._node_heartbeat_last_error = str(exc)
+            self._audit.log("automation.node_heartbeat_error", {"error": str(exc)})
+            return {"enabled": True, "result": "failed", "error": str(exc)}
+
+    def apply_drained_services(self, services: set[str]) -> None:
+        self._drained_services = set(services)
+        self._tracker_feed_refresh_enabled = self._tracker_feed_refresh_base_enabled and "tracker_feed_refresh" not in services
+        self._malware_feed_refresh_enabled = self._malware_feed_refresh_base_enabled and "malware_feed_refresh" not in services
+        self._malware_rule_feed_refresh_enabled = self._malware_rule_feed_refresh_base_enabled and "malware_rule_feed_refresh" not in services
+        self._host_monitor_enabled = self._host_monitor_base_enabled and "host_monitor" not in services
+        self._network_monitor_enabled = self._network_monitor_base_enabled and "network_monitor" not in services
+        self._packet_monitor_enabled = self._packet_monitor_base_enabled and "packet_monitor" not in services
+        self._stream_monitor_enabled = self._stream_monitor_base_enabled and "stream_monitor" not in services
 
     def _emit_stream_monitor_finding(self, finding: dict[str, Any]) -> None:
         severity = str(finding.get("severity", "medium")).casefold()
@@ -617,6 +688,14 @@ class AutomationSupervisor:
                 "last_result": self._stream_monitor_last_result,
                 "last_error": self._stream_monitor_last_error,
             },
+            "node_heartbeat": {
+                "enabled": self._node_heartbeat_enabled,
+                "every_ticks": self._node_heartbeat_every_ticks,
+                "last_run": self._node_heartbeat_last_run.isoformat() if self._node_heartbeat_last_run else None,
+                "last_result": self._node_heartbeat_last_result,
+                "last_error": self._node_heartbeat_last_error,
+            },
+            "drained_services": sorted(self._drained_services),
         }
 
 

@@ -1,5 +1,6 @@
 from security_gateway.automation import AutomationSupervisor
 from security_gateway.alerts import AlertEvent
+from security_gateway.platform import apply_local_platform_action, sync_local_platform_action_state
 
 
 class DummyVault:
@@ -349,3 +350,103 @@ def test_stream_activity_forces_packet_monitor_immediately():
     assert stream_monitor.run_calls == 1
     assert packet_monitor.run_calls == 1
     assert supervisor.status()["packet_monitor"]["last_result"] == "ok"
+
+
+def test_node_heartbeat_runs_on_configured_tick():
+    vault = DummyVault()
+    proxy = DummyProxy()
+    audit = DummyAudit()
+    alerts = DummyAlerts()
+    emitted: list[int] = []
+    supervisor = AutomationSupervisor(
+        vault=vault,
+        proxy=proxy,
+        audit_logger=audit,
+        alert_manager=alerts,
+        node_heartbeat_enabled=True,
+        node_heartbeat_every_ticks=2,
+        node_heartbeat_callback=lambda: {"result": "success", "count": len(emitted)},
+        interval_seconds=0.1,
+    )
+
+    supervisor.perform_tasks()
+    assert supervisor.status()["node_heartbeat"]["last_result"] == "success"
+
+    emitted.append(1)
+    supervisor.perform_tasks()
+
+    status = supervisor.status()["node_heartbeat"]
+    assert status["enabled"] is True
+    assert status["last_result"] == "success"
+    assert any(event == "automation.node_heartbeat" for event, _ in audit.events)
+
+
+def test_apply_drained_services_disables_targeted_monitors():
+    supervisor = AutomationSupervisor(
+        vault=DummyVault(),
+        proxy=DummyProxy(),
+        audit_logger=DummyAudit(),
+        alert_manager=DummyAlerts(),
+        network_monitor_enabled=True,
+        packet_monitor_enabled=True,
+        stream_monitor_enabled=True,
+        host_monitor_enabled=True,
+        interval_seconds=0.1,
+    )
+
+    supervisor.apply_drained_services({"packet_monitor", "network_monitor"})
+    status = supervisor.status()
+
+    assert status["network_monitor"]["enabled"] is False
+    assert status["packet_monitor"]["enabled"] is False
+    assert status["stream_monitor"]["enabled"] is True
+    assert status["host_monitor"]["enabled"] is True
+    assert status["drained_services"] == ["network_monitor", "packet_monitor"]
+
+
+def test_apply_local_platform_action_supports_maintenance(tmp_path):
+    state_path = tmp_path / "local_actions.json"
+
+    result = apply_local_platform_action(
+        {
+            "action": "maintenance",
+            "maintenance_services": ["packet_monitor"],
+            "maintenance_until": "2999-01-01T00:00:00+00:00",
+            "maintenance_reason": "patching",
+        },
+        path=state_path,
+        available_services=["packet_monitor", "network_monitor"],
+    )
+
+    synced = sync_local_platform_action_state(
+        node_payload={
+            "maintenance": {
+                "active": True,
+                "maintenance_services": ["packet_monitor"],
+                "maintenance_until": "2999-01-01T00:00:00+00:00",
+                "maintenance_reason": "patching",
+            },
+            "drain": {"active": False, "drain_services": []},
+        },
+        path=state_path,
+        available_services=["packet_monitor", "network_monitor"],
+    )
+
+    assert result["result"] == "success"
+    assert result["effective_services"] == ["packet_monitor"]
+    assert synced["maintenance_active"] is True
+    assert synced["maintenance_services"] == ["packet_monitor"]
+    assert synced["maintenance_reason"] == "patching"
+
+
+def test_apply_local_platform_action_fails_when_no_services_match(tmp_path):
+    state_path = tmp_path / "local_actions.json"
+
+    result = apply_local_platform_action(
+        {"action": "drain", "drain_services": ["packet_monitor"]},
+        path=state_path,
+        available_services=["network_monitor"],
+    )
+
+    assert result["result"] == "failed"
+    assert result["effective_services"] == []

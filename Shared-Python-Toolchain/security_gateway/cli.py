@@ -24,9 +24,11 @@ from security_gateway.host_monitor import HostMonitor
 from security_gateway.ip_controls import IPBlocklistManager
 from security_gateway.models import AccessRequest
 from security_gateway.pam import VaultClient
+from security_gateway.platform import build_platform_profile
 from security_gateway.policy import PolicyEngine
 from security_gateway.report_browser import run_report_browser
 from security_gateway.reports import SecurityReportBuilder
+from security_gateway.soc_dashboard import run_remote_soc_dashboard, run_soc_dashboard
 from security_gateway.state import dns_security_cache
 from security_gateway.tracker_intel import TrackerIntel
 from security_gateway.tor import OutboundProxy
@@ -341,6 +343,83 @@ def report_browser() -> None:
     run_report_browser(report_builder)
 
 
+def _resolve_dashboard_connection(
+    *,
+    remote: bool,
+    manager_url: str | None,
+    bearer_token: str | None,
+    timeout_seconds: float | None,
+) -> tuple[bool, str | None, str | None, float]:
+    resolved_remote = remote or bool(manager_url) or bool(settings.platform_manager_url)
+    resolved_url = manager_url or settings.platform_manager_url
+    resolved_token = bearer_token or settings.platform_manager_bearer_token
+    resolved_timeout = timeout_seconds if timeout_seconds is not None else settings.platform_manager_timeout_seconds
+    if resolved_remote and not resolved_url:
+        typer.echo(
+            "Remote dashboard requested but no manager URL is configured. "
+            "Set SECURITY_GATEWAY_PLATFORM_MANAGER_URL or pass --manager-url.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    return resolved_remote, resolved_url, resolved_token, resolved_timeout
+
+
+def _open_configured_soc_dashboard(
+    *,
+    remote: bool = False,
+    manager_url: str | None = None,
+    bearer_token: str | None = None,
+    timeout_seconds: float | None = None,
+) -> None:
+    resolved_remote, resolved_url, resolved_token, resolved_timeout = _resolve_dashboard_connection(
+        remote=remote,
+        manager_url=manager_url,
+        bearer_token=bearer_token,
+        timeout_seconds=timeout_seconds,
+    )
+    if resolved_remote:
+        assert resolved_url is not None
+        run_remote_soc_dashboard(
+            base_url=resolved_url,
+            bearer_token=resolved_token,
+            timeout_seconds=resolved_timeout,
+        )
+        return
+    run_soc_dashboard()
+
+
+@app.command("soc-dashboard")
+def soc_dashboard(
+    remote: bool = typer.Option(
+        False,
+        "--remote",
+        help="Open the dashboard against a remote manager. Defaults to the configured platform manager when present.",
+    ),
+    manager_url: str | None = typer.Option(
+        None,
+        "--manager-url",
+        help="Remote manager base URL. Defaults to SECURITY_GATEWAY_PLATFORM_MANAGER_URL.",
+    ),
+    bearer_token: str | None = typer.Option(
+        None,
+        "--bearer-token",
+        help="Remote operator token. Defaults to SECURITY_GATEWAY_PLATFORM_MANAGER_BEARER_TOKEN.",
+    ),
+    timeout_seconds: float | None = typer.Option(
+        None,
+        "--timeout-seconds",
+        min=0.1,
+        help="Remote dashboard HTTP timeout in seconds. Defaults to SECURITY_GATEWAY_PLATFORM_MANAGER_TIMEOUT_SECONDS.",
+    ),
+) -> None:
+    _open_configured_soc_dashboard(
+        remote=remote,
+        manager_url=manager_url,
+        bearer_token=bearer_token,
+        timeout_seconds=timeout_seconds,
+    )
+
+
 @app.command("tracker-feed-status")
 def tracker_feed_status() -> None:
     print(tracker_intel.feed_status())
@@ -373,10 +452,15 @@ def health_status() -> None:
     tracker_health = tracker_intel.health_status()
     malware_health = scanner.health_status()
     warnings = [*tracker_health["warnings"], *malware_health["warnings"]]
+    platform = build_platform_profile(
+        tracker_health=tracker_health,
+        malware_health=malware_health,
+    )
     print(
         {
             "healthy": not warnings,
             "warnings": warnings,
+            "platform": platform,
             "tracker_intel": tracker_health,
             "malware_scanner": malware_health,
         }
@@ -388,8 +472,10 @@ def _resolve_uninstaller_path() -> Path | None:
     executable = Path(getattr(sys, "executable", ""))
     if executable:
         candidates.append(executable.with_name("SecurityGateway-Uninstall.exe"))
+        candidates.append(executable.parent / "uninstall" / "SecurityGateway-Uninstall.exe")
         candidates.append(executable.with_name("Uninstall-SecurityGateway.ps1"))
     candidates.append(Path.cwd() / "SecurityGateway-Uninstall.exe")
+    candidates.append(Path.cwd() / "uninstall" / "SecurityGateway-Uninstall.exe")
     candidates.append(Path.cwd() / "Uninstall-SecurityGateway.ps1")
     for candidate in candidates:
         if candidate.exists():
@@ -429,6 +515,7 @@ def _select_frozen_action() -> str:
 
     menu_bar = tk.Menu(root)
     tools_menu = tk.Menu(menu_bar, tearoff=False)
+    tools_menu.add_command(label="Open SOC Dashboard", command=lambda: choose("soc-dashboard"))
     tools_menu.add_command(label="Open Reports", command=lambda: choose("report-browser"))
     tools_menu.add_command(label="Run Uninstaller", command=lambda: choose("uninstall"))
     tools_menu.add_separator()
@@ -455,6 +542,20 @@ def _select_frozen_action() -> str:
         bg="#eef4ff",
         fg="#2f3e52",
     ).pack(fill="x", pady=(0, 16))
+    tk.Button(
+        frame,
+        text="Open SOC Dashboard",
+        width=30,
+        font=("Segoe UI", 10, "bold"),
+        bg="#135a9c",
+        fg="white",
+        activebackground="#0f477b",
+        activeforeground="white",
+        relief="flat",
+        padx=8,
+        pady=8,
+        command=lambda: choose("soc-dashboard"),
+    ).pack(pady=5)
     tk.Button(
         frame,
         text="Open Reports",
@@ -504,6 +605,9 @@ def _select_frozen_action() -> str:
 
 def _launch_frozen_desktop_entry() -> None:
     action = _select_frozen_action()
+    if action == "soc-dashboard":
+        _open_configured_soc_dashboard()
+        return
     if action == "report-browser":
         run_report_browser(report_builder)
         return

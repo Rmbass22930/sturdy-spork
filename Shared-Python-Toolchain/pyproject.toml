@@ -36,3 +36,6 @@ packages = ["security_gateway", "memory_optimizer", "common_crypto"]
 addopts = ["--basetemp=.pytest_tmp"]
 pythonpath = ["."]
 testpaths = ["tests"]
+
+[tool.ruff]
+cache-dir = "../.ruff_cache"
