@@ -13,8 +13,8 @@ def test_parse_packet_text_groups_public_remote_packet_activity() -> None:
     observations = monitor._parse_packet_text(
         "\n".join(
             [
-                "2026-03-29T20:00:00 TCP 8.8.8.8:51000 -> 192.168.1.10:3389",
-                "2026-03-29T20:00:01 TCP 8.8.8.8:51001 -> 192.168.1.10:3389",
+                "2026-03-29T20:00:00 TCP 8.8.8.8:51000 -> 192.168.1.10:3389 TLS ClientHello SNI example.com",
+                "2026-03-29T20:00:01 TCP 8.8.8.8:51001 -> 192.168.1.10:3389 GET / HTTP/1.1 Host: example.com",
                 "2026-03-29T20:00:02 UDP 127.0.0.1:10000 -> 127.0.0.1:9000",
             ]
         )
@@ -25,6 +25,9 @@ def test_parse_packet_text_groups_public_remote_packet_activity() -> None:
     assert observations[0]["packet_count"] == 2
     assert observations[0]["sensitive_ports"] == [3389]
     assert len(observations[0]["sample_packet_endpoints"]) == 2
+    assert observations[0]["protocol_evidence"]["application_protocols"] == ["http", "tls"]
+    assert observations[0]["protocol_evidence"]["hostnames"] == ["example.com"]
+    assert observations[0]["protocol_evidence"]["indicators"] == ["http_request", "tls_handshake"]
 
 
 def test_parse_packet_text_handles_ipv6() -> None:
@@ -65,6 +68,63 @@ def test_collect_snapshot_reports_permission_denied(tmp_path: Path) -> None:
 
     assert snapshot["capture_status"] == "permission_denied"
     assert snapshot["packet_observations"] == []
+
+
+def test_collect_snapshot_retains_capture_artifacts_when_enabled(tmp_path: Path) -> None:
+    state_path = tmp_path / "packet_state.json"
+    retention_path = tmp_path / "captures"
+    current_etl: dict[str, Path] = {}
+
+    def runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+        if args[0] != "pktmon":
+            raise AssertionError(args)
+        if args[1] == "start":
+            current_etl["path"] = Path(args[6])
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+        if args[1] == "stop":
+            current_etl["path"].write_text("etl", encoding="utf-8")
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+        if args[1] == "etl2txt":
+            Path(args[4]).write_text(
+                "2026-03-29T20:00:00 TCP 8.8.8.8:51000 -> 192.168.1.10:3389 TLS ClientHello SNI example.com\n",
+                encoding="utf-8",
+            )
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+        raise AssertionError(args)
+
+    monitor = PacketMonitor(
+        state_path=state_path,
+        min_packet_count=1,
+        sensitive_ports=[3389],
+        capture_retention_enabled=True,
+        capture_retention_path=retention_path,
+        runner=runner,
+        sleeper=lambda _seconds: None,
+    )
+
+    snapshot = monitor.collect_snapshot()
+
+    capture = snapshot["retained_capture"]
+    assert capture["capture_id"].startswith("packet-capture-")
+    assert Path(capture["etl_path"]).exists()
+    assert Path(capture["txt_path"]).exists()
+    assert capture["primary_remote_ip"] == "8.8.8.8"
+    assert capture["primary_session_key"] == "packet-session:8.8.8.8"
+    assert capture["protocols"] == ["TCP"]
+    assert capture["local_ports"] == [3389]
+    assert capture["remote_ports"] == [51000]
+    assert capture["session_observations"][0]["session_key"] == "packet-session:8.8.8.8"
+    assert capture["session_observations"][0]["protocol_evidence"]["application_protocols"] == ["tls"]
+    assert capture["session_observations"][0]["protocol_evidence"]["hostnames"] == ["example.com"]
+    assert capture["protocol_evidence"]["application_protocols"] == ["tls"]
+    assert capture["protocol_evidence"]["hostnames"] == ["example.com"]
+    assert monitor.list_retained_captures(limit=5)[0]["capture_id"] == capture["capture_id"]
+    assert monitor.list_retained_captures(limit=5, remote_ip="8.8.8.8")[0]["capture_id"] == capture["capture_id"]
+    assert monitor.list_retained_captures(limit=5, session_key="packet-session:8.8.8.8")[0]["capture_id"] == capture["capture_id"]
+    assert monitor.list_retained_captures(limit=5, protocol="tcp")[0]["capture_id"] == capture["capture_id"]
+    assert monitor.list_retained_captures(limit=5, local_port=3389)[0]["capture_id"] == capture["capture_id"]
+    assert monitor.list_retained_captures(limit=5, remote_port=51000)[0]["capture_id"] == capture["capture_id"]
+    assert "8.8.8.8" in monitor.get_retained_capture_text(capture["capture_id"])
 
 
 def test_collect_snapshot_falls_back_to_socket_table_when_pktmon_is_denied(tmp_path: Path) -> None:
@@ -379,6 +439,11 @@ def test_updated_session_history_accumulates_compact_session_state() -> None:
                     "packet_count": 7,
                     "sensitive_ports": [3389],
                     "sample_packet_endpoints": [{"remote_ip": "8.8.8.8", "local_port": 3389}],
+                    "protocol_evidence": {
+                        "application_protocols": ["tls"],
+                        "hostnames": ["example.com"],
+                        "indicators": ["tls_handshake"],
+                    },
                 }
             ],
         },
@@ -397,6 +462,11 @@ def test_updated_session_history_accumulates_compact_session_state() -> None:
                     "sightings": 1,
                     "total_packets": 3,
                     "max_packet_count": 3,
+                    "protocol_evidence": {
+                        "application_protocols": ["rdp"],
+                        "hostnames": ["prior.example.com"],
+                        "indicators": ["rdp_session"],
+                    },
                 }
             }
         },
@@ -409,6 +479,9 @@ def test_updated_session_history_accumulates_compact_session_state() -> None:
     assert session["total_packets"] == 10
     assert session["max_packet_count"] == 7
     assert session["local_ports"] == [3389, 8443]
+    assert session["protocol_evidence"]["application_protocols"] == ["rdp", "tls"]
+    assert session["protocol_evidence"]["hostnames"] == ["example.com", "prior.example.com"]
+    assert session["protocol_evidence"]["indicators"] == ["rdp_session", "tls_handshake"]
 
 
 def test_updated_history_keeps_prior_remote_ips() -> None:

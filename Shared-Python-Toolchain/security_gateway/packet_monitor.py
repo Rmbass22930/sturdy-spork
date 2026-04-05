@@ -11,8 +11,10 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from ipaddress import ip_address
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, cast
 from uuid import uuid4
+
+from .network_monitor import NetworkMonitor
 
 
 def _utc_now() -> datetime:
@@ -58,6 +60,9 @@ class PacketMonitor:
         learning_samples: int = 3,
         evidence_sample_limit: int = 5,
         sensitive_ports: list[int] | None = None,
+        capture_retention_enabled: bool = False,
+        capture_retention_path: str | Path | None = None,
+        capture_retention_limit: int = 20,
         runner: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None,
         sleeper: Callable[[float], None] | None = None,
     ) -> None:
@@ -69,9 +74,18 @@ class PacketMonitor:
         self._learning_samples = max(1, learning_samples)
         self._evidence_sample_limit = max(1, evidence_sample_limit)
         self._sensitive_ports = set(sensitive_ports or [22, 23, 135, 139, 445, 3389, 5900, 5985, 5986])
+        self._capture_retention_enabled = capture_retention_enabled
+        self._capture_retention_path = (
+            Path(capture_retention_path)
+            if capture_retention_path is not None
+            else self._state_path.parent / "packet_captures"
+        )
+        self._capture_retention_limit = max(1, capture_retention_limit)
         self._runner = runner or self._run_command
         self._sleeper = sleeper or time.sleep
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
+        if self._capture_retention_enabled:
+            self._capture_retention_path.mkdir(parents=True, exist_ok=True)
 
     def run_check(self) -> dict[str, Any]:
         snapshot = self.collect_snapshot()
@@ -182,6 +196,21 @@ class PacketMonitor:
 
             text = txt_path.read_text(encoding="utf-8", errors="ignore")
             observations = self._parse_packet_text(text)
+            session_observations = self._build_session_observations(observations)
+            for session in session_observations:
+                session["protocol_evidence"] = self._merge_protocol_evidence(
+                    session.get("protocol_evidence"),
+                    self._extract_protocol_evidence(
+                        text,
+                        remote_ip=str(session.get("remote_ip") or ""),
+                    ),
+                )
+            retained_capture = self._retain_capture_artifacts(
+                actual_etl_path=actual_etl_path,
+                txt_path=txt_path,
+                observations=observations,
+                session_observations=session_observations,
+            )
             return {
                 "checked_at": _utc_now().isoformat(),
                 "capture_status": "ok",
@@ -189,7 +218,8 @@ class PacketMonitor:
                 "sample_seconds": self._sample_seconds,
                 "packet_size": self._pkt_size,
                 "packet_observations": observations,
-                "session_observations": self._build_session_observations(observations),
+                "session_observations": session_observations,
+                "retained_capture": retained_capture,
             }
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -284,6 +314,7 @@ class PacketMonitor:
             previous = next_history.get(session_key)
             if not isinstance(previous, dict):
                 previous = {}
+            enrichment = self._session_enrichment(item)
             next_history[session_key] = {
                 "session_key": session_key,
                 "remote_ip": item.get("remote_ip"),
@@ -292,6 +323,30 @@ class PacketMonitor:
                 "local_ports": sorted({*self._as_int_list(previous.get("local_ports")), *self._as_int_list(item.get("local_ports"))}),
                 "remote_ports": sorted({*self._as_int_list(previous.get("remote_ports")), *self._as_int_list(item.get("remote_ports"))})[-20:],
                 "sensitive_ports": sorted({*self._as_int_list(previous.get("sensitive_ports")), *self._as_int_list(item.get("sensitive_ports"))}),
+                "transport_families": sorted(
+                    {
+                        *self._as_string_list(previous.get("transport_families")),
+                        *cast(list[str], enrichment["transport_families"]),
+                    }
+                ),
+                "service_names": sorted(
+                    {
+                        *self._as_string_list(previous.get("service_names")),
+                        *cast(list[str], enrichment["service_names"]),
+                    }
+                ),
+                "application_protocols": sorted(
+                    {
+                        *self._as_string_list(previous.get("application_protocols")),
+                        *cast(list[str], enrichment["application_protocols"]),
+                    }
+                ),
+                "flow_ids": sorted(
+                    {
+                        *self._as_string_list(previous.get("flow_ids")),
+                        *cast(list[str], enrichment["flow_ids"]),
+                    }
+                )[-20:],
                 "first_seen_at": str(previous.get("first_seen_at") or checked_at),
                 "last_seen_at": checked_at,
                 "sightings": int(previous.get("sightings") or 0) + 1,
@@ -299,6 +354,10 @@ class PacketMonitor:
                 "max_packet_count": max(int(previous.get("max_packet_count") or 0), int(item.get("packet_count") or 0)),
                 "last_packet_count": int(item.get("packet_count") or 0),
                 "sample_packet_endpoints": list(item.get("sample_packet_endpoints") or [])[: self._evidence_sample_limit],
+                "protocol_evidence": self._merge_protocol_evidence(
+                    previous.get("protocol_evidence"),
+                    item.get("protocol_evidence"),
+                ),
             }
         return next_history
 
@@ -313,12 +372,85 @@ class PacketMonitor:
         sessions.sort(key=lambda item: self._sortable_timestamp(item.get("last_seen_at")), reverse=True)
         return sessions[: max(1, limit)]
 
+    def list_retained_captures(
+        self,
+        *,
+        limit: int = 50,
+        remote_ip: str | None = None,
+        session_key: str | None = None,
+        protocol: str | None = None,
+        local_port: int | None = None,
+        remote_port: int | None = None,
+    ) -> list[dict[str, Any]]:
+        if not self._capture_retention_path.exists():
+            return []
+        captures: list[dict[str, Any]] = []
+        for metadata_path in self._capture_retention_path.glob("*.json"):
+            try:
+                payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, dict):
+                payload = self._normalized_retained_capture_payload(payload)
+                if not self._retained_capture_matches_filters(
+                    payload,
+                    remote_ip=remote_ip,
+                    session_key=session_key,
+                    protocol=protocol,
+                    local_port=local_port,
+                    remote_port=remote_port,
+                ):
+                    continue
+                captures.append(payload)
+        captures.sort(key=lambda item: str(item.get("captured_at") or ""), reverse=True)
+        return captures[: max(1, limit)]
+
+    def get_retained_capture(self, capture_id: str) -> dict[str, Any]:
+        metadata_path = self._capture_retention_path / f"{capture_id}.json"
+        if not metadata_path.exists():
+            raise KeyError(f"Packet capture not found: {capture_id}")
+        try:
+            payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise KeyError(f"Packet capture metadata is unavailable: {capture_id}") from exc
+        if not isinstance(payload, dict):
+            raise KeyError(f"Packet capture metadata is invalid: {capture_id}")
+        return self._normalized_retained_capture_payload(payload)
+
+    def get_retained_capture_text(self, capture_id: str) -> str:
+        capture = self.get_retained_capture(capture_id)
+        txt_path = Path(str(capture.get("txt_path") or ""))
+        if not txt_path.exists():
+            raise KeyError(f"Packet capture text not found: {capture_id}")
+        return txt_path.read_text(encoding="utf-8", errors="ignore")
+
+    def _normalized_retained_capture_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(payload)
+        txt_path = Path(str(normalized.get("txt_path") or ""))
+        text = txt_path.read_text(encoding="utf-8", errors="ignore") if txt_path.exists() else ""
+        if not isinstance(normalized.get("protocol_evidence"), dict):
+            normalized["protocol_evidence"] = self._extract_protocol_evidence(text)
+        session_rows: list[dict[str, Any]] = []
+        for row in cast(list[Any], normalized.get("session_observations") or []):
+            if not isinstance(row, dict):
+                continue
+            updated_row = dict(row)
+            if not isinstance(updated_row.get("protocol_evidence"), dict):
+                updated_row["protocol_evidence"] = self._extract_protocol_evidence(
+                    text,
+                    remote_ip=str(updated_row.get("remote_ip") or ""),
+                )
+            session_rows.append(updated_row)
+        normalized["session_observations"] = session_rows
+        return normalized
+
     def _build_session_observations(self, observations: list[dict[str, Any]]) -> list[dict[str, Any]]:
         sessions: list[dict[str, Any]] = []
         for item in observations:
             remote_ip = str(item.get("remote_ip") or "")
             if not remote_ip:
                 continue
+            enrichment = self._session_enrichment(item)
             sessions.append(
                 {
                     "session_key": f"packet-session:{remote_ip}",
@@ -330,6 +462,11 @@ class PacketMonitor:
                     "packet_count": int(item.get("packet_count") or 0),
                     "sensitive_ports": list(item.get("sensitive_ports") or []),
                     "sample_packet_endpoints": list(item.get("sample_packet_endpoints") or []),
+                    "transport_families": enrichment["transport_families"],
+                    "service_names": enrichment["service_names"],
+                    "application_protocols": enrichment["application_protocols"],
+                    "flow_ids": enrichment["flow_ids"],
+                    "protocol_evidence": cast(dict[str, Any], item.get("protocol_evidence") or {}),
                 }
             )
         return sessions
@@ -344,6 +481,186 @@ class PacketMonitor:
             "local_ports": list(item.get("local_ports") or []),
             "packet_count": int(item.get("packet_count") or 0),
             "sensitive_ports": list(item.get("sensitive_ports") or []),
+        }
+
+    @staticmethod
+    def _merge_protocol_evidence(previous: Any, current: Any) -> dict[str, Any]:
+        def _string_values(payload: Any, key: str) -> set[str]:
+            if not isinstance(payload, dict):
+                return set()
+            values = payload.get(key)
+            if not isinstance(values, list):
+                return set()
+            return {str(item).strip() for item in values if str(item).strip()}
+
+        return {
+            "application_protocols": sorted(
+                _string_values(previous, "application_protocols")
+                | _string_values(current, "application_protocols")
+            ),
+            "hostnames": sorted(
+                _string_values(previous, "hostnames")
+                | _string_values(current, "hostnames")
+            ),
+            "indicators": sorted(
+                _string_values(previous, "indicators")
+                | _string_values(current, "indicators")
+            ),
+        }
+
+    def _extract_protocol_evidence(self, text: str, *, remote_ip: str | None = None) -> dict[str, Any]:
+        relevant_lines = [
+            line.strip()
+            for line in text.splitlines()
+            if line.strip() and (not remote_ip or remote_ip in line)
+        ]
+        haystack = "\n".join(relevant_lines or text.splitlines())
+        application_protocols: set[str] = set()
+        indicators: set[str] = set()
+        hostnames = {
+            match.lower()
+            for match in re.findall(
+                r"\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}\b",
+                haystack,
+                flags=re.IGNORECASE,
+            )
+            if not re.fullmatch(r"\d+(?:\.\d+){3}", match)
+        }
+        upper_haystack = haystack.upper()
+        if re.search(r"\b(GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH)\b|\bHTTP/\d\.\d\b", upper_haystack):
+            application_protocols.add("http")
+            indicators.add("http_request")
+        if re.search(r"\bTLS(?:V?\d(?:\.\d)?)?\b|\bCLIENTHELLO\b|\bSERVERHELLO\b|\bSNI\b", upper_haystack):
+            application_protocols.add("tls")
+            indicators.add("tls_handshake")
+        if re.search(r"\bDNS\b|\bAAAA?\?\b|\bPTR\?\b|\bCNAME\b", upper_haystack):
+            application_protocols.add("dns")
+            indicators.add("dns_query")
+        if re.search(r"\bSSH-\d", upper_haystack):
+            application_protocols.add("ssh")
+            indicators.add("ssh_banner")
+        if re.search(r"\bSMB2?\b", upper_haystack):
+            application_protocols.add("smb")
+            indicators.add("smb_negotiation")
+        if re.search(r"\bRDP\b|\bTERMSRV\b", upper_haystack):
+            application_protocols.add("rdp")
+            indicators.add("rdp_session")
+        if re.search(r"\bWINRM\b|\bWSMAN\b", upper_haystack):
+            application_protocols.add("winrm")
+            indicators.add("winrm_session")
+        if re.search(r"\bLDAPS?\b", upper_haystack):
+            application_protocols.add("ldap")
+            indicators.add("ldap_query")
+        return {
+            "application_protocols": sorted(application_protocols),
+            "hostnames": sorted(hostnames),
+            "indicators": sorted(indicators),
+        }
+
+    def _extract_protocol_evidence_from_line(self, line: str) -> dict[str, set[str]]:
+        application_protocols: set[str] = set()
+        hostnames: set[str] = set()
+        indicators: set[str] = set()
+        upper_line = line.upper()
+
+        def _capture_hostname(pattern: str) -> None:
+            match = re.search(pattern, line, flags=re.IGNORECASE)
+            if match is None:
+                return
+            hostname = str(match.group(1) or "").strip().strip(".,;")
+            if hostname and not re.fullmatch(r"\d+(?:\.\d+){3}", hostname):
+                hostnames.add(hostname.lower())
+
+        if re.search(r"\b(GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH)\b|\bHTTP/\d\.\d\b", upper_line):
+            application_protocols.add("http")
+            indicators.add("http_request")
+            _capture_hostname(r"\bHost:\s*([A-Za-z0-9.-]+\.[A-Za-z]{2,})")
+        if re.search(r"\bTLS(?:V?\d(?:\.\d)?)?\b|\bCLIENTHELLO\b|\bSERVERHELLO\b|\bSNI\b", upper_line):
+            application_protocols.add("tls")
+            indicators.add("tls_handshake")
+            _capture_hostname(r"\bSNI\s+([A-Za-z0-9.-]+\.[A-Za-z]{2,})")
+            _capture_hostname(r"\bServer Name:\s*([A-Za-z0-9.-]+\.[A-Za-z]{2,})")
+        if re.search(r"\bDNS\b|\bAAAA?\?\b|\bPTR\?\b|\bCNAME\b", upper_line):
+            application_protocols.add("dns")
+            indicators.add("dns_query")
+            _capture_hostname(r"\b(?:Query|QName|Question):\s*([A-Za-z0-9.-]+\.[A-Za-z]{2,})")
+            _capture_hostname(r"\b(?:A|AAAA|PTR|CNAME)\?\s*([A-Za-z0-9.-]+\.[A-Za-z]{2,})")
+        if re.search(r"\bSSH-\d", upper_line):
+            application_protocols.add("ssh")
+            indicators.add("ssh_banner")
+        if re.search(r"\bSMB2?\b", upper_line):
+            application_protocols.add("smb")
+            indicators.add("smb_negotiation")
+        if re.search(r"\bRDP\b|\bTERMSRV\b", upper_line):
+            application_protocols.add("rdp")
+            indicators.add("rdp_session")
+        if re.search(r"\bWINRM\b|\bWSMAN\b", upper_line):
+            application_protocols.add("winrm")
+            indicators.add("winrm_session")
+        if re.search(r"\bLDAPS?\b", upper_line):
+            application_protocols.add("ldap")
+            indicators.add("ldap_query")
+        return {
+            "application_protocols": application_protocols,
+            "hostnames": hostnames,
+            "indicators": indicators,
+        }
+
+    def _session_enrichment(self, item: dict[str, Any]) -> dict[str, list[str]]:
+        transport_families: set[str] = set()
+        service_names: set[str] = set()
+        application_protocols: set[str] = set()
+        flow_ids: set[str] = set()
+        remote_ip = str(item.get("remote_ip") or "")
+        sample_rows = [
+            sample
+            for sample in cast(list[Any], item.get("sample_packet_endpoints") or [])
+            if isinstance(sample, dict)
+        ]
+        for protocol in self._as_string_list(item.get("protocols")):
+            normalized_protocol = protocol.strip().lower()
+            if normalized_protocol:
+                transport_families.add(normalized_protocol)
+        for port in self._as_int_list(item.get("local_ports")):
+            service_name = NetworkMonitor._service_name_for_port(port)
+            if service_name:
+                service_names.add(service_name)
+        for local_port in self._as_int_list(item.get("local_ports")):
+            for remote_port in self._as_int_list(item.get("remote_ports")):
+                application_protocol = NetworkMonitor._application_protocol_for_ports(local_port, remote_port)
+                if application_protocol:
+                    application_protocols.add(application_protocol)
+        for sample in sample_rows:
+            protocol = str(sample.get("protocol") or "").strip().lower()
+            if protocol:
+                transport_families.add(protocol)
+            local_port = int(sample.get("local_port") or 0)
+            remote_port = int(sample.get("remote_port") or 0)
+            local_ip = str(sample.get("local_ip") or "")
+            sample_remote_ip = str(sample.get("remote_ip") or remote_ip or "")
+            service_name = NetworkMonitor._service_name_for_port(local_port)
+            if service_name:
+                service_names.add(service_name)
+            application_protocol = NetworkMonitor._application_protocol_for_ports(local_port, remote_port)
+            if application_protocol:
+                application_protocols.add(application_protocol)
+            if protocol and local_port and remote_port and local_ip and sample_remote_ip:
+                process_id = sample.get("pid")
+                flow_ids.add(
+                    NetworkMonitor._build_flow_id(
+                        remote_ip=sample_remote_ip,
+                        remote_port=remote_port,
+                        local_ip=local_ip,
+                        local_port=local_port,
+                        protocol=protocol,
+                        process_id=process_id if isinstance(process_id, int) else None,
+                    )
+                )
+        return {
+            "transport_families": sorted(transport_families),
+            "service_names": sorted(service_names),
+            "application_protocols": sorted(application_protocols),
+            "flow_ids": sorted(flow_ids),
         }
 
     def _parse_packet_text(self, text: str) -> list[dict[str, Any]]:
@@ -367,6 +684,11 @@ class PacketMonitor:
                     "sensitive_ports": set(),
                     "local_ips": set(),
                     "sample_packet_endpoints": [],
+                    "protocol_evidence": {
+                        "application_protocols": set(),
+                        "hostnames": set(),
+                        "indicators": set(),
+                    },
                 },
             )
             record["protocols"].add(protocol)
@@ -374,6 +696,16 @@ class PacketMonitor:
             record["remote_ports"].add(remote_port)
             record["local_ips"].add(local_ip)
             record["packet_count"] += 1
+            line_protocol_evidence = self._extract_protocol_evidence_from_line(line)
+            record["protocol_evidence"]["application_protocols"].update(
+                cast(set[str], line_protocol_evidence["application_protocols"])
+            )
+            record["protocol_evidence"]["hostnames"].update(
+                cast(set[str], line_protocol_evidence["hostnames"])
+            )
+            record["protocol_evidence"]["indicators"].update(
+                cast(set[str], line_protocol_evidence["indicators"])
+            )
             if local_port in self._sensitive_ports:
                 record["sensitive_ports"].add(local_port)
             sample_packet_endpoints = record["sample_packet_endpoints"]
@@ -400,6 +732,11 @@ class PacketMonitor:
                     "packet_count": value["packet_count"],
                     "sensitive_ports": sorted(value["sensitive_ports"]),
                     "sample_packet_endpoints": list(value["sample_packet_endpoints"]),
+                    "protocol_evidence": {
+                        "application_protocols": sorted(value["protocol_evidence"]["application_protocols"]),
+                        "hostnames": sorted(value["protocol_evidence"]["hostnames"]),
+                        "indicators": sorted(value["protocol_evidence"]["indicators"]),
+                    },
                 }
             )
         observations.sort(key=lambda item: (-int(item["packet_count"]), str(item["remote_ip"])))
@@ -475,6 +812,175 @@ class PacketMonitor:
         if fallback_snapshot is not None:
             return fallback_snapshot
         return failure_snapshot
+
+    def _retain_capture_artifacts(
+        self,
+        *,
+        actual_etl_path: Path,
+        txt_path: Path,
+        observations: list[dict[str, Any]],
+        session_observations: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        if not self._capture_retention_enabled:
+            return None
+        self._capture_retention_path.mkdir(parents=True, exist_ok=True)
+        capture_id = f"packet-capture-{uuid4().hex[:12]}"
+        retained_etl_path = self._capture_retention_path / f"{capture_id}.etl"
+        retained_txt_path = self._capture_retention_path / f"{capture_id}.txt"
+        shutil.copy2(actual_etl_path, retained_etl_path)
+        shutil.copy2(txt_path, retained_txt_path)
+        remote_ips = sorted(
+            {
+                str(item.get("remote_ip") or "")
+                for item in session_observations
+                if str(item.get("remote_ip") or "")
+            }
+        )
+        protocols = sorted(
+            {
+                str(protocol).upper()
+                for item in session_observations
+                for protocol in cast(list[Any], item.get("protocols") or [])
+                if str(protocol)
+            }
+        )
+        local_ports = sorted(
+            {
+                int(port)
+                for item in session_observations
+                for port in cast(list[Any], item.get("local_ports") or [])
+                if isinstance(port, int) or (isinstance(port, str) and port.isdigit())
+            }
+        )
+        remote_ports = sorted(
+            {
+                int(port)
+                for item in session_observations
+                for port in cast(list[Any], item.get("remote_ports") or [])
+                if isinstance(port, int) or (isinstance(port, str) and port.isdigit())
+            }
+        )
+        primary_session = session_observations[0] if session_observations else None
+        protocol_evidence = self._extract_protocol_evidence(txt_path.read_text(encoding="utf-8", errors="ignore"))
+        for session in session_observations:
+            protocol_evidence = self._merge_protocol_evidence(
+                protocol_evidence,
+                session.get("protocol_evidence"),
+            )
+        metadata = {
+            "capture_id": capture_id,
+            "captured_at": _utc_now().isoformat(),
+            "etl_path": str(retained_etl_path),
+            "txt_path": str(retained_txt_path),
+            "etl_size_bytes": retained_etl_path.stat().st_size,
+            "txt_size_bytes": retained_txt_path.stat().st_size,
+            "observation_count": len(observations),
+            "session_count": len(session_observations),
+            "remote_ips": remote_ips,
+            "protocols": protocols,
+            "local_ports": local_ports,
+            "remote_ports": remote_ports,
+            "primary_remote_ip": str(primary_session.get("remote_ip") or "") if primary_session else None,
+            "primary_session_key": str(primary_session.get("session_key") or "") if primary_session else None,
+            "session_observations": session_observations,
+            "protocol_evidence": protocol_evidence,
+        }
+        (self._capture_retention_path / f"{capture_id}.json").write_text(
+            json.dumps(metadata, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        self._prune_retained_captures()
+        return metadata
+
+    @staticmethod
+    def _retained_capture_matches_filters(
+        payload: dict[str, Any],
+        *,
+        remote_ip: str | None,
+        session_key: str | None,
+        protocol: str | None,
+        local_port: int | None,
+        remote_port: int | None,
+    ) -> bool:
+        session_rows = [
+            item
+            for item in cast(list[Any], payload.get("session_observations") or [])
+            if isinstance(item, dict)
+        ]
+        if remote_ip is not None:
+            remote_ips = {
+                str(payload.get("primary_remote_ip") or ""),
+                *(str(item.get("remote_ip") or "") for item in session_rows),
+                *(str(item) for item in cast(list[Any], payload.get("remote_ips") or [])),
+            }
+            if remote_ip not in remote_ips:
+                return False
+        if session_key is not None:
+            session_keys = {
+                str(payload.get("primary_session_key") or ""),
+                *(str(item.get("session_key") or "") for item in session_rows),
+            }
+            if session_key not in session_keys:
+                return False
+        if protocol is not None:
+            normalized_protocol = protocol.strip().upper()
+            protocols = {
+                *(str(item).upper() for item in cast(list[Any], payload.get("protocols") or [])),
+                *(
+                    str(item).upper()
+                    for session in session_rows
+                    for item in cast(list[Any], session.get("protocols") or [])
+                ),
+            }
+            if normalized_protocol not in protocols:
+                return False
+        if local_port is not None:
+            local_ports = {
+                *(
+                    int(item)
+                    for item in cast(list[Any], payload.get("local_ports") or [])
+                    if isinstance(item, int) or (isinstance(item, str) and item.isdigit())
+                ),
+                *(
+                    int(item)
+                    for session in session_rows
+                    for item in cast(list[Any], session.get("local_ports") or [])
+                    if isinstance(item, int) or (isinstance(item, str) and item.isdigit())
+                ),
+            }
+            if local_port not in local_ports:
+                return False
+        if remote_port is not None:
+            remote_ports = {
+                *(
+                    int(item)
+                    for item in cast(list[Any], payload.get("remote_ports") or [])
+                    if isinstance(item, int) or (isinstance(item, str) and item.isdigit())
+                ),
+                *(
+                    int(item)
+                    for session in session_rows
+                    for item in cast(list[Any], session.get("remote_ports") or [])
+                    if isinstance(item, int) or (isinstance(item, str) and item.isdigit())
+                ),
+            }
+            if remote_port not in remote_ports:
+                return False
+        return True
+
+    def _prune_retained_captures(self) -> None:
+        metadata_paths = sorted(
+            self._capture_retention_path.glob("*.json"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        for metadata_path in metadata_paths[self._capture_retention_limit :]:
+            capture_id = metadata_path.stem
+            for suffix in (".json", ".etl", ".txt"):
+                try:
+                    (self._capture_retention_path / f"{capture_id}{suffix}").unlink(missing_ok=True)
+                except OSError:
+                    continue
 
     def _collect_socket_table_snapshot(self, failure_snapshot: dict[str, Any]) -> dict[str, Any] | None:
         if str(failure_snapshot.get("capture_status") or "") != "permission_denied":

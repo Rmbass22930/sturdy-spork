@@ -15,6 +15,13 @@ def test_collect_snapshot_groups_public_remote_activity_against_listening_ports(
     state_path = tmp_path / "network_state.json"
 
     def runner(_args: list[str]) -> subprocess.CompletedProcess[str]:
+        if _args[:3] == ["tasklist", "/fo", "csv"]:
+            return subprocess.CompletedProcess(
+                args=_args,
+                returncode=0,
+                stdout='"svchost.exe","101","Console","1","10,000 K"\n',
+                stderr="",
+            )
         return subprocess.CompletedProcess(
             args=["netstat"],
             returncode=0,
@@ -45,7 +52,11 @@ def test_collect_snapshot_groups_public_remote_activity_against_listening_ports(
     assert observations[0]["remote_ip"] == "8.8.8.8"
     assert observations[0]["hit_count"] == 2
     assert observations[0]["sensitive_ports"] == [3389]
+    assert observations[0]["process_ids"] == [101]
+    assert observations[0]["process_names"] == ["svchost.exe"]
     assert len(observations[0]["sample_connections"]) == 2
+    assert observations[0]["sample_connections"][0]["process_name"] == "svchost.exe"
+    assert observations[0]["sample_connections"][0]["protocol"] == "tcp"
 
 
 def test_evaluate_snapshot_emits_critical_for_sensitive_ports(tmp_path: Path) -> None:
@@ -198,6 +209,8 @@ def test_run_check_tracks_resolution(tmp_path: Path) -> None:
     ]
 
     def runner(_args: list[str]) -> subprocess.CompletedProcess[str]:
+        if _args[:3] == ["tasklist", "/fo", "csv"]:
+            return subprocess.CompletedProcess(args=_args, returncode=0, stdout="", stderr="")
         return outputs.pop(0)
 
     monitor = NetworkMonitor(

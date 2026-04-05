@@ -14,6 +14,8 @@ from .models import SocDashboardViewStateUpdate
 class DashboardViewStateClient(Protocol):
     def read(self) -> dict[str, object]: ...
 
+    def read_dashboard_state(self) -> dict[str, object]: ...
+
     def write(self, payload: SocDashboardViewStateUpdate) -> dict[str, object]: ...
 
 
@@ -24,12 +26,41 @@ def _normalize_view_state(payload: Mapping[str, Any]) -> dict[str, object]:
     hunt_cluster_action = str(payload.get("hunt_cluster_action") or "").strip()
     if hunt_cluster_action not in {"events", "existing_case", "case", "details"}:
         hunt_cluster_action = "events"
+    endpoint_timeline_cluster_mode = str(payload.get("endpoint_timeline_cluster_mode") or "").strip()
+    if endpoint_timeline_cluster_mode not in {"process", "remote_ip"}:
+        endpoint_timeline_cluster_mode = "process"
+    endpoint_timeline_cluster_action = str(payload.get("endpoint_timeline_cluster_action") or "").strip()
+    if endpoint_timeline_cluster_action not in {"events", "existing_case", "case", "details"}:
+        endpoint_timeline_cluster_action = "events"
+    endpoint_lineage_cluster_mode = str(payload.get("endpoint_lineage_cluster_mode") or "").strip()
+    if endpoint_lineage_cluster_mode not in {"device_id", "process_guid", "remote_ip", "filename"}:
+        endpoint_lineage_cluster_mode = "device_id"
+    endpoint_lineage_cluster_action = str(payload.get("endpoint_lineage_cluster_action") or "").strip()
+    if endpoint_lineage_cluster_action not in {"events", "existing_case", "case", "details"}:
+        endpoint_lineage_cluster_action = "events"
     return {
         "operational_reason_filter": str(payload.get("operational_reason_filter") or "").strip() or None,
         "hunt_cluster_mode": hunt_cluster_mode,
         "hunt_cluster_value": str(payload.get("hunt_cluster_value") or "").strip() or None,
         "hunt_cluster_key": str(payload.get("hunt_cluster_key") or "").strip() or None,
         "hunt_cluster_action": hunt_cluster_action,
+        "endpoint_timeline_cluster_mode": endpoint_timeline_cluster_mode,
+        "endpoint_timeline_cluster_key": str(payload.get("endpoint_timeline_cluster_key") or "").strip() or None,
+        "endpoint_timeline_cluster_action": endpoint_timeline_cluster_action,
+        "endpoint_lineage_cluster_mode": endpoint_lineage_cluster_mode,
+        "endpoint_lineage_cluster_value": str(payload.get("endpoint_lineage_cluster_value") or "").strip() or None,
+        "endpoint_lineage_cluster_key": str(payload.get("endpoint_lineage_cluster_key") or "").strip() or None,
+        "endpoint_lineage_cluster_action": endpoint_lineage_cluster_action,
+    }
+
+
+def _normalize_summary_labels(payload: Mapping[str, Any]) -> dict[str, object]:
+    return {
+        "hunt_clusters": str(payload.get("hunt_clusters") or "").strip() or None,
+        "endpoint_timeline_clusters": str(payload.get("endpoint_timeline_clusters") or "").strip() or None,
+        "endpoint_lineage_clusters": str(payload.get("endpoint_lineage_clusters") or "").strip() or None,
+        "operational_alerts": str(payload.get("operational_alerts") or "").strip() or None,
+        "operational_cases": str(payload.get("operational_cases") or "").strip() or None,
     }
 
 
@@ -40,6 +71,13 @@ class ManagerDashboardViewStateClient:
     def read(self) -> dict[str, object]:
         dashboard = cast(dict[str, Any], self._manager.dashboard())
         return _normalize_view_state(cast(dict[str, Any], dashboard.get("view_state") or {}))
+
+    def read_dashboard_state(self) -> dict[str, object]:
+        dashboard = cast(dict[str, Any], self._manager.dashboard())
+        return {
+            "view_state": _normalize_view_state(cast(dict[str, Any], dashboard.get("view_state") or {})),
+            "summary_labels": _normalize_summary_labels(cast(dict[str, Any], dashboard.get("summary_labels") or {})),
+        }
 
     def write(self, payload: SocDashboardViewStateUpdate) -> dict[str, object]:
         return cast(dict[str, object], self._manager.update_dashboard_view_state(payload))
@@ -59,6 +97,12 @@ class FileDashboardViewStateClient:
         if not isinstance(payload, dict):
             return {}
         return _normalize_view_state(cast(dict[str, Any], payload))
+
+    def read_dashboard_state(self) -> dict[str, object]:
+        return {
+            "view_state": self.read(),
+            "summary_labels": _normalize_summary_labels({}),
+        }
 
     def write(self, payload: SocDashboardViewStateUpdate) -> dict[str, object]:
         normalized = _normalize_view_state(payload.model_dump(mode="json"))
@@ -92,6 +136,16 @@ class HttpDashboardViewStateClient:
             response.raise_for_status()
             payload = cast(dict[str, Any], response.json())
         return _normalize_view_state(cast(dict[str, Any], payload.get("view_state") or {}))
+
+    def read_dashboard_state(self) -> dict[str, object]:
+        with httpx.Client(timeout=self._timeout_seconds, transport=self._transport) as client:
+            response = client.get(f"{self._base_url}/soc/dashboard", headers=self._headers())
+            response.raise_for_status()
+            payload = cast(dict[str, Any], response.json())
+        return {
+            "view_state": _normalize_view_state(cast(dict[str, Any], payload.get("view_state") or {})),
+            "summary_labels": _normalize_summary_labels(cast(dict[str, Any], payload.get("summary_labels") or {})),
+        }
 
     def write(self, payload: SocDashboardViewStateUpdate) -> dict[str, object]:
         with httpx.Client(timeout=self._timeout_seconds, transport=self._transport) as client:

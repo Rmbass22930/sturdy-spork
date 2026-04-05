@@ -1,6 +1,7 @@
 """Live network monitoring for suspicious remote IP activity."""
 from __future__ import annotations
 
+import csv
 import json
 import subprocess
 from dataclasses import asdict, dataclass
@@ -26,6 +27,36 @@ class NetworkMonitorFinding:
 
 
 class NetworkMonitor:
+    _PORT_SERVICE_NAMES = {
+        22: "ssh",
+        25: "smtp",
+        53: "dns",
+        80: "http",
+        110: "pop3",
+        123: "ntp",
+        143: "imap",
+        389: "ldap",
+        443: "https",
+        445: "smb",
+        465: "smtps",
+        587: "submission",
+        636: "ldaps",
+        993: "imaps",
+        995: "pop3s",
+        1433: "mssql",
+        1521: "oracle",
+        3306: "mysql",
+        3389: "rdp",
+        5432: "postgresql",
+        5900: "vnc",
+        5985: "winrm-http",
+        5986: "winrm-https",
+        6379: "redis",
+        8080: "http-alt",
+        8443: "https-alt",
+        9200: "elasticsearch",
+    }
+
     def __init__(
         self,
         *,
@@ -99,11 +130,12 @@ class NetworkMonitor:
             if not line.startswith("TCP"):
                 continue
             parts = line.split()
-            if len(parts) < 4:
+            if len(parts) < 5:
                 continue
             local = parts[1]
             remote = parts[2]
             state = parts[3].upper()
+            process_id = self._parse_pid(parts[4])
             local_endpoint = self._parse_endpoint(local)
             remote_endpoint = self._parse_endpoint(remote)
             if local_endpoint is None or remote_endpoint is None:
@@ -126,10 +158,18 @@ class NetworkMonitor:
                     "local_ip": local_ip,
                     "local_port": local_port,
                     "state": state,
+                    "protocol": "tcp",
+                    "transport_family": "tcp",
+                    "process_id": process_id,
                     "sensitive_port": local_port in self._sensitive_ports,
+                    "service_name": self._service_name_for_port(local_port),
+                    "application_protocol": self._application_protocol_for_ports(local_port, remote_port),
                 }
             )
 
+        process_names = self._resolve_process_names(
+            {int(item["process_id"]) for item in inbound_candidates if isinstance(item.get("process_id"), int)}
+        )
         grouped: dict[str, dict[str, Any]] = {}
         for item in inbound_candidates:
             remote_ip = str(item["remote_ip"])
@@ -143,6 +183,8 @@ class NetworkMonitor:
                     "remote_ports": set(),
                     "hit_count": 0,
                     "sensitive_ports": set(),
+                    "process_ids": set(),
+                    "process_names": set(),
                     "sample_connections": [],
                 },
             )
@@ -154,17 +196,38 @@ class NetworkMonitor:
             record["local_ports"].add(int(item["local_port"]))
             record["remote_ports"].add(int(item["remote_port"]))
             record["hit_count"] += 1
+            process_id = item.get("process_id")
+            if isinstance(process_id, int):
+                record["process_ids"].add(process_id)
+                process_name = process_names.get(process_id)
+                if process_name:
+                    record["process_names"].add(process_name)
             if bool(item["sensitive_port"]):
                 record["sensitive_ports"].add(int(item["local_port"]))
             sample_connections = record["sample_connections"]
             if len(sample_connections) < self._evidence_sample_limit:
+                process_name = process_names.get(process_id) if isinstance(process_id, int) else None
                 sample_connections.append(
                     {
                         "state": state_name,
+                        "protocol": str(item["protocol"]),
                         "local_ip": str(item["local_ip"]),
                         "local_port": int(item["local_port"]),
                         "remote_ip": remote_ip,
                         "remote_port": int(item["remote_port"]),
+                        "process_id": process_id,
+                        "process_name": process_name,
+                        "transport_family": str(item["transport_family"]),
+                        "service_name": item.get("service_name"),
+                        "application_protocol": item.get("application_protocol"),
+                        "flow_id": self._build_flow_id(
+                            remote_ip=remote_ip,
+                            remote_port=int(item["remote_port"]),
+                            local_ip=str(item["local_ip"]),
+                            local_port=int(item["local_port"]),
+                            protocol=str(item["protocol"]),
+                            process_id=process_id,
+                        ),
                     }
                 )
 
@@ -182,6 +245,8 @@ class NetworkMonitor:
                     "remote_ports": sorted(value["remote_ports"]),
                     "hit_count": value["hit_count"],
                     "sensitive_ports": sorted(value["sensitive_ports"]),
+                    "process_ids": sorted(value["process_ids"]),
+                    "process_names": sorted(value["process_names"]),
                     "sample_connections": list(value["sample_connections"]),
                 }
             )
@@ -196,6 +261,27 @@ class NetworkMonitor:
             "dos_port_span_threshold": self._dos_port_span_threshold,
             "sensitive_ports": sorted(self._sensitive_ports),
         }
+
+    @classmethod
+    def _service_name_for_port(cls, port: int) -> str | None:
+        return cls._PORT_SERVICE_NAMES.get(port)
+
+    @classmethod
+    def _application_protocol_for_ports(cls, local_port: int, remote_port: int) -> str | None:
+        return cls._service_name_for_port(local_port) or cls._service_name_for_port(remote_port)
+
+    @staticmethod
+    def _build_flow_id(
+        *,
+        remote_ip: str,
+        remote_port: int,
+        local_ip: str,
+        local_port: int,
+        protocol: str,
+        process_id: int | None,
+    ) -> str:
+        process_part = str(process_id) if isinstance(process_id, int) else "na"
+        return f"flow:{protocol}:{remote_ip}:{remote_port}:{local_ip}:{local_port}:{process_part}"
 
     def evaluate_snapshot(self, snapshot: dict[str, Any]) -> list[NetworkMonitorFinding]:
         findings: list[NetworkMonitorFinding] = []
@@ -317,6 +403,31 @@ class NetworkMonitor:
             return str(ip_address(ip_text)), int(port_part)
         except ValueError:
             return None
+
+    @staticmethod
+    def _parse_pid(value: str) -> int | None:
+        candidate = value.strip()
+        if not candidate.isdigit():
+            return None
+        return int(candidate)
+
+    def _resolve_process_names(self, process_ids: set[int]) -> dict[int, str]:
+        if not process_ids:
+            return {}
+        result = self._runner(["tasklist", "/fo", "csv", "/nh"])
+        if result.returncode != 0:
+            return {}
+        names: dict[int, str] = {}
+        for row in csv.reader(result.stdout.splitlines()):
+            if len(row) < 2:
+                continue
+            process_id = self._parse_pid(row[1])
+            if process_id is None or process_id not in process_ids:
+                continue
+            process_name = row[0].strip()
+            if process_name:
+                names[process_id] = process_name
+        return names
 
     @staticmethod
     def _is_public_ip(value: str) -> bool:

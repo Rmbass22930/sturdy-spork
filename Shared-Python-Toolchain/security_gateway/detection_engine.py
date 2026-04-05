@@ -635,6 +635,1001 @@ class EndpointConnectionNetworkOverlapRule:
         return SocSeverity.high
 
 
+class NetworkDnsHttpFollowupRule:
+    _EVENT_TYPES = {"network.telemetry.dns", "network.telemetry.http"}
+
+    definition = DetectionRuleDefinition(
+        rule_id="network_dns_http_followup",
+        title="Network DNS to HTTP follow-up",
+        description="Correlates DNS telemetry with follow-up HTTP telemetry for the same hostname inside a short window.",
+        category="correlation",
+        default_parameters={"window_hours": 4},
+    )
+
+    def evaluate(
+        self,
+        *,
+        event: SocEventRecord,
+        list_events: EventLister,
+        parameters: dict[str, Any],
+    ) -> DetectionFinding | None:
+        if event.event_type not in self._EVENT_TYPES:
+            return None
+        hostname = self._event_hostname(event)
+        if not hostname:
+            return None
+        window_hours = int(parameters.get("window_hours", self.definition.default_parameters["window_hours"]))
+        window_start = event.created_at - timedelta(hours=window_hours)
+        related_events = [
+            item
+            for item in list_events(500)
+            if item.created_at >= window_start
+            and item.event_type in self._EVENT_TYPES
+            and self._event_hostname(item) == hostname
+        ]
+        has_dns = any(item.event_type == "network.telemetry.dns" for item in related_events)
+        has_http = any(item.event_type == "network.telemetry.http" for item in related_events)
+        if not (has_dns and has_http):
+            return None
+        return DetectionFinding(
+            rule_id=self.definition.rule_id,
+            key=hostname,
+            title=f"DNS and HTTP follow-up for {hostname}",
+            summary="A hostname observed in DNS telemetry was also used in HTTP telemetry within the configured window.",
+            severity=self._severity_for_related_events(related_events),
+            related_events=tuple(related_events),
+        )
+
+    @staticmethod
+    def _event_hostname(event: SocEventRecord) -> str | None:
+        hostname = event.details.get("hostname")
+        if isinstance(hostname, str) and hostname:
+            return hostname.casefold()
+        return None
+
+    @staticmethod
+    def _severity_for_related_events(related_events: list[SocEventRecord]) -> SocSeverity:
+        for item in related_events:
+            if item.event_type != "network.telemetry.http":
+                continue
+            status_code = item.details.get("status_code")
+            if isinstance(status_code, int) and status_code >= 500:
+                return SocSeverity.high
+        return SocSeverity.medium
+
+
+class NetworkTlsHttpHostOverlapRule:
+    _EVENT_TYPES = {"network.telemetry.tls", "network.telemetry.http"}
+
+    definition = DetectionRuleDefinition(
+        rule_id="network_tls_http_host_overlap",
+        title="Network TLS and HTTP host overlap",
+        description="Correlates TLS server-name telemetry with HTTP host telemetry for the same hostname.",
+        category="correlation",
+        default_parameters={"window_hours": 4},
+    )
+
+    def evaluate(
+        self,
+        *,
+        event: SocEventRecord,
+        list_events: EventLister,
+        parameters: dict[str, Any],
+    ) -> DetectionFinding | None:
+        if event.event_type not in self._EVENT_TYPES:
+            return None
+        hostname = self._event_hostname(event)
+        if not hostname:
+            return None
+        window_hours = int(parameters.get("window_hours", self.definition.default_parameters["window_hours"]))
+        window_start = event.created_at - timedelta(hours=window_hours)
+        related_events = [
+            item
+            for item in list_events(500)
+            if item.created_at >= window_start
+            and item.event_type in self._EVENT_TYPES
+            and self._event_hostname(item) == hostname
+        ]
+        has_tls = any(item.event_type == "network.telemetry.tls" for item in related_events)
+        has_http = any(item.event_type == "network.telemetry.http" for item in related_events)
+        if not (has_tls and has_http):
+            return None
+        remote_ips = sorted(
+            {
+                remote_ip
+                for remote_ip in (self._event_remote_ip(item) for item in related_events)
+                if remote_ip
+            }
+        )
+        return DetectionFinding(
+            rule_id=self.definition.rule_id,
+            key=f"{hostname}:{remote_ips[0] if remote_ips else 'unknown-remote'}",
+            title=f"TLS and HTTP overlap for {hostname}",
+            summary="The same hostname appeared in TLS and HTTP sensor telemetry within the configured window.",
+            severity=SocSeverity.high,
+            related_events=tuple(related_events),
+        )
+
+    @staticmethod
+    def _event_hostname(event: SocEventRecord) -> str | None:
+        for key in ("hostname", "server_name"):
+            value = event.details.get(key)
+            if isinstance(value, str) and value:
+                return value.casefold()
+        return None
+
+    @staticmethod
+    def _event_remote_ip(event: SocEventRecord) -> str | None:
+        value = event.details.get("remote_ip")
+        if isinstance(value, str) and value:
+            return value
+        return None
+
+
+class NetworkCertificateTlsHostOverlapRule:
+    _EVENT_TYPES = {"network.telemetry.certificate", "network.telemetry.tls"}
+
+    definition = DetectionRuleDefinition(
+        rule_id="network_certificate_tls_host_overlap",
+        title="Network certificate and TLS host overlap",
+        description="Correlates certificate telemetry with TLS server-name telemetry for the same hostname.",
+        category="correlation",
+        default_parameters={"window_hours": 4},
+    )
+
+    def evaluate(
+        self,
+        *,
+        event: SocEventRecord,
+        list_events: EventLister,
+        parameters: dict[str, Any],
+    ) -> DetectionFinding | None:
+        if event.event_type not in self._EVENT_TYPES:
+            return None
+        hostname = self._event_hostname(event)
+        if not hostname:
+            return None
+        window_hours = int(parameters.get("window_hours", self.definition.default_parameters["window_hours"]))
+        window_start = event.created_at - timedelta(hours=window_hours)
+        related_events = [
+            item
+            for item in list_events(500)
+            if item.created_at >= window_start
+            and item.event_type in self._EVENT_TYPES
+            and self._event_hostname(item) == hostname
+        ]
+        has_certificate = any(item.event_type == "network.telemetry.certificate" for item in related_events)
+        has_tls = any(item.event_type == "network.telemetry.tls" for item in related_events)
+        if not (has_certificate and has_tls):
+            return None
+        remote_ips = sorted(
+            {
+                value
+                for item in related_events
+                for value in [item.details.get("remote_ip")]
+                if isinstance(value, str) and value
+            }
+        )
+        return DetectionFinding(
+            rule_id=self.definition.rule_id,
+            key=f"{hostname}:{remote_ips[0] if remote_ips else 'unknown-remote'}",
+            title=f"Certificate and TLS overlap for {hostname}",
+            summary="The same hostname appeared in certificate and TLS sensor telemetry within the configured window.",
+            severity=SocSeverity.high,
+            related_events=tuple(related_events),
+        )
+
+    @staticmethod
+    def _event_hostname(event: SocEventRecord) -> str | None:
+        for key in ("hostname", "server_name"):
+            value = event.details.get(key)
+            if isinstance(value, str) and value:
+                return value.casefold()
+        return None
+
+
+class NetworkCertificateHttpHostOverlapRule:
+    _EVENT_TYPES = {"network.telemetry.certificate", "network.telemetry.http"}
+
+    definition = DetectionRuleDefinition(
+        rule_id="network_certificate_http_host_overlap",
+        title="Network certificate and HTTP host overlap",
+        description="Correlates certificate telemetry with HTTP host telemetry for the same hostname.",
+        category="correlation",
+        default_parameters={"window_hours": 4},
+    )
+
+    def evaluate(
+        self,
+        *,
+        event: SocEventRecord,
+        list_events: EventLister,
+        parameters: dict[str, Any],
+    ) -> DetectionFinding | None:
+        if event.event_type not in self._EVENT_TYPES:
+            return None
+        hostname = self._event_hostname(event)
+        if not hostname:
+            return None
+        window_hours = int(parameters.get("window_hours", self.definition.default_parameters["window_hours"]))
+        window_start = event.created_at - timedelta(hours=window_hours)
+        related_events = [
+            item
+            for item in list_events(500)
+            if item.created_at >= window_start
+            and item.event_type in self._EVENT_TYPES
+            and self._event_hostname(item) == hostname
+        ]
+        has_certificate = any(item.event_type == "network.telemetry.certificate" for item in related_events)
+        has_http = any(item.event_type == "network.telemetry.http" for item in related_events)
+        if not (has_certificate and has_http):
+            return None
+        return DetectionFinding(
+            rule_id=self.definition.rule_id,
+            key=hostname,
+            title=f"Certificate and HTTP overlap for {hostname}",
+            summary="The same hostname appeared in certificate and HTTP sensor telemetry within the configured window.",
+            severity=self._severity_for_related_events(related_events),
+            related_events=tuple(related_events),
+        )
+
+    @staticmethod
+    def _event_hostname(event: SocEventRecord) -> str | None:
+        value = event.details.get("hostname")
+        if isinstance(value, str) and value:
+            return value.casefold()
+        return None
+
+    @staticmethod
+    def _severity_for_related_events(related_events: list[SocEventRecord]) -> SocSeverity:
+        for item in related_events:
+            if item.event_type != "network.telemetry.http":
+                continue
+            status_code = item.details.get("status_code")
+            if isinstance(status_code, int) and status_code >= 500:
+                return SocSeverity.high
+        return SocSeverity.medium
+
+
+class NetworkProxyAuthUserOverlapRule:
+    _EVENT_TYPES = {"network.telemetry.proxy", "network.telemetry.auth"}
+
+    definition = DetectionRuleDefinition(
+        rule_id="network_proxy_auth_user_overlap",
+        title="Network proxy and auth user overlap",
+        description="Correlates proxy and auth telemetry for the same user and hostname.",
+        category="correlation",
+        default_parameters={"window_hours": 4},
+    )
+
+    def evaluate(
+        self,
+        *,
+        event: SocEventRecord,
+        list_events: EventLister,
+        parameters: dict[str, Any],
+    ) -> DetectionFinding | None:
+        if event.event_type not in self._EVENT_TYPES:
+            return None
+        user = self._event_user(event)
+        hostname = self._event_hostname(event)
+        if not user or not hostname:
+            return None
+        window_hours = int(parameters.get("window_hours", self.definition.default_parameters["window_hours"]))
+        window_start = event.created_at - timedelta(hours=window_hours)
+        related_events = [
+            item
+            for item in list_events(500)
+            if item.created_at >= window_start
+            and item.event_type in self._EVENT_TYPES
+            and self._event_user(item) == user
+            and self._event_hostname(item) == hostname
+        ]
+        has_proxy = any(item.event_type == "network.telemetry.proxy" for item in related_events)
+        has_auth = any(item.event_type == "network.telemetry.auth" for item in related_events)
+        if not (has_proxy and has_auth):
+            return None
+        return DetectionFinding(
+            rule_id=self.definition.rule_id,
+            key=f"{user}@{hostname}",
+            title=f"Proxy and auth overlap for {user}",
+            summary="The same user appeared in proxy and auth telemetry for the same hostname within the configured window.",
+            severity=self._severity_for_related_events(related_events),
+            related_events=tuple(related_events),
+        )
+
+    @staticmethod
+    def _event_user(event: SocEventRecord) -> str | None:
+        value = event.details.get("username")
+        if isinstance(value, str) and value:
+            return value.casefold()
+        return None
+
+    @staticmethod
+    def _event_hostname(event: SocEventRecord) -> str | None:
+        value = event.details.get("hostname")
+        if isinstance(value, str) and value:
+            return value.casefold()
+        return None
+
+    @staticmethod
+    def _severity_for_related_events(related_events: list[SocEventRecord]) -> SocSeverity:
+        for item in related_events:
+            if item.event_type != "network.telemetry.auth":
+                continue
+            outcome = item.details.get("outcome")
+            if isinstance(outcome, str) and outcome.casefold() != "success":
+                return SocSeverity.high
+        return SocSeverity.medium
+
+
+class NetworkProxyHttpHostOverlapRule:
+    _EVENT_TYPES = {"network.telemetry.proxy", "network.telemetry.http"}
+
+    definition = DetectionRuleDefinition(
+        rule_id="network_proxy_http_host_overlap",
+        title="Network proxy and HTTP host overlap",
+        description="Correlates proxy and HTTP telemetry for the same hostname.",
+        category="correlation",
+        default_parameters={"window_hours": 4},
+    )
+
+    def evaluate(
+        self,
+        *,
+        event: SocEventRecord,
+        list_events: EventLister,
+        parameters: dict[str, Any],
+    ) -> DetectionFinding | None:
+        if event.event_type not in self._EVENT_TYPES:
+            return None
+        hostname = self._event_hostname(event)
+        if not hostname:
+            return None
+        window_hours = int(parameters.get("window_hours", self.definition.default_parameters["window_hours"]))
+        window_start = event.created_at - timedelta(hours=window_hours)
+        related_events = [
+            item
+            for item in list_events(500)
+            if item.created_at >= window_start
+            and item.event_type in self._EVENT_TYPES
+            and self._event_hostname(item) == hostname
+        ]
+        has_proxy = any(item.event_type == "network.telemetry.proxy" for item in related_events)
+        has_http = any(item.event_type == "network.telemetry.http" for item in related_events)
+        if not (has_proxy and has_http):
+            return None
+        return DetectionFinding(
+            rule_id=self.definition.rule_id,
+            key=hostname,
+            title=f"Proxy and HTTP overlap for {hostname}",
+            summary="The same hostname appeared in proxy and HTTP telemetry within the configured window.",
+            severity=self._severity_for_related_events(related_events),
+            related_events=tuple(related_events),
+        )
+
+    @staticmethod
+    def _event_hostname(event: SocEventRecord) -> str | None:
+        value = event.details.get("hostname")
+        if isinstance(value, str) and value:
+            return value.casefold()
+        return None
+
+    @staticmethod
+    def _severity_for_related_events(related_events: list[SocEventRecord]) -> SocSeverity:
+        for item in related_events:
+            if item.event_type != "network.telemetry.http":
+                continue
+            status_code = item.details.get("status_code")
+            if isinstance(status_code, int) and status_code >= 500:
+                return SocSeverity.high
+        return SocSeverity.medium
+
+
+class NetworkVpnDirectoryAuthUserOverlapRule:
+    _EVENT_TYPES = {"network.telemetry.vpn", "network.telemetry.directory_auth"}
+
+    definition = DetectionRuleDefinition(
+        rule_id="network_vpn_directory_auth_user_overlap",
+        title="Network VPN and directory auth user overlap",
+        description="Correlates VPN and directory-auth telemetry for the same user and hostname.",
+        category="correlation",
+        default_parameters={"window_hours": 4},
+    )
+
+    def evaluate(
+        self,
+        *,
+        event: SocEventRecord,
+        list_events: EventLister,
+        parameters: dict[str, Any],
+    ) -> DetectionFinding | None:
+        if event.event_type not in self._EVENT_TYPES:
+            return None
+        user = self._event_user(event)
+        hostname = self._event_hostname(event)
+        if not user or not hostname:
+            return None
+        window_hours = int(parameters.get("window_hours", self.definition.default_parameters["window_hours"]))
+        window_start = event.created_at - timedelta(hours=window_hours)
+        related_events = [
+            item
+            for item in list_events(500)
+            if item.created_at >= window_start
+            and item.event_type in self._EVENT_TYPES
+            and self._event_user(item) == user
+            and self._event_hostname(item) == hostname
+        ]
+        has_vpn = any(item.event_type == "network.telemetry.vpn" for item in related_events)
+        has_directory_auth = any(item.event_type == "network.telemetry.directory_auth" for item in related_events)
+        if not (has_vpn and has_directory_auth):
+            return None
+        return DetectionFinding(
+            rule_id=self.definition.rule_id,
+            key=f"{user}@{hostname}",
+            title=f"VPN and directory auth overlap for {user}",
+            summary="The same user appeared in VPN and directory-auth telemetry for the same hostname within the configured window.",
+            severity=self._severity_for_related_events(related_events),
+            related_events=tuple(related_events),
+        )
+
+    @staticmethod
+    def _event_user(event: SocEventRecord) -> str | None:
+        value = event.details.get("username")
+        if isinstance(value, str) and value:
+            return value.casefold()
+        return None
+
+    @staticmethod
+    def _event_hostname(event: SocEventRecord) -> str | None:
+        value = event.details.get("hostname")
+        if isinstance(value, str) and value:
+            return value.casefold()
+        return None
+
+    @staticmethod
+    def _severity_for_related_events(related_events: list[SocEventRecord]) -> SocSeverity:
+        for item in related_events:
+            if item.event_type != "network.telemetry.directory_auth":
+                continue
+            outcome = item.details.get("outcome")
+            if isinstance(outcome, str) and outcome.casefold() != "success":
+                return SocSeverity.high
+        return SocSeverity.medium
+
+
+class NetworkDhcpAuthHostOverlapRule:
+    _EVENT_TYPES = {"network.telemetry.dhcp", "network.telemetry.auth"}
+
+    definition = DetectionRuleDefinition(
+        rule_id="network_dhcp_auth_host_overlap",
+        title="Network DHCP and auth host overlap",
+        description="Correlates DHCP and auth telemetry for the same hostname.",
+        category="correlation",
+        default_parameters={"window_hours": 4},
+    )
+
+    def evaluate(
+        self,
+        *,
+        event: SocEventRecord,
+        list_events: EventLister,
+        parameters: dict[str, Any],
+    ) -> DetectionFinding | None:
+        if event.event_type not in self._EVENT_TYPES:
+            return None
+        hostname = self._event_hostname(event)
+        if not hostname:
+            return None
+        window_hours = int(parameters.get("window_hours", self.definition.default_parameters["window_hours"]))
+        window_start = event.created_at - timedelta(hours=window_hours)
+        related_events = [
+            item
+            for item in list_events(500)
+            if item.created_at >= window_start
+            and item.event_type in self._EVENT_TYPES
+            and self._event_hostname(item) == hostname
+        ]
+        has_dhcp = any(item.event_type == "network.telemetry.dhcp" for item in related_events)
+        has_auth = any(item.event_type == "network.telemetry.auth" for item in related_events)
+        if not (has_dhcp and has_auth):
+            return None
+        return DetectionFinding(
+            rule_id=self.definition.rule_id,
+            key=hostname,
+            title=f"DHCP and auth overlap for {hostname}",
+            summary="The same hostname appeared in DHCP and auth telemetry within the configured window.",
+            severity=SocSeverity.medium,
+            related_events=tuple(related_events),
+        )
+
+    @staticmethod
+    def _event_hostname(event: SocEventRecord) -> str | None:
+        value = event.details.get("hostname")
+        if isinstance(value, str) and value:
+            return value.casefold()
+        return None
+
+
+class NetworkRadiusDirectoryAuthUserOverlapRule:
+    _EVENT_TYPES = {"network.telemetry.radius", "network.telemetry.directory_auth"}
+
+    definition = DetectionRuleDefinition(
+        rule_id="network_radius_directory_auth_user_overlap",
+        title="Network RADIUS and directory auth user overlap",
+        description="Correlates RADIUS and directory-auth telemetry for the same user and hostname.",
+        category="correlation",
+        default_parameters={"window_hours": 4},
+    )
+
+    def evaluate(
+        self,
+        *,
+        event: SocEventRecord,
+        list_events: EventLister,
+        parameters: dict[str, Any],
+    ) -> DetectionFinding | None:
+        if event.event_type not in self._EVENT_TYPES:
+            return None
+        user = self._event_user(event)
+        hostname = self._event_hostname(event)
+        if not user or not hostname:
+            return None
+        window_hours = int(parameters.get("window_hours", self.definition.default_parameters["window_hours"]))
+        window_start = event.created_at - timedelta(hours=window_hours)
+        related_events = [
+            item
+            for item in list_events(500)
+            if item.created_at >= window_start
+            and item.event_type in self._EVENT_TYPES
+            and self._event_user(item) == user
+            and self._event_hostname(item) == hostname
+        ]
+        has_radius = any(item.event_type == "network.telemetry.radius" for item in related_events)
+        has_directory_auth = any(item.event_type == "network.telemetry.directory_auth" for item in related_events)
+        if not (has_radius and has_directory_auth):
+            return None
+        return DetectionFinding(
+            rule_id=self.definition.rule_id,
+            key=f"{user}@{hostname}",
+            title=f"RADIUS and directory auth overlap for {user}",
+            summary="The same user appeared in RADIUS and directory-auth telemetry for the same hostname within the configured window.",
+            severity=self._severity_for_related_events(related_events),
+            related_events=tuple(related_events),
+        )
+
+    @staticmethod
+    def _event_user(event: SocEventRecord) -> str | None:
+        value = event.details.get("username")
+        if isinstance(value, str) and value:
+            return value.casefold()
+        return None
+
+    @staticmethod
+    def _event_hostname(event: SocEventRecord) -> str | None:
+        value = event.details.get("hostname")
+        if isinstance(value, str) and value:
+            return value.casefold()
+        return None
+
+    @staticmethod
+    def _severity_for_related_events(related_events: list[SocEventRecord]) -> SocSeverity:
+        for item in related_events:
+            if item.event_type != "network.telemetry.directory_auth":
+                continue
+            outcome = item.details.get("outcome")
+            if isinstance(outcome, str) and outcome.casefold() != "success":
+                return SocSeverity.high
+        return SocSeverity.medium
+
+
+class NetworkNacDhcpHostOverlapRule:
+    _EVENT_TYPES = {"network.telemetry.nac", "network.telemetry.dhcp"}
+
+    definition = DetectionRuleDefinition(
+        rule_id="network_nac_dhcp_host_overlap",
+        title="Network NAC and DHCP host overlap",
+        description="Correlates NAC and DHCP telemetry for the same hostname.",
+        category="correlation",
+        default_parameters={"window_hours": 4},
+    )
+
+    def evaluate(
+        self,
+        *,
+        event: SocEventRecord,
+        list_events: EventLister,
+        parameters: dict[str, Any],
+    ) -> DetectionFinding | None:
+        if event.event_type not in self._EVENT_TYPES:
+            return None
+        hostname = self._event_hostname(event)
+        if not hostname:
+            return None
+        window_hours = int(parameters.get("window_hours", self.definition.default_parameters["window_hours"]))
+        window_start = event.created_at - timedelta(hours=window_hours)
+        related_events = [
+            item
+            for item in list_events(500)
+            if item.created_at >= window_start
+            and item.event_type in self._EVENT_TYPES
+            and self._event_hostname(item) == hostname
+        ]
+        has_nac = any(item.event_type == "network.telemetry.nac" for item in related_events)
+        has_dhcp = any(item.event_type == "network.telemetry.dhcp" for item in related_events)
+        if not (has_nac and has_dhcp):
+            return None
+        return DetectionFinding(
+            rule_id=self.definition.rule_id,
+            key=hostname,
+            title=f"NAC and DHCP overlap for {hostname}",
+            summary="The same hostname appeared in NAC and DHCP telemetry within the configured window.",
+            severity=self._severity_for_related_events(related_events),
+            related_events=tuple(related_events),
+        )
+
+    @staticmethod
+    def _event_hostname(event: SocEventRecord) -> str | None:
+        value = event.details.get("hostname")
+        if isinstance(value, str) and value:
+            return value.casefold()
+        return None
+
+    @staticmethod
+    def _severity_for_related_events(related_events: list[SocEventRecord]) -> SocSeverity:
+        for item in related_events:
+            if item.event_type != "network.telemetry.nac":
+                continue
+            posture = item.details.get("posture")
+            if isinstance(posture, str) and posture.casefold() not in {"compliant", "healthy"}:
+                return SocSeverity.high
+        return SocSeverity.medium
+
+
+class NetworkAuthFailureBurstRule:
+    _EVENT_TYPES = {"network.telemetry.auth", "network.telemetry.directory_auth", "network.telemetry.radius"}
+    _SUCCESS_OUTCOMES = {"success", "accept", "accepted", "ok", "connected"}
+
+    definition = DetectionRuleDefinition(
+        rule_id="network_auth_failure_burst",
+        title="Network auth failure burst",
+        description="Detects repeated authentication failures for the same user and hostname across network auth telemetry.",
+        category="correlation",
+        default_parameters={"window_hours": 1, "minimum_failures": 3},
+    )
+
+    def evaluate(
+        self,
+        *,
+        event: SocEventRecord,
+        list_events: EventLister,
+        parameters: dict[str, Any],
+    ) -> DetectionFinding | None:
+        if event.event_type not in self._EVENT_TYPES:
+            return None
+        user = self._event_user(event)
+        if not user or self._is_success(event):
+            return None
+        hostname = self._event_hostname(event)
+        window_hours = int(parameters.get("window_hours", self.definition.default_parameters["window_hours"]))
+        minimum_failures = int(parameters.get("minimum_failures", self.definition.default_parameters["minimum_failures"]))
+        window_start = event.created_at - timedelta(hours=window_hours)
+        related_events = [
+            item
+            for item in list_events(500)
+            if item.created_at >= window_start
+            and item.event_type in self._EVENT_TYPES
+            and self._event_user(item) == user
+            and self._event_hostname(item) == hostname
+            and not self._is_success(item)
+        ]
+        if len(related_events) < minimum_failures:
+            return None
+        key = f"{user}@{hostname}" if hostname else user
+        return DetectionFinding(
+            rule_id=self.definition.rule_id,
+            key=key,
+            title=f"Auth failure burst for {user}",
+            summary="Multiple authentication failures were observed for the same user inside the configured window.",
+            severity=SocSeverity.high,
+            related_events=tuple(related_events),
+        )
+
+    def _is_success(self, event: SocEventRecord) -> bool:
+        outcome = event.details.get("outcome")
+        return isinstance(outcome, str) and outcome.casefold() in self._SUCCESS_OUTCOMES
+
+    @staticmethod
+    def _event_user(event: SocEventRecord) -> str | None:
+        value = event.details.get("username")
+        if isinstance(value, str) and value:
+            return value.casefold()
+        return None
+
+    @staticmethod
+    def _event_hostname(event: SocEventRecord) -> str | None:
+        value = event.details.get("hostname")
+        if isinstance(value, str) and value:
+            return value.casefold()
+        return None
+
+    @staticmethod
+    def _event_remote_ip(event: SocEventRecord) -> str | None:
+        remote_ip = event.details.get("remote_ip")
+        return remote_ip if isinstance(remote_ip, str) and remote_ip else None
+
+
+class NetworkVpnDisconnectAuthFailureChainRule:
+    _EVENT_TYPES = {
+        "network.telemetry.vpn",
+        "network.telemetry.auth",
+        "network.telemetry.directory_auth",
+        "network.telemetry.radius",
+    }
+    _DISCONNECT_EVENTS = {"disconnect", "session-close", "closed", "terminated", "logout"}
+    _SUCCESS_OUTCOMES = {"success", "accept", "accepted", "ok", "connected"}
+    _CRITICAL_DISCONNECT_REASONS = {"admin-reset", "policy-enforced", "compromise", "certificate-revoked"}
+    _CRITICAL_REJECT_CODES = {"policy-deny", "account-locked", "user-disabled"}
+
+    definition = DetectionRuleDefinition(
+        rule_id="network_vpn_disconnect_auth_failure_chain",
+        title="Network VPN disconnect and auth failure chain",
+        description="Correlates a VPN disconnect with repeated authentication failures for the same user and hostname.",
+        category="correlation",
+        default_parameters={"window_hours": 2, "minimum_failures": 2},
+    )
+
+    def evaluate(
+        self,
+        *,
+        event: SocEventRecord,
+        list_events: EventLister,
+        parameters: dict[str, Any],
+    ) -> DetectionFinding | None:
+        if event.event_type not in self._EVENT_TYPES:
+            return None
+        user = self._event_user(event)
+        hostname = self._event_hostname(event)
+        if not user or not hostname:
+            return None
+        window_hours = int(parameters.get("window_hours", self.definition.default_parameters["window_hours"]))
+        minimum_failures = int(parameters.get("minimum_failures", self.definition.default_parameters["minimum_failures"]))
+        window_start = event.created_at - timedelta(hours=window_hours)
+        related_events = [
+            item
+            for item in list_events(500)
+            if item.created_at >= window_start
+            and item.event_type in self._EVENT_TYPES
+            and self._event_user(item) == user
+            and self._event_hostname(item) == hostname
+        ]
+        has_vpn_disconnect = any(self._is_vpn_disconnect(item) for item in related_events)
+        failed_auth_events = [item for item in related_events if self._is_auth_failure(item)]
+        if not has_vpn_disconnect or len(failed_auth_events) < minimum_failures:
+            return None
+        return DetectionFinding(
+            rule_id=self.definition.rule_id,
+            key=f"{user}@{hostname}",
+            title=f"VPN disconnect auth chain for {user}",
+            summary="A VPN disconnect was followed by repeated authentication failures for the same user inside the configured window.",
+            severity=self._severity_for_chain(related_events),
+            related_events=tuple(related_events),
+        )
+
+    def _is_vpn_disconnect(self, event: SocEventRecord) -> bool:
+        if event.event_type != "network.telemetry.vpn":
+            return False
+        session_event = event.details.get("session_event")
+        if isinstance(session_event, str) and session_event.casefold() in self._DISCONNECT_EVENTS:
+            return True
+        outcome = event.details.get("outcome")
+        return isinstance(outcome, str) and outcome.casefold() in {"disconnected", "disconnect"}
+
+    def _is_auth_failure(self, event: SocEventRecord) -> bool:
+        if event.event_type not in {"network.telemetry.auth", "network.telemetry.directory_auth", "network.telemetry.radius"}:
+            return False
+        outcome = event.details.get("outcome")
+        return isinstance(outcome, str) and outcome.casefold() not in self._SUCCESS_OUTCOMES
+
+    def _severity_for_chain(self, related_events: list[SocEventRecord]) -> SocSeverity:
+        for item in related_events:
+            if item.event_type == "network.telemetry.vpn":
+                close_reason = item.details.get("close_reason")
+                if isinstance(close_reason, str) and close_reason.casefold() in self._CRITICAL_DISCONNECT_REASONS:
+                    return SocSeverity.critical
+            if item.event_type == "network.telemetry.radius":
+                reject_code = item.details.get("reject_code")
+                if isinstance(reject_code, str) and reject_code.casefold() in self._CRITICAL_REJECT_CODES:
+                    return SocSeverity.critical
+        for item in related_events:
+            if item.event_type not in {"network.telemetry.auth", "network.telemetry.directory_auth", "network.telemetry.radius"}:
+                continue
+            outcome = item.details.get("outcome")
+            if isinstance(outcome, str) and outcome.casefold() in {"disabled", "locked", "lockout"}:
+                return SocSeverity.critical
+        return SocSeverity.high
+
+    @staticmethod
+    def _event_user(event: SocEventRecord) -> str | None:
+        value = event.details.get("username")
+        if isinstance(value, str) and value:
+            return value.casefold()
+        return None
+
+    @staticmethod
+    def _event_hostname(event: SocEventRecord) -> str | None:
+        value = event.details.get("hostname")
+        if isinstance(value, str) and value:
+            return value.casefold()
+        return None
+
+
+class NetworkRadiusRejectBurstRule:
+    _EVENT_TYPES = {"network.telemetry.radius"}
+    _SUCCESS_OUTCOMES = {"success", "accept", "accepted", "ok"}
+    _CRITICAL_REJECT_CODES = {"policy-deny", "account-locked", "user-disabled"}
+
+    definition = DetectionRuleDefinition(
+        rule_id="network_radius_reject_burst",
+        title="Network RADIUS reject burst",
+        description="Detects repeated RADIUS rejects for the same user and hostname.",
+        category="correlation",
+        default_parameters={"window_hours": 1, "minimum_rejects": 3},
+    )
+
+    def evaluate(
+        self,
+        *,
+        event: SocEventRecord,
+        list_events: EventLister,
+        parameters: dict[str, Any],
+    ) -> DetectionFinding | None:
+        if event.event_type not in self._EVENT_TYPES or self._is_success(event):
+            return None
+        user = self._event_user(event)
+        hostname = self._event_hostname(event)
+        if not user:
+            return None
+        window_hours = int(parameters.get("window_hours", self.definition.default_parameters["window_hours"]))
+        minimum_rejects = int(parameters.get("minimum_rejects", self.definition.default_parameters["minimum_rejects"]))
+        window_start = event.created_at - timedelta(hours=window_hours)
+        related_events = [
+            item
+            for item in list_events(500)
+            if item.created_at >= window_start
+            and item.event_type in self._EVENT_TYPES
+            and self._event_user(item) == user
+            and self._event_hostname(item) == hostname
+            and not self._is_success(item)
+        ]
+        if len(related_events) < minimum_rejects:
+            return None
+        key = f"{user}@{hostname}" if hostname else user
+        return DetectionFinding(
+            rule_id=self.definition.rule_id,
+            key=key,
+            title=f"RADIUS reject burst for {user}",
+            summary="Repeated RADIUS rejects were observed for the same user inside the configured window.",
+            severity=self._severity_for_related_events(related_events),
+            related_events=tuple(related_events),
+        )
+
+    def _is_success(self, event: SocEventRecord) -> bool:
+        outcome = event.details.get("outcome")
+        return isinstance(outcome, str) and outcome.casefold() in self._SUCCESS_OUTCOMES
+
+    @staticmethod
+    def _event_user(event: SocEventRecord) -> str | None:
+        value = event.details.get("username")
+        if isinstance(value, str) and value:
+            return value.casefold()
+        return None
+
+    @staticmethod
+    def _event_hostname(event: SocEventRecord) -> str | None:
+        value = event.details.get("hostname")
+        if isinstance(value, str) and value:
+            return value.casefold()
+        return None
+
+    def _severity_for_related_events(self, related_events: list[SocEventRecord]) -> SocSeverity:
+        for item in related_events:
+            reject_code = item.details.get("reject_code")
+            if isinstance(reject_code, str) and reject_code.casefold() in self._CRITICAL_REJECT_CODES:
+                return SocSeverity.critical
+            reject_reason = item.details.get("reject_reason")
+            if isinstance(reject_reason, str):
+                lowered = reject_reason.casefold()
+                if "disabled" in lowered or "locked" in lowered or "policy" in lowered:
+                    return SocSeverity.critical
+        return SocSeverity.high
+
+
+class NetworkNacPostureRegressionRule:
+    _EVENT_TYPES = {"network.telemetry.nac"}
+    _HEALTHY_POSTURES = {"compliant", "healthy"}
+    _CRITICAL_ACTIONS = {"isolate", "block", "quarantine"}
+
+    definition = DetectionRuleDefinition(
+        rule_id="network_nac_posture_regression",
+        title="Network NAC posture regression",
+        description="Detects posture regressions in NAC telemetry for the same device.",
+        category="correlation",
+        default_parameters={"window_hours": 24},
+    )
+
+    def evaluate(
+        self,
+        *,
+        event: SocEventRecord,
+        list_events: EventLister,
+        parameters: dict[str, Any],
+    ) -> DetectionFinding | None:
+        if event.event_type not in self._EVENT_TYPES:
+            return None
+        device_id = self._event_device_id(event)
+        posture = self._event_posture(event)
+        previous_posture = self._event_previous_posture(event)
+        if not device_id or not posture:
+            return None
+        regressed = (
+            previous_posture is not None
+            and previous_posture in self._HEALTHY_POSTURES
+            and posture not in self._HEALTHY_POSTURES
+        )
+        if not regressed:
+            return None
+        window_hours = int(parameters.get("window_hours", self.definition.default_parameters["window_hours"]))
+        window_start = event.created_at - timedelta(hours=window_hours)
+        related_events = [
+            item
+            for item in list_events(250)
+            if item.created_at >= window_start
+            and item.event_type in self._EVENT_TYPES
+            and self._event_device_id(item) == device_id
+        ]
+        return DetectionFinding(
+            rule_id=self.definition.rule_id,
+            key=device_id,
+            title=f"NAC posture regression for {device_id}",
+            summary="A NAC-monitored device regressed from a healthy posture state to a non-compliant state.",
+            severity=self._severity_for_event(event),
+            related_events=tuple(related_events),
+        )
+
+    @staticmethod
+    def _event_device_id(event: SocEventRecord) -> str | None:
+        value = event.details.get("device_id")
+        if isinstance(value, str) and value:
+            return value.casefold()
+        return None
+
+    @staticmethod
+    def _event_posture(event: SocEventRecord) -> str | None:
+        value = event.details.get("posture")
+        if isinstance(value, str) and value:
+            return value.casefold()
+        return None
+
+    @staticmethod
+    def _event_previous_posture(event: SocEventRecord) -> str | None:
+        value = event.details.get("previous_posture")
+        if isinstance(value, str) and value:
+            return value.casefold()
+        return None
+
+    def _severity_for_event(self, event: SocEventRecord) -> SocSeverity:
+        action = event.details.get("action")
+        if isinstance(action, str) and action.casefold() in self._CRITICAL_ACTIONS:
+            return SocSeverity.critical
+        reason = event.details.get("transition_reason")
+        if isinstance(reason, str):
+            lowered = reason.casefold()
+            if "malware" in lowered or "ransom" in lowered or "compromise" in lowered:
+                return SocSeverity.critical
+        return SocSeverity.high
+
+
 class EndpointTimelineExecutionChainRule:
     _EVENT_TYPES = {
         "endpoint.telemetry.process",
@@ -800,6 +1795,20 @@ class DetectionEngine:
             EndpointProcessFileOverlapRule.definition.rule_id: EndpointProcessFileOverlapRule(),
             EndpointUnsignedNetworkProcessRule.definition.rule_id: EndpointUnsignedNetworkProcessRule(),
             EndpointConnectionNetworkOverlapRule.definition.rule_id: EndpointConnectionNetworkOverlapRule(),
+            NetworkDnsHttpFollowupRule.definition.rule_id: NetworkDnsHttpFollowupRule(),
+            NetworkTlsHttpHostOverlapRule.definition.rule_id: NetworkTlsHttpHostOverlapRule(),
+            NetworkCertificateTlsHostOverlapRule.definition.rule_id: NetworkCertificateTlsHostOverlapRule(),
+            NetworkCertificateHttpHostOverlapRule.definition.rule_id: NetworkCertificateHttpHostOverlapRule(),
+            NetworkProxyAuthUserOverlapRule.definition.rule_id: NetworkProxyAuthUserOverlapRule(),
+            NetworkProxyHttpHostOverlapRule.definition.rule_id: NetworkProxyHttpHostOverlapRule(),
+            NetworkVpnDirectoryAuthUserOverlapRule.definition.rule_id: NetworkVpnDirectoryAuthUserOverlapRule(),
+            NetworkDhcpAuthHostOverlapRule.definition.rule_id: NetworkDhcpAuthHostOverlapRule(),
+            NetworkRadiusDirectoryAuthUserOverlapRule.definition.rule_id: NetworkRadiusDirectoryAuthUserOverlapRule(),
+            NetworkNacDhcpHostOverlapRule.definition.rule_id: NetworkNacDhcpHostOverlapRule(),
+            NetworkAuthFailureBurstRule.definition.rule_id: NetworkAuthFailureBurstRule(),
+            NetworkVpnDisconnectAuthFailureChainRule.definition.rule_id: NetworkVpnDisconnectAuthFailureChainRule(),
+            NetworkRadiusRejectBurstRule.definition.rule_id: NetworkRadiusRejectBurstRule(),
+            NetworkNacPostureRegressionRule.definition.rule_id: NetworkNacPostureRegressionRule(),
             EndpointTimelineExecutionChainRule.definition.rule_id: EndpointTimelineExecutionChainRule(),
         }
         self._definitions: dict[str, DetectionRuleDefinition] = {
