@@ -21,7 +21,9 @@ def inject_unique_basetemp(
     root = Path(cwd) if cwd is not None else Path.cwd()
     stamp = now_ns if now_ns is not None else time.time_ns()
     process_id = pid if pid is not None else os.getpid()
-    basetemp = root / ".pytest_tmp_runs" / f"run_{process_id}_{stamp}"
+    basetemp_root = root / ".pytest_tmp_runs"
+    basetemp_root.mkdir(parents=True, exist_ok=True)
+    basetemp = basetemp_root / f"run_{process_id}_{stamp}"
     return [*args, f"--basetemp={basetemp}"]
 
 
