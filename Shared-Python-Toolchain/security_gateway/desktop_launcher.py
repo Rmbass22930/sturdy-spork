@@ -8,6 +8,14 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from toolchain_resources.runtime import load_toolchain_runtime
+except ImportError:  # pragma: no cover - frozen entrypoint fallback
+    load_toolchain_runtime = None  # type: ignore[assignment]
+
+if load_toolchain_runtime is not None:
+    load_toolchain_runtime(sync_updates=False)
+
+try:
     from .config import get_runtime_data_dir
 except ImportError:  # pragma: no cover - frozen entrypoint fallback
     from security_gateway.config import get_runtime_data_dir

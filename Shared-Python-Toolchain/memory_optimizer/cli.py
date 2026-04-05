@@ -10,15 +10,22 @@ from typing import List, Optional, Sequence
 import typer
 
 from common_crypto import AES256GCMCipher
+from toolchain_resources.runtime import load_toolchain_runtime
 
 from .autostart import AutoStartOrchestrator
 from .manager import MemoryManager, get_memory_stats
 from .vm_launcher import CommandVMLauncher, HyperVVMLauncher
 
 app = typer.Typer(help="Efficient RAM utilization helper for Windows hosts.")
+load_toolchain_runtime(sync_updates=False)
 
 _stats_cipher = AES256GCMCipher()
 _STATS_AAD = b"memory-optimizer:stats"
+
+
+@app.callback()
+def memory_optimizer_callback() -> None:
+    load_toolchain_runtime(sync_updates=True, apply_safe_only=True)
 
 
 def _print(data: dict) -> None:

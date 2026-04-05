@@ -20,6 +20,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT_TEXT = str(PROJECT_ROOT)
+if PROJECT_ROOT_TEXT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT_TEXT)
+
+from toolchain_resources.runtime import load_toolchain_runtime  # noqa: E402
+
+load_toolchain_runtime(sync_updates=False)
+
 INSTALL_DIR = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "SecurityGateway"
 PAYLOAD_BUNDLE_NAME = "SecurityGateway"
 UNINSTALLER_BUNDLE_NAME = "SecurityGateway-Uninstall"

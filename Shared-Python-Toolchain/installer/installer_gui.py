@@ -14,7 +14,10 @@ if project_root_text not in sys.path:
     sys.path.insert(0, project_root_text)
 
 from installer import installer as core  # noqa: E402
+from toolchain_resources.runtime import load_toolchain_runtime  # noqa: E402
 tk, ttk, _ = core.load_tk_modules()
+
+load_toolchain_runtime(sync_updates=False)
 
 
 def center_window(root, width: int, height: int) -> None:

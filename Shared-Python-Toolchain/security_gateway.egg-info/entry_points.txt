@@ -1,3 +1,4 @@
 [console_scripts]
 memory-optimizer = memory_optimizer.cli:app
 security-gateway = security_gateway.cli:app
+toolchain-resources = toolchain_resources.cli:app

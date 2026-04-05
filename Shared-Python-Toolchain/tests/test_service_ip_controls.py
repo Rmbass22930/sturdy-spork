@@ -16,6 +16,7 @@ from security_gateway.policy import PolicyEngine
 from security_gateway.reports import SecurityReportBuilder
 from security_gateway.soc import SecurityOperationsManager
 from security_gateway.tor import ProxyRequestTimeoutError, ProxyResponse, ProxyResponseTooLargeError
+from toolchain_resources.linear_forms import LinearAsksFormRegistry
 
 
 class DummyAuditLogger:
@@ -196,6 +197,405 @@ def _install_test_managers(monkeypatch, tmp_path):
     return audit, blocklist, traceroute
 
 
+def test_linear_forms_api_and_portal_routes(monkeypatch, tmp_path):
+    registry = LinearAsksFormRegistry(tmp_path / "linear_forms.json")
+    monkeypatch.setattr(service, "linear_asks_forms", registry)
+    headers = _operator_headers(monkeypatch)
+
+    with TestClient(service.app) as client:
+        upsert = client.post(
+            "/linear/forms",
+            headers=headers,
+            json={
+                "form_key": "bug-report",
+                "title": "Bug report",
+                "url": "https://linear.app/example/forms/bug-report",
+                "description": "Report a product issue.",
+                "category": "Engineering",
+                "team": "Platform",
+                "enabled": True,
+            },
+        )
+        forms = client.get("/linear/forms", headers=headers)
+        detail = client.get("/linear/forms/bug-report", headers=headers)
+        portal = client.get("/linear/asks")
+        redirect = client.get("/linear/asks/bug-report", follow_redirects=False)
+
+    assert upsert.status_code == 200
+    assert upsert.json()["form"]["form_key"] == "bug-report"
+    assert forms.status_code == 200
+    assert forms.json()["forms"][0]["title"] == "Bug report"
+    assert detail.status_code == 200
+    assert detail.json()["form"]["team"] == "Platform"
+    assert portal.status_code == 200
+    assert "Bug report" in portal.text
+    assert redirect.status_code == 307
+    assert redirect.headers["location"] == "https://linear.app/example/forms/bug-report"
+
+
+def test_docker_resources_routes_expose_catalog_and_portal(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+
+    with TestClient(service.app) as client:
+        resources = client.get("/docker/resources")
+        detail = client.get("/docker/resources/sandboxes-2026-03-31")
+        portal = client.get("/docker/resources/portal")
+
+    assert resources.status_code == 200
+    assert resources.json()["resources"][0]["resource_key"] == "offload-ga-2026-04-02"
+    assert detail.status_code == 200
+    assert detail.json()["resource"]["title"] == "Docker Sandboxes for agent execution"
+    assert portal.status_code == 200
+    assert "Docker Resources" in portal.text
+    assert "Docker Offload now generally available" in portal.text
+
+
+def test_toolchain_updates_routes_expose_shared_update_feed(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "linear_asks_forms_path", str(tmp_path / "linear_forms.json"))
+    monkeypatch.setattr(settings, "toolchain_updates_state_path", str(tmp_path / "toolchain_updates.json"))
+    service.get_toolchain_runtime.cache_clear()
+    runtime = service.get_toolchain_runtime()
+    monkeypatch.setattr(service, "toolchain_runtime", runtime)
+    headers = _operator_headers(monkeypatch)
+
+    with TestClient(service.app) as client:
+        synced = client.post("/toolchain/updates/sync", headers=headers)
+        updates = client.get("/toolchain/updates", headers=headers)
+        detail = client.get("/toolchain/updates/docker:offload-ga-2026-04-02", headers=headers)
+        seen = client.post("/toolchain/updates/docker:offload-ga-2026-04-02/mark-seen", headers=headers)
+
+    assert synced.status_code == 200
+    assert len(synced.json()["updates"]) >= 1
+    assert updates.status_code == 200
+    assert updates.json()["updates"][0]["provider"] == "docker"
+    assert detail.status_code == 200
+    assert detail.json()["update"]["title"] == "Docker Offload now generally available"
+    assert seen.status_code == 200
+    assert seen.json()["update"]["status"] in {"applied", "seen"}
+
+
+def test_toolchain_provider_and_health_routes_expose_shared_runtime_state(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "linear_asks_forms_path", str(tmp_path / "linear_forms.json"))
+    monkeypatch.setattr(settings, "toolchain_updates_state_path", str(tmp_path / "toolchain_updates.json"))
+    monkeypatch.setattr(settings, "platform_manager_url", "https://manager.local")
+    service.get_toolchain_runtime.cache_clear()
+    runtime = service.get_toolchain_runtime()
+    runtime.updates.sync()
+    monkeypatch.setattr(service, "toolchain_runtime", runtime)
+    headers = _operator_headers(monkeypatch)
+
+    with TestClient(service.app) as client:
+        providers = client.get("/toolchain/providers", headers=headers)
+        provider = client.get("/toolchain/providers/docker", headers=headers)
+        health = client.get("/toolchain/health", headers=headers)
+        health_detail = client.get("/toolchain/health/toolchain-updates", headers=headers)
+
+    assert providers.status_code == 200
+    assert any(item["provider_id"] == "docker" for item in providers.json()["providers"])
+    assert provider.status_code == 200
+    assert provider.json()["provider"]["title"] == "Docker"
+    assert health.status_code == 200
+    assert any(item["check_id"] == "toolchain-updates" for item in health.json()["checks"])
+    assert health_detail.status_code == 200
+    assert health_detail.json()["check"]["title"] == "Toolchain Update Feed"
+
+
+def test_toolchain_security_routes_expose_shared_security_state(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "linear_asks_forms_path", str(tmp_path / "linear_forms.json"))
+    monkeypatch.setattr(settings, "toolchain_updates_state_path", str(tmp_path / "toolchain_updates.json"))
+    monkeypatch.setattr(settings, "operator_bearer_token", "operator-token")
+    monkeypatch.setattr(settings, "endpoint_bearer_token", "endpoint-token")
+    monkeypatch.setattr(settings, "endpoint_telemetry_signing_key", "signing-key")
+    monkeypatch.setenv("SECURITY_GATEWAY_PAM_MASTER_KEY", "persisted-master-key")
+    service.get_toolchain_runtime.cache_clear()
+    runtime = service.get_toolchain_runtime()
+    monkeypatch.setattr(service, "toolchain_runtime", runtime)
+    headers = _operator_headers(monkeypatch)
+
+    with TestClient(service.app) as client:
+        checks = client.get("/toolchain/security", headers=headers)
+        filtered = client.get("/toolchain/security?status=ok&severity=high", headers=headers)
+        detail = client.get("/toolchain/security/operator-auth", headers=headers)
+
+    assert checks.status_code == 200
+    assert any(item["check_id"] == "operator-auth" for item in checks.json()["checks"])
+    assert filtered.status_code == 200
+    assert all(item["status"] == "ok" for item in filtered.json()["checks"])
+    assert all(item["severity"] == "high" for item in filtered.json()["checks"])
+    assert detail.status_code == 200
+    assert detail.json()["check"]["title"] == "Operator Bearer Authentication"
+
+
+def test_toolchain_language_routes_expose_shared_language_state(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "linear_asks_forms_path", str(tmp_path / "linear_forms.json"))
+    monkeypatch.setattr(settings, "toolchain_updates_state_path", str(tmp_path / "toolchain_updates.json"))
+    service.get_toolchain_runtime.cache_clear()
+    runtime = service.get_toolchain_runtime()
+    monkeypatch.setattr(service, "toolchain_runtime", runtime)
+    headers = _operator_headers(monkeypatch)
+
+    with TestClient(service.app) as client:
+        languages = client.get("/toolchain/languages", headers=headers)
+        filtered = client.get("/toolchain/languages?status=available", headers=headers)
+        detail = client.get("/toolchain/languages/python", headers=headers)
+        health = client.get("/toolchain/languages/health", headers=headers)
+        health_detail = client.get("/toolchain/languages/health/python", headers=headers)
+
+    assert languages.status_code == 200
+    assert any(item["language_id"] == "python" for item in languages.json()["languages"])
+    assert filtered.status_code == 200
+    assert all(item["status"] == "available" for item in filtered.json()["languages"])
+    assert detail.status_code == 200
+    assert detail.json()["language"]["title"] == "Python"
+    assert health.status_code == 200
+    assert any(item["language_id"] == "python" for item in health.json()["checks"])
+    assert health_detail.status_code == 200
+    assert health_detail.json()["check"]["title"] == "Python"
+
+
+def test_toolchain_package_manager_and_secret_routes_expose_shared_state(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "linear_asks_forms_path", str(tmp_path / "linear_forms.json"))
+    monkeypatch.setattr(settings, "toolchain_updates_state_path", str(tmp_path / "toolchain_updates.json"))
+    monkeypatch.setattr(settings, "operator_bearer_token", "operator-token")
+    monkeypatch.setenv("SECURITY_GATEWAY_PAM_MASTER_KEY", "persisted-master-key")
+    service.get_toolchain_runtime.cache_clear()
+    runtime = service.get_toolchain_runtime()
+    monkeypatch.setattr(service, "toolchain_runtime", runtime)
+    headers = _operator_headers(monkeypatch)
+
+    with TestClient(service.app) as client:
+        package_managers = client.get("/toolchain/package-managers", headers=headers)
+        package_manager = client.get("/toolchain/package-managers/pip", headers=headers)
+        secret_sources = client.get("/toolchain/secret-sources?status=ok", headers=headers)
+        secret_source = client.get("/toolchain/secret-sources/operator_bearer", headers=headers)
+
+    assert package_managers.status_code == 200
+    assert any(item["manager_id"] == "pip" for item in package_managers.json()["package_managers"])
+    assert package_manager.status_code == 200
+    assert package_manager.json()["package_manager"]["title"] == "pip"
+    assert secret_sources.status_code == 200
+    assert any(item["secret_id"] == "operator_bearer" for item in secret_sources.json()["secret_sources"])
+    assert secret_source.status_code == 200
+    assert secret_source.json()["secret_source"]["title"] == "Operator Bearer Token"
+
+
+def test_toolchain_provision_ops_and_policy_routes_expose_shared_state(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "linear_asks_forms_path", str(tmp_path / "linear_forms.json"))
+    monkeypatch.setattr(settings, "toolchain_updates_state_path", str(tmp_path / "toolchain_updates.json"))
+    service.get_toolchain_runtime.cache_clear()
+    runtime = service.get_toolchain_runtime()
+    monkeypatch.setattr(service, "toolchain_runtime", runtime)
+    headers = _operator_headers(monkeypatch)
+
+    with TestClient(service.app) as client:
+        provisioning = client.get("/toolchain/provisioning", headers=headers)
+        action = client.get("/toolchain/provisioning/python", headers=headers)
+        operations = client.get("/toolchain/package-operations?manager=pip", headers=headers)
+        operation = client.get("/toolchain/package-operations/pip/install_deps", headers=headers)
+        policy = client.get("/toolchain/version-policy", headers=headers)
+        policy_detail = client.get("/toolchain/version-policy/python", headers=headers)
+
+    assert provisioning.status_code == 200
+    assert any(item["target_id"] == "python" for item in provisioning.json()["actions"])
+    assert action.status_code == 200
+    assert action.json()["action"]["title"] == "Python"
+    assert operations.status_code == 200
+    assert any(item["manager_id"] == "pip" for item in operations.json()["operations"])
+    assert operation.status_code == 200
+    assert operation.json()["operation"]["operation"] == "install_deps"
+    assert policy.status_code == 200
+    assert any(item["target_id"] == "python" for item in policy.json()["results"])
+    assert policy_detail.status_code == 200
+    assert policy_detail.json()["result"]["title"] == "Python"
+
+
+def test_toolchain_extended_runtime_routes_expose_shared_state(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "linear_asks_forms_path", str(tmp_path / "linear_forms.json"))
+    monkeypatch.setattr(settings, "toolchain_updates_state_path", str(tmp_path / "toolchain_updates.json"))
+    monkeypatch.setattr(settings, "toolchain_cache_state_path", str(tmp_path / "toolchain_cache.json"))
+    monkeypatch.setattr(settings, "operator_bearer_token", "operator-token")
+    monkeypatch.setenv("SECURITY_GATEWAY_PAM_MASTER_KEY", "persisted-master-key")
+    service.get_toolchain_runtime.cache_clear()
+    runtime = service.get_toolchain_runtime()
+    monkeypatch.setattr(service, "toolchain_runtime", runtime)
+    headers = _operator_headers(monkeypatch)
+
+    with TestClient(service.app) as client:
+        resolved = client.post("/toolchain/secret-resolution/operator_bearer/resolve", headers=headers)
+        resolutions = client.get("/toolchain/secret-resolution?status=resolved", headers=headers)
+        cache = client.get("/toolchain/cache", headers=headers)
+        templates = client.get("/toolchain/provider-templates", headers=headers)
+        rendered = client.get("/toolchain/provider-templates/docker/render", headers=headers)
+        report = client.get("/toolchain/report?format=json", headers=headers)
+        enforcement = client.get("/toolchain/policy-enforcement", headers=headers)
+
+    assert resolved.status_code == 200
+    assert resolved.json()["resolution"]["status"] == "resolved"
+    assert resolutions.status_code == 200
+    assert any(item["secret_id"] == "operator_bearer" for item in resolutions.json()["resolutions"])
+    assert cache.status_code == 200
+    assert "summary" in cache.json()
+    assert templates.status_code == 200
+    assert any(item["provider_id"] == "docker" for item in templates.json()["templates"])
+    assert rendered.status_code == 200
+    assert rendered.json()["manifest"]["provider_id"] == "docker"
+    assert report.status_code == 200
+    assert report.json()["format"] == "json"
+    assert "cache" in report.json()["report"]
+    assert enforcement.status_code == 200
+    assert any(item["policy_id"] == "security_baseline" for item in enforcement.json()["results"])
+
+
+def test_toolchain_project_bootstrap_and_jobs_routes_expose_shared_state(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / "package.json").write_text('{"name":"sample-node"}', encoding="utf-8")
+    monkeypatch.setattr(settings, "linear_asks_forms_path", str(tmp_path / "linear_forms.json"))
+    monkeypatch.setattr(settings, "toolchain_updates_state_path", str(tmp_path / "toolchain_updates.json"))
+    monkeypatch.setattr(settings, "toolchain_cache_state_path", str(tmp_path / "toolchain_cache.json"))
+    monkeypatch.setattr(settings, "toolchain_scheduler_state_path", str(tmp_path / "toolchain_scheduler.json"))
+    service.get_toolchain_runtime.cache_clear()
+    runtime = service.get_toolchain_runtime()
+    monkeypatch.setattr(service, "toolchain_runtime", runtime)
+    headers = _operator_headers(monkeypatch)
+
+    with TestClient(service.app) as client:
+        projects = client.get("/toolchain/projects", params={"root_path": str(repo_root)}, headers=headers)
+        bootstrap = client.post("/toolchain/bootstrap/python", params={"project_path": str(repo_root)}, headers=headers)
+        repair = client.post(
+            "/toolchain/bootstrap/python",
+            params={"project_path": str(repo_root), "mode": "repair"},
+            headers=headers,
+        )
+        scaffold = client.post(
+            "/toolchain/provider-templates/docker/scaffold",
+            params={"target_dir": str(tmp_path / "scaffold"), "write": False},
+            headers=headers,
+        )
+        jobs = client.get("/toolchain/jobs", headers=headers)
+        job_run = client.post("/toolchain/jobs/snapshot_report/run", headers=headers)
+        schedule = client.post("/toolchain/schedules/snapshot_report", params={"every_minutes": 30}, headers=headers)
+        schedules = client.get("/toolchain/schedules", headers=headers)
+        run_due = client.post("/toolchain/schedules/run-due", headers=headers)
+        gates = client.get("/toolchain/policy-gates", headers=headers)
+        gate = client.get("/toolchain/policy-gates/startup", headers=headers)
+
+    assert projects.status_code == 200
+    assert any("nodejs" in item["ecosystems"] for item in projects.json()["projects"])
+    assert bootstrap.status_code == 200
+    assert bootstrap.json()["result"]["status"] == "planned"
+    assert repair.status_code == 200
+    assert repair.json()["result"]["mode"] == "repair"
+    assert scaffold.status_code == 200
+    assert scaffold.json()["provider_id"] == "docker"
+    assert jobs.status_code == 200
+    assert any(item["job_id"] == "snapshot_report" for item in jobs.json()["jobs"])
+    assert job_run.status_code == 200
+    assert job_run.json()["job"]["status"] == "completed"
+    assert schedule.status_code == 200
+    assert schedule.json()["schedule"]["schedule_id"] == "snapshot_report"
+    assert schedules.status_code == 200
+    assert any(item["schedule_id"] == "snapshot_report" for item in schedules.json()["schedules"])
+    assert run_due.status_code == 200
+    assert "ran" in run_due.json()
+    assert gates.status_code == 200
+    assert any(item["gate_id"] == "startup" for item in gates.json()["gates"])
+    assert gate.status_code == 200
+    assert gate.json()["gate"]["gate_id"] == "startup"
+
+
+def test_toolchain_secret_and_schedule_runtime_routes_expose_management_actions(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "linear_asks_forms_path", str(tmp_path / "linear_forms.json"))
+    monkeypatch.setattr(settings, "toolchain_updates_state_path", str(tmp_path / "toolchain_updates.json"))
+    monkeypatch.setattr(settings, "toolchain_cache_state_path", str(tmp_path / "toolchain_cache.json"))
+    monkeypatch.setattr(settings, "toolchain_secret_override_state_path", str(tmp_path / "toolchain_secret_overrides.json"))
+    monkeypatch.setattr(settings, "toolchain_scheduler_state_path", str(tmp_path / "toolchain_scheduler.json"))
+    monkeypatch.setattr(settings, "platform_manager_bearer_token", None)
+    service.get_toolchain_runtime.cache_clear()
+    runtime = service.get_toolchain_runtime()
+    monkeypatch.setattr(service, "toolchain_runtime", runtime)
+    headers = _operator_headers(monkeypatch)
+
+    with TestClient(service.app) as client:
+        secret_set = client.post(
+            "/toolchain/secret-resolution/platform_manager_bearer/set?persist=override",
+            headers=headers,
+            json={"value": "manager-secret"},
+        )
+        secret_source = client.get("/toolchain/secret-sources/platform_manager_bearer", headers=headers)
+        resolved = client.post("/toolchain/secret-resolution/platform_manager_bearer/resolve", headers=headers)
+        scheduler_start = client.post("/toolchain/schedules/runtime/start", params={"poll_seconds": 0.5}, headers=headers)
+        scheduler_runtime = client.get("/toolchain/schedules/runtime", headers=headers)
+        scheduler_stop = client.post("/toolchain/schedules/runtime/stop", headers=headers)
+        secret_clear = client.post("/toolchain/secret-resolution/platform_manager_bearer/clear", headers=headers)
+
+    assert secret_set.status_code == 200
+    assert secret_set.json()["result"]["source"] == "override_store"
+    assert secret_source.status_code == 200
+    assert secret_source.json()["secret_source"]["source"] == "override_store"
+    assert resolved.status_code == 200
+    assert resolved.json()["resolution"]["source"] == "override_store"
+    assert scheduler_start.status_code == 200
+    assert scheduler_start.json()["runtime"]["running"] is True
+    assert scheduler_runtime.status_code == 200
+    assert scheduler_runtime.json()["runtime"]["poll_seconds"] == 0.5
+    assert scheduler_stop.status_code == 200
+    assert scheduler_stop.json()["runtime"]["running"] is False
+    assert secret_clear.status_code == 200
+    assert secret_clear.json()["result"]["status"] == "cleared"
+
+
+def test_toolchain_doctor_route_exposes_machine_state(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
+
+    class StubDoctor:
+        def run(self) -> dict[str, object]:
+            return {"status": "ok", "summary": "healthy", "checks": [{"check_id": "manifest", "status": "ok"}]}
+
+    monkeypatch.setattr(service, "toolchain_doctor", StubDoctor())
+
+    with TestClient(service.app) as client:
+        response = client.get("/toolchain/doctor", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    assert response.json()["checks"][0]["check_id"] == "manifest"
+
+
+def test_toolchain_doctor_repair_route_exposes_machine_repair(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
+
+    class StubDoctor:
+        def repair(self, *, force_reinstall: bool = False) -> dict[str, object]:
+            return {
+                "status": "ok",
+                "summary": "repaired",
+                "force_reinstall": force_reinstall,
+                "actions": [{"action_id": "environment_write", "status": "ok"}],
+            }
+
+    monkeypatch.setattr(service, "toolchain_doctor", StubDoctor())
+
+    with TestClient(service.app) as client:
+        response = client.post("/toolchain/doctor/repair?force_reinstall=true", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    assert response.json()["force_reinstall"] is True
+    assert response.json()["actions"][0]["action_id"] == "environment_write"
+
+
 def test_block_list_promote_unblock_api(monkeypatch, tmp_path):
     _install_test_managers(monkeypatch, tmp_path)
     headers = _operator_headers(monkeypatch)
@@ -242,6 +642,15 @@ def test_packet_sessions_api_returns_compact_session_history(monkeypatch, tmp_pa
                     "remote_ip": "8.8.8.8",
                     "protocols": ["TCP"],
                     "local_ports": [3389],
+                    "service_names": ["rdp"],
+                    "application_protocols": ["rdp"],
+                    "transport_families": ["tcp"],
+                    "flow_ids": ["flow:tcp:8.8.8.8:51000:10.0.0.5:3389:na"],
+                    "protocol_evidence": {
+                        "application_protocols": ["tls"],
+                        "hostnames": ["example.com"],
+                        "indicators": ["tls_handshake"],
+                    },
                     "last_seen_at": "2026-03-29T21:00:00+00:00",
                     "sightings": 2,
                     "total_packets": 10,
@@ -286,6 +695,15 @@ def test_network_observations_and_evidence_api_return_combined_remote_ip_view(mo
                     "remote_ip": "8.8.8.8",
                     "protocols": ["TCP"],
                     "local_ports": [3389],
+                    "service_names": ["rdp"],
+                    "application_protocols": ["rdp"],
+                    "transport_families": ["tcp"],
+                    "flow_ids": ["flow:tcp:8.8.8.8:51000:10.0.0.5:3389:na"],
+                    "protocol_evidence": {
+                        "application_protocols": ["tls"],
+                        "hostnames": ["example.com"],
+                        "indicators": ["tls_handshake"],
+                    },
                     "last_seen_at": "2026-03-29T21:00:00+00:00",
                     "sightings": 2,
                     "total_packets": 10,
@@ -324,6 +742,12 @@ def test_network_observations_and_evidence_api_return_combined_remote_ip_view(mo
     assert payload["remote_ip"] == "8.8.8.8"
     assert payload["network_observation"]["total_hits"] == 3
     assert payload["packet_sessions"][0]["session_key"] == "packet-session:8.8.8.8"
+    assert payload["service_names"] == ["rdp"]
+    assert payload["application_protocols"] == ["rdp", "tls"]
+    assert payload["transport_families"] == ["tcp"]
+    assert payload["flow_ids"] == ["flow:tcp:8.8.8.8:51000:10.0.0.5:3389:na"]
+    assert payload["protocol_hosts"] == ["example.com"]
+    assert payload["protocol_indicators"] == ["tls_handshake"]
     assert payload["related_case_ids"]
     assert payload["open_case_count"] == 1
 
@@ -418,6 +842,15 @@ def test_create_case_from_network_evidence_api_promotes_remote_ip_context(monkey
                 "session_key": "packet-session:8.8.8.8",
                 "remote_ip": "8.8.8.8",
                 "protocols": ["TCP"],
+                "service_names": ["rdp"],
+                "application_protocols": ["rdp"],
+                "transport_families": ["tcp"],
+                "flow_ids": ["flow:tcp:8.8.8.8:51000:10.0.0.5:3389:na"],
+                "protocol_evidence": {
+                    "application_protocols": ["tls"],
+                    "hostnames": ["example.com"],
+                    "indicators": ["tls_handshake"],
+                },
                 "total_packets": 10,
             }
         ]
@@ -460,9 +893,286 @@ def test_create_case_from_network_evidence_api_promotes_remote_ip_context(monkey
     assert payload["assignee"] == "tier2"
     assert "8.8.8.8" in payload["observables"]
     assert "packet-session:8.8.8.8" in payload["observables"]
+    assert "service:rdp" in payload["observables"]
+    assert "application_protocol:rdp" in payload["observables"]
+    assert "application_protocol:tls" in payload["observables"]
+    assert "transport_family:tcp" in payload["observables"]
+    assert "flow_id:flow:tcp:8.8.8.8:51000:10.0.0.5:3389:na" in payload["observables"]
+    assert "host:example.com" in payload["observables"]
+    assert "protocol_indicator:tls_handshake" in payload["observables"]
+    assert "Services: rdp." in payload["summary"]
+    assert "Application protocols: rdp, tls." in payload["summary"]
+    assert "Hosts: example.com." in payload["summary"]
+    assert "Indicators: tls_handshake." in payload["summary"]
     assert payload["linked_alert_ids"]
     assert packet_event.event_id in payload["source_event_ids"]
     assert network_event.event_id in payload["source_event_ids"]
+
+
+def test_network_sensor_ingest_populates_network_routes(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    endpoint_headers = _endpoint_headers(monkeypatch)
+    operator_headers = _operator_headers(monkeypatch)
+
+    with TestClient(service.app) as client:
+        ingest = client.post(
+            "/network/telemetry/ingest",
+            json={
+                "sensor_name": "sensor-west-1",
+                "checked_at": "2026-04-03T01:00:00+00:00",
+                "flows": [
+                    {
+                        "remote_ip": "203.0.113.20",
+                        "remote_port": 53000,
+                        "local_ip": "10.0.0.5",
+                        "local_port": 3389,
+                        "protocol": "tcp",
+                        "state": "ESTABLISHED",
+                        "service_name": "rdp",
+                        "application_protocol": "rdp",
+                        "process_name": "svchost.exe",
+                        "process_id": 4242,
+                        "hit_count": 4,
+                        "protocol_evidence": {
+                            "application_protocols": ["tls"],
+                            "hostnames": ["sensor.example.com"],
+                            "indicators": ["tls_handshake"],
+                        },
+                    }
+                ],
+                "sessions": [
+                    {
+                        "remote_ip": "203.0.113.20",
+                        "session_key": "packet-session:203.0.113.20",
+                        "local_ips": ["10.0.0.5"],
+                        "local_ports": [3389],
+                        "remote_ports": [53000],
+                        "protocols": ["TCP"],
+                        "transport_families": ["tcp"],
+                        "service_names": ["rdp"],
+                        "application_protocols": ["rdp"],
+                        "flow_ids": ["flow:tcp:203.0.113.20:53000:10.0.0.5:3389:4242"],
+                        "packet_count": 8,
+                        "protocol_evidence": {
+                            "application_protocols": ["tls"],
+                            "hostnames": ["sensor.example.com"],
+                            "indicators": ["tls_handshake"],
+                        },
+                    }
+                ],
+                "dns_records": [
+                    {
+                        "remote_ip": "203.0.113.20",
+                        "hostname": "sensor.example.com",
+                        "record_type": "A",
+                        "answers": ["203.0.113.20"],
+                    }
+                ],
+                "http_records": [
+                    {
+                        "remote_ip": "203.0.113.20",
+                        "hostname": "sensor.example.com",
+                        "method": "GET",
+                        "path": "/login",
+                        "status_code": 200,
+                    }
+                ],
+                "tls_records": [
+                    {
+                        "remote_ip": "203.0.113.20",
+                        "server_name": "sensor.example.com",
+                        "tls_version": "TLS1.3",
+                        "ja3": "ja3-hash",
+                        "ja3s": "ja3s-hash",
+                    }
+                ],
+                "certificate_records": [
+                    {
+                        "remote_ip": "203.0.113.20",
+                        "hostname": "sensor.example.com",
+                        "sha256": "cert-sha256",
+                        "issuer": "CN=Test Issuer",
+                        "subject": "CN=sensor.example.com",
+                    }
+                ],
+                "proxy_records": [
+                    {
+                        "remote_ip": "203.0.113.20",
+                        "hostname": "sensor.example.com",
+                        "proxy_type": "http-connect",
+                        "action": "allowed",
+                        "username": "tier1",
+                    }
+                ],
+                "auth_records": [
+                    {
+                        "remote_ip": "203.0.113.20",
+                        "hostname": "sensor.example.com",
+                        "username": "tier1",
+                        "outcome": "success",
+                        "auth_protocol": "kerberos",
+                    }
+                ],
+                "vpn_records": [
+                    {
+                        "remote_ip": "203.0.113.20",
+                        "hostname": "sensor.example.com",
+                        "username": "tier1",
+                        "tunnel_type": "wireguard",
+                        "assigned_ip": "10.8.0.5",
+                        "outcome": "connected",
+                        "session_event": "disconnect",
+                        "close_reason": "idle-timeout",
+                        "duration_seconds": 1200,
+                    }
+                ],
+                "dhcp_records": [
+                    {
+                        "remote_ip": "203.0.113.20",
+                        "hostname": "sensor.example.com",
+                        "assigned_ip": "10.0.0.25",
+                        "mac_address": "00:11:22:33:44:55",
+                        "lease_action": "ack",
+                    }
+                ],
+                "directory_auth_records": [
+                    {
+                        "remote_ip": "203.0.113.20",
+                        "hostname": "sensor.example.com",
+                        "username": "tier1",
+                        "directory_service": "active-directory",
+                        "outcome": "success",
+                        "realm": "EXAMPLE.LOCAL",
+                    }
+                ],
+                "radius_records": [
+                    {
+                        "remote_ip": "203.0.113.20",
+                        "hostname": "sensor.example.com",
+                        "username": "tier1",
+                        "outcome": "accept",
+                        "reject_reason": "bad-password",
+                        "reject_code": "access-reject",
+                        "nas_identifier": "vpn-gateway-1",
+                        "realm": "EXAMPLE.LOCAL",
+                    }
+                ],
+                "nac_records": [
+                    {
+                        "remote_ip": "203.0.113.20",
+                        "hostname": "sensor.example.com",
+                        "device_id": "device-11",
+                        "mac_address": "00:11:22:33:44:55",
+                        "posture": "compliant",
+                        "previous_posture": "quarantined",
+                        "transition_reason": "scan-cleared",
+                        "action": "allow",
+                    }
+                ],
+            },
+            headers=endpoint_headers,
+        )
+        observations = client.get("/network/observations", params={"remote_ip": "203.0.113.20"}, headers=operator_headers)
+        sessions = client.get("/network/packet-sessions", params={"remote_ip": "203.0.113.20"}, headers=operator_headers)
+        flows = client.get("/network/telemetry/flows", params={"remote_ip": "203.0.113.20"}, headers=operator_headers)
+        evidence = client.get("/network/evidence", params={"remote_ip": "203.0.113.20"}, headers=operator_headers)
+        dns_records = client.get("/network/telemetry/dns", params={"hostname": "sensor.example.com"}, headers=operator_headers)
+        http_records = client.get("/network/telemetry/http", params={"hostname": "sensor.example.com"}, headers=operator_headers)
+        tls_records = client.get("/network/telemetry/tls", params={"hostname": "sensor.example.com"}, headers=operator_headers)
+        certificate_records = client.get(
+            "/network/telemetry/certificates",
+            params={"hostname": "sensor.example.com"},
+            headers=operator_headers,
+        )
+        proxy_records = client.get(
+            "/network/telemetry/proxy",
+            params={"hostname": "sensor.example.com", "username": "tier1"},
+            headers=operator_headers,
+        )
+        auth_records = client.get(
+            "/network/telemetry/auth",
+            params={"hostname": "sensor.example.com", "username": "tier1"},
+            headers=operator_headers,
+        )
+        vpn_records = client.get(
+            "/network/telemetry/vpn",
+            params={"hostname": "sensor.example.com", "username": "tier1"},
+            headers=operator_headers,
+        )
+        dhcp_records = client.get(
+            "/network/telemetry/dhcp",
+            params={"hostname": "sensor.example.com", "assigned_ip": "10.0.0.25"},
+            headers=operator_headers,
+        )
+        directory_auth_records = client.get(
+            "/network/telemetry/directory-auth",
+            params={"hostname": "sensor.example.com", "username": "tier1"},
+            headers=operator_headers,
+        )
+        radius_records = client.get(
+            "/network/telemetry/radius",
+            params={"hostname": "sensor.example.com", "username": "tier1"},
+            headers=operator_headers,
+        )
+        nac_records = client.get(
+            "/network/telemetry/nac",
+            params={"hostname": "sensor.example.com", "device_id": "device-11"},
+            headers=operator_headers,
+        )
+
+    assert ingest.status_code == 200
+    assert ingest.json()["flow_count"] == 1
+    assert ingest.json()["session_count"] == 1
+    assert ingest.json()["dns_count"] == 1
+    assert ingest.json()["http_count"] == 1
+    assert ingest.json()["tls_count"] == 1
+    assert ingest.json()["certificate_count"] == 1
+    assert ingest.json()["proxy_count"] == 1
+    assert ingest.json()["auth_count"] == 1
+    assert ingest.json()["vpn_count"] == 1
+    assert ingest.json()["dhcp_count"] == 1
+    assert ingest.json()["directory_auth_count"] == 1
+    assert ingest.json()["radius_count"] == 1
+    assert ingest.json()["nac_count"] == 1
+    assert observations.status_code == 200
+    assert observations.json()["observations"][0]["remote_ip"] == "203.0.113.20"
+    assert observations.json()["observations"][0]["service_names"] == ["rdp"]
+    assert observations.json()["observations"][0]["application_protocols"] == ["rdp"]
+    assert sessions.status_code == 200
+    assert sessions.json()["sessions"][0]["session_key"] == "packet-session:203.0.113.20"
+    assert sessions.json()["sessions"][0]["protocol_evidence"]["hostnames"] == ["sensor.example.com"]
+    assert flows.status_code == 200
+    assert flows.json()["flows"][0]["details"]["protocol_evidence"]["application_protocols"] == ["tls"]
+    assert evidence.status_code == 200
+    assert evidence.json()["evidence"][0]["protocol_hosts"] == ["sensor.example.com"]
+    assert evidence.json()["evidence"][0]["application_protocols"] == ["rdp", "tls"]
+    assert dns_records.status_code == 200
+    assert dns_records.json()["dns_records"][0]["details"]["hostname"] == "sensor.example.com"
+    assert http_records.status_code == 200
+    assert http_records.json()["http_records"][0]["details"]["path"] == "/login"
+    assert tls_records.status_code == 200
+    assert tls_records.json()["tls_records"][0]["details"]["tls_version"] == "TLS1.3"
+    assert tls_records.json()["tls_records"][0]["details"]["ja3"] == "ja3-hash"
+    assert certificate_records.status_code == 200
+    assert certificate_records.json()["certificate_records"][0]["details"]["sha256"] == "cert-sha256"
+    assert proxy_records.status_code == 200
+    assert proxy_records.json()["proxy_records"][0]["details"]["proxy_type"] == "http-connect"
+    assert auth_records.status_code == 200
+    assert auth_records.json()["auth_records"][0]["details"]["auth_protocol"] == "kerberos"
+    assert vpn_records.status_code == 200
+    assert vpn_records.json()["vpn_records"][0]["details"]["tunnel_type"] == "wireguard"
+    assert vpn_records.json()["vpn_records"][0]["details"]["session_event"] == "disconnect"
+    assert vpn_records.json()["vpn_records"][0]["details"]["close_reason"] == "idle-timeout"
+    assert dhcp_records.status_code == 200
+    assert dhcp_records.json()["dhcp_records"][0]["details"]["assigned_ip"] == "10.0.0.25"
+    assert directory_auth_records.status_code == 200
+    assert directory_auth_records.json()["directory_auth_records"][0]["details"]["directory_service"] == "active-directory"
+    assert radius_records.status_code == 200
+    assert radius_records.json()["radius_records"][0]["details"]["nas_identifier"] == "vpn-gateway-1"
+    assert radius_records.json()["radius_records"][0]["details"]["reject_code"] == "access-reject"
+    assert nac_records.status_code == 200
+    assert nac_records.json()["nac_records"][0]["details"]["device_id"] == "device-11"
+    assert nac_records.json()["nac_records"][0]["details"]["previous_posture"] == "quarantined"
 
 
 def test_endpoint_timeline_cluster_and_case_api(monkeypatch, tmp_path):
@@ -559,6 +1269,95 @@ def test_endpoint_timeline_cluster_and_case_api(monkeypatch, tmp_path):
     assert "remote_ip:8.8.8.8" in case_payload["observables"]
 
 
+def test_endpoint_lineage_cluster_case_api(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
+    process_event = service.soc_manager.ingest_event(
+        service.SocEventIngest(
+            event_type="endpoint.telemetry.process",
+            source="security_gateway",
+            severity=service.SocSeverity.high,
+            title="Endpoint process telemetry: powershell.exe",
+            summary="Endpoint device-11 reported process activity for powershell.exe.",
+            details={
+                "schema": "endpoint_process_v1",
+                "document_type": "endpoint_process",
+                "device_id": "device-11b",
+                "process_name": "powershell.exe",
+                "process_guid": "proc-guid-11b",
+                "sha256": "abc11b",
+                "parent_process_name": "winword.exe",
+                "parent_process_guid": "parent-guid-11b",
+                "signer_status": "unsigned",
+                "risk_flags": ["encoded_command"],
+            },
+            tags=["endpoint", "telemetry", "process"],
+        )
+    ).event
+    connection_event = service.soc_manager.ingest_event(
+        service.SocEventIngest(
+            event_type="endpoint.telemetry.connection",
+            source="security_gateway",
+            severity=service.SocSeverity.medium,
+            title="Endpoint connection telemetry: powershell.exe",
+            summary="Endpoint device-11b reported a live connection for powershell.exe.",
+            details={
+                "schema": "endpoint_connection_v1",
+                "document_type": "endpoint_connection",
+                "device_id": "device-11b",
+                "process_name": "powershell.exe",
+                "process_guid": "proc-guid-11b",
+                "sha256": "abc11b",
+                "remote_ip": "8.8.4.4",
+            },
+            tags=["endpoint", "telemetry", "connection"],
+        )
+    ).event
+    file_event = service.soc_manager.ingest_event(
+        service.SocEventIngest(
+            event_type="endpoint.telemetry.file",
+            source="security_gateway",
+            severity=service.SocSeverity.high,
+            title="Endpoint file telemetry: payload.dll",
+            summary="Endpoint device-11b reported file activity for payload.dll.",
+            details={
+                "schema": "endpoint_file_v1",
+                "document_type": "endpoint_file",
+                "device_id": "device-11b",
+                "filename": "payload.dll",
+                "artifact_path": "C:/Users/Public/payload.dll",
+                "operation": "created",
+                "verdict": "quarantined",
+                "actor_process_name": "powershell.exe",
+                "actor_process_sha256": "abc11b",
+                "risk_flags": ["startup_path"],
+            },
+            tags=["endpoint", "telemetry", "file"],
+        )
+    ).event
+
+    with TestClient(service.app) as client:
+        response = client.post(
+            "/endpoint/telemetry/lineage/clusters/case",
+            json={
+                "cluster_key": "device-11b::parent-guid-11b::proc-guid-11b",
+                "device_id": "device-11b",
+                "assignee": "tier2",
+            },
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["assignee"] == "tier2"
+    assert process_event.event_id in payload["source_event_ids"]
+    assert connection_event.event_id in payload["source_event_ids"]
+    assert file_event.event_id in payload["source_event_ids"]
+    assert "device:device-11b" in payload["observables"]
+    assert "process_guid:proc-guid-11b" in payload["observables"]
+    assert "filename:payload.dll" in payload["observables"]
+
+
 def test_case_context_routes_expose_rule_groups_and_timeline_clusters(monkeypatch, tmp_path):
     _install_test_managers(monkeypatch, tmp_path)
     headers = _operator_headers(monkeypatch)
@@ -647,6 +1446,11 @@ def test_case_context_routes_expose_rule_groups_and_timeline_clusters(monkeypatc
             params={"cluster_by": "process", "limit": 20},
             headers=headers,
         )
+        lineage_clusters = client.get(
+            f"/soc/cases/{case.case_id}/endpoint-lineage/clusters",
+            params={"limit": 20},
+            headers=headers,
+        )
 
     assert alert_groups.status_code == 200
     assert alert_groups.json()["groups"][0]["group_key"] == alert.correlation_key
@@ -660,6 +1464,50 @@ def test_case_context_routes_expose_rule_groups_and_timeline_clusters(monkeypatc
     assert timeline_clusters.status_code == 200
     assert timeline_clusters.json()["filters"]["case_id"] == case.case_id
     assert timeline_clusters.json()["clusters"][0]["cluster_key"] == "device-12:proc-guid-12"
+    assert lineage_clusters.status_code == 200
+    assert lineage_clusters.json()["filters"]["case_id"] == case.case_id
+    assert lineage_clusters.json()["clusters"][0]["cluster_key"] == "device-12::proc-guid-12::proc-guid-12"
+
+
+def test_case_alert_and_event_endpoints(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
+    ingest = service.soc_manager.ingest_event(
+        service.SocEventIngest(
+            event_type="endpoint.telemetry.process",
+            source="security_gateway",
+            severity=service.SocSeverity.high,
+            title="Endpoint process telemetry: powershell.exe",
+            summary="Endpoint device-20 reported process activity.",
+            details={
+                "schema": "endpoint_process_v1",
+                "document_type": "endpoint_process",
+                "device_id": "device-20",
+                "process_name": "powershell.exe",
+                "process_guid": "proc-guid-20",
+            },
+            tags=["endpoint", "telemetry", "process"],
+        )
+    )
+    case = service.soc_manager.create_case(
+        service.SocCaseCreate(
+            title="Endpoint alert/event case",
+            summary="Investigate linked alert and source event reads.",
+            severity=service.SocSeverity.high,
+            linked_alert_ids=[ingest.alert.alert_id],
+            source_event_ids=[ingest.event.event_id],
+            observables=["device:device-20"],
+        )
+    )
+
+    with TestClient(service.app) as client:
+        alerts = client.get(f"/soc/cases/{case.case_id}/alerts", headers=headers)
+        events = client.get(f"/soc/cases/{case.case_id}/events", headers=headers)
+
+    assert alerts.status_code == 200
+    assert alerts.json()["alerts"][0]["alert_id"] == ingest.alert.alert_id
+    assert events.status_code == 200
+    assert events.json()["events"][0]["event_id"] == ingest.event.event_id
 
 
 def test_case_endpoint_timeline_cluster_case_route(monkeypatch, tmp_path):
@@ -751,6 +1599,97 @@ def test_case_endpoint_timeline_cluster_case_route(monkeypatch, tmp_path):
     assert file_event.event_id in payload["source_event_ids"]
     assert "device:device-13" in payload["observables"]
     assert "process_guid:proc-guid-13" in payload["observables"]
+
+
+def test_case_endpoint_lineage_cluster_case_route(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
+    process_event = service.soc_manager.ingest_event(
+        service.SocEventIngest(
+            event_type="endpoint.telemetry.process",
+            source="security_gateway",
+            severity=service.SocSeverity.high,
+            title="Endpoint process telemetry: powershell.exe",
+            summary="Endpoint device-13b reported process activity.",
+            details={
+                "schema": "endpoint_process_v1",
+                "document_type": "endpoint_process",
+                "device_id": "device-13b",
+                "process_name": "powershell.exe",
+                "process_guid": "proc-guid-13b",
+                "sha256": "ps13b",
+                "parent_process_name": "winword.exe",
+                "parent_process_guid": "parent-guid-13b",
+                "signer_status": "unsigned",
+                "reputation": "suspicious",
+            },
+            tags=["endpoint", "telemetry", "process"],
+        )
+    ).event
+    connection_event = service.soc_manager.ingest_event(
+        service.SocEventIngest(
+            event_type="endpoint.telemetry.connection",
+            source="security_gateway",
+            severity=service.SocSeverity.medium,
+            title="Endpoint connection telemetry: powershell.exe",
+            summary="Endpoint device-13b reported a live connection for powershell.exe.",
+            details={
+                "schema": "endpoint_connection_v1",
+                "document_type": "endpoint_connection",
+                "device_id": "device-13b",
+                "process_name": "powershell.exe",
+                "process_guid": "proc-guid-13b",
+                "sha256": "ps13b",
+                "remote_ip": "198.51.100.113",
+            },
+            tags=["endpoint", "telemetry", "connection"],
+        )
+    ).event
+    file_event = service.soc_manager.ingest_event(
+        service.SocEventIngest(
+            event_type="endpoint.telemetry.file",
+            source="security_gateway",
+            severity=service.SocSeverity.high,
+            title="Endpoint file telemetry: payload.exe",
+            summary="Endpoint device-13b reported suspicious file activity.",
+            details={
+                "schema": "endpoint_file_v1",
+                "document_type": "endpoint_file",
+                "device_id": "device-13b",
+                "filename": "payload.exe",
+                "operation": "created",
+                "verdict": "quarantined",
+                "actor_process_name": "powershell.exe",
+                "actor_process_sha256": "ps13b",
+            },
+            tags=["endpoint", "telemetry", "file"],
+        )
+    ).event
+    alert = next(item for item in service.soc_manager.query_alerts(correlation_rule="endpoint_timeline_execution_chain", limit=10))
+    case = service.soc_manager.create_case(
+        service.SocCaseCreate(
+            title="Endpoint lineage investigation",
+            summary="Investigate endpoint lineage activity.",
+            severity=service.SocSeverity.high,
+            linked_alert_ids=[alert.alert_id],
+            source_event_ids=[process_event.event_id, connection_event.event_id, file_event.event_id],
+            observables=["device:device-13b", "process_guid:proc-guid-13b"],
+        )
+    )
+
+    with TestClient(service.app) as client:
+        response = client.post(
+            f"/soc/cases/{case.case_id}/endpoint-lineage/clusters/case",
+            json={"cluster_key": "device-13b::parent-guid-13b::proc-guid-13b", "assignee": "tier2"},
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["assignee"] == "tier2"
+    assert process_event.event_id in payload["source_event_ids"]
+    assert connection_event.event_id in payload["source_event_ids"]
+    assert file_event.event_id in payload["source_event_ids"]
 
 
 def test_case_hunt_telemetry_cluster_routes(monkeypatch, tmp_path):
@@ -1049,15 +1988,29 @@ def test_detection_rule_group_routes(monkeypatch, tmp_path):
             "/soc/detections/endpoint_timeline_execution_chain/rule-evidence-groups/device-15",
             headers=headers,
         )
+        alert_group_case_response = client.post(
+            "/soc/detections/endpoint_timeline_execution_chain/rule-alert-groups/case",
+            headers=headers,
+            json={"group_key": "device-15:proc-guid-15", "assignee": "tier2"},
+        )
+        evidence_group_case_response = client.post(
+            "/soc/detections/endpoint_timeline_execution_chain/rule-evidence-groups/case",
+            headers=headers,
+            json={"group_key": "device-15", "assignee": "tier2"},
+        )
 
     assert alert_groups_response.status_code == 200
     assert alert_group_response.status_code == 200
     assert evidence_groups_response.status_code == 200
     assert evidence_group_response.status_code == 200
+    assert alert_group_case_response.status_code == 200
+    assert evidence_group_case_response.status_code == 200
     assert alert_groups_response.json()["groups"][0]["group_key"] == "device-15:proc-guid-15"
     assert alert_group_response.json()["group"]["group_key"] == "device-15:proc-guid-15"
     assert evidence_groups_response.json()["groups"][0]["group_key"] == "device-15"
     assert evidence_group_response.json()["group"]["group_key"] == "device-15"
+    assert alert_group_case_response.json()["assignee"] == "tier2"
+    assert evidence_group_case_response.json()["assignee"] == "tier2"
 
 
 def test_soc_alerts_can_filter_by_correlation_rule(monkeypatch, tmp_path):
@@ -1318,6 +2271,77 @@ def test_telemetry_summary_routes_return_facets_and_timeline(monkeypatch, tmp_pa
     assert packet_payload["match_count"] == 1
     assert packet_payload["retention_hours"] == settings.soc_packet_telemetry_retention_hours
     assert packet_payload["summaries"]["remote_ips"] == [{"value": "203.0.113.77", "count": 1}]
+
+
+def test_endpoint_lineage_summary_route_returns_cluster_facets(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
+    events = [
+        service.SocEventRecord(
+            event_id="evt-lineage-proc",
+            event_type="endpoint.telemetry.process",
+            source="sensor-a",
+            severity=service.SocSeverity.high,
+            title="Endpoint process telemetry",
+            summary="Endpoint device-lineage reported process activity.",
+            details={
+                "document_type": "endpoint_process",
+                "device_id": "device-lineage",
+                "process_name": "powershell.exe",
+                "process_guid": "proc-lineage",
+                "sha256": "lineage-sha",
+                "parent_process_name": "winword.exe",
+                "parent_process_guid": "parent-lineage",
+                "signer_name": "Unknown",
+            },
+            tags=["endpoint", "telemetry", "process"],
+            artifacts=[],
+            created_at=datetime(2026, 4, 1, 0, 0, tzinfo=timezone.utc),
+            linked_alert_id=None,
+        ),
+        service.SocEventRecord(
+            event_id="evt-lineage-file",
+            event_type="endpoint.telemetry.file",
+            source="sensor-a",
+            severity=service.SocSeverity.medium,
+            title="Endpoint file telemetry",
+            summary="Endpoint device-lineage reported file activity.",
+            details={
+                "document_type": "endpoint_file",
+                "device_id": "device-lineage",
+                "filename": "payload.dll",
+                "artifact_path": "C:/Users/Public/payload.dll",
+                "actor_process_name": "powershell.exe",
+                "actor_process_sha256": "lineage-sha",
+            },
+            tags=["endpoint", "telemetry", "file"],
+            artifacts=[],
+            created_at=datetime(2026, 4, 1, 1, 0, tzinfo=timezone.utc),
+            linked_alert_id=None,
+        ),
+    ]
+    service.soc_manager._store.event_store.write(events)  # type: ignore[attr-defined]
+    service.soc_manager._store.event_index_store.rebuild(events)  # type: ignore[attr-defined]
+
+    with TestClient(service.app) as client:
+        response = client.get(
+            "/endpoint/telemetry/lineage/summary",
+            params={
+                "device_id": "device-lineage",
+                "start_at": "2026-04-01T00:00:00+00:00",
+                "end_at": "2026-04-01T02:00:00+00:00",
+                "facet_limit": 3,
+            },
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["telemetry"] == "endpoint_lineage"
+    assert payload["match_count"] == 1
+    assert payload["facets"]["lineage_root"] == [{"value": "parent-lineage", "count": 1}]
+    assert payload["summaries"]["filenames"] == [{"value": "payload.dll", "count": 1}]
+    assert payload["clusters"][0]["cluster_key"] == "device-lineage::parent-lineage::proc-lineage"
 
 
 def test_hunt_telemetry_cluster_routes_support_detail_and_case_promotion(monkeypatch, tmp_path):
@@ -2071,6 +3095,45 @@ def test_security_health_reports_broken_auth_backend(monkeypatch, tmp_path):
     )
 
 
+def test_security_health_reports_platform_manager_and_webhook_security(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
+    monkeypatch.setattr(service, "_validate_startup_security_dependencies", lambda: None)
+    monkeypatch.setattr(settings, "platform_manager_url", "https://manager.local")
+    monkeypatch.setattr(settings, "platform_manager_bearer_token", None)
+    monkeypatch.setattr(settings, "platform_manager_heartbeat_enabled", True)
+    monkeypatch.setattr(settings, "platform_deployment_mode", "multi-node")
+    monkeypatch.setattr(settings, "platform_node_role", "sensor")
+    monkeypatch.setattr(settings, "alert_webhook_url", "http://alerts.local/webhook")
+    monkeypatch.setattr(settings, "alert_webhook_verify_tls", False)
+
+    with TestClient(service.app) as client:
+        response = client.get("/health/security", headers=headers)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["healthy"] is False
+    assert payload["auth_backends"]["platform_manager"]["status"] == "missing_token"
+    assert payload["auth_backends"]["platform_manager"]["required"] is True
+    assert payload["auth_backends"]["alert_webhook"]["status"] == "insecure_transport"
+    assert "Platform manager bearer token is required for non-local remote manager access." in payload["warnings"]
+    assert "Alert webhook URL should use HTTPS." in payload["warnings"]
+
+
+def test_startup_security_validation_rejects_nonlocal_manager_without_token(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "platform_manager_url", "https://manager.local")
+    monkeypatch.setattr(settings, "platform_manager_bearer_token", None)
+    monkeypatch.setattr(settings, "platform_manager_heartbeat_enabled", True)
+    monkeypatch.setattr(settings, "platform_deployment_mode", "multi-node")
+    monkeypatch.setattr(settings, "platform_node_role", "sensor")
+    monkeypatch.setattr(settings, "operator_bearer_secret_name", None)
+    monkeypatch.setattr(settings, "endpoint_bearer_secret_name", None)
+
+    with pytest.raises(RuntimeError, match="Platform manager bearer token is required for non-local remote manager access."):
+        service._validate_startup_security_dependencies()
+
+
 def test_soc_event_ingest_creates_alert_and_overview(monkeypatch, tmp_path):
     _install_test_managers(monkeypatch, tmp_path)
     headers = _operator_headers(monkeypatch)
@@ -2480,9 +3543,11 @@ def test_soc_hunt_returns_index_metadata_and_filtered_events(monkeypatch, tmp_pa
     assert second.status_code == 200
     assert hunted.status_code == 200
     payload = hunted.json()
-    assert payload["index"]["backend"] == "json-event-index"
+    assert payload["index"]["backend"] == "sqlite-event-index"
     assert payload["index"]["indexed_event_count"] == 2
     assert payload["index"]["token_count"] >= 1
+    assert payload["index"]["facet_source"] == "sqlite-event-index"
+    assert payload["index"]["timeline_source"] == "sqlite-event-index"
     assert len(payload["events"]) == 1
     assert payload["events"][0]["source"] == "sensor-a"
     assert payload["events"][0]["details"]["remote_ip"] == "185.146.173.20"
@@ -2640,6 +3705,9 @@ def test_soc_dashboard_reports_correlation_and_triage(monkeypatch, tmp_path):
                 "hunt_cluster_value": "device-11",
                 "hunt_cluster_key": "cluster-11",
                 "hunt_cluster_action": "details",
+                "endpoint_timeline_cluster_mode": "remote_ip",
+                "endpoint_timeline_cluster_key": "timeline-11",
+                "endpoint_timeline_cluster_action": "case",
             }
         ),
         encoding="utf-8",
@@ -2675,6 +3743,16 @@ def test_soc_dashboard_reports_correlation_and_triage(monkeypatch, tmp_path):
     assert payload["view_state"]["hunt_cluster_value"] == "device-11"
     assert payload["view_state"]["hunt_cluster_key"] == "cluster-11"
     assert payload["view_state"]["hunt_cluster_action"] == "details"
+    assert payload["view_state"]["endpoint_timeline_cluster_mode"] == "remote_ip"
+    assert payload["view_state"]["endpoint_timeline_cluster_key"] == "timeline-11"
+    assert payload["view_state"]["endpoint_timeline_cluster_action"] == "case"
+    assert payload["summary_labels"]["toolchain_updates"] == "Toolchain Updates"
+    assert payload["summary_labels"]["toolchain_security"] == "Toolchain Security"
+    assert payload["summary_labels"]["hunt_clusters"] == "Hunt Clusters [device_id]"
+    assert payload["summary_labels"]["endpoint_timeline_clusters"] == "Timeline Clusters [remote_ip]"
+    assert payload["summary_labels"]["endpoint_lineage_clusters"] == "Endpoint Lineage"
+    assert payload["summary_labels"]["operational_alerts"] == "Operational Alerts [stuck action]"
+    assert payload["summary_labels"]["operational_cases"] == "Operational Cases [stuck action]"
 
 
 def test_soc_dashboard_view_state_update_api_persists_saved_filter(monkeypatch, tmp_path):
@@ -2690,6 +3768,9 @@ def test_soc_dashboard_view_state_update_api_persists_saved_filter(monkeypatch, 
                 "hunt_cluster_value": "proc-guid-1",
                 "hunt_cluster_key": "cluster-44",
                 "hunt_cluster_action": "case",
+                "endpoint_timeline_cluster_mode": "process",
+                "endpoint_timeline_cluster_key": "timeline-44",
+                "endpoint_timeline_cluster_action": "details",
             },
             headers=headers,
         )
@@ -2701,12 +3782,25 @@ def test_soc_dashboard_view_state_update_api_persists_saved_filter(monkeypatch, 
     assert updated.json()["view_state"]["hunt_cluster_value"] == "proc-guid-1"
     assert updated.json()["view_state"]["hunt_cluster_key"] == "cluster-44"
     assert updated.json()["view_state"]["hunt_cluster_action"] == "case"
+    assert updated.json()["view_state"]["endpoint_timeline_cluster_mode"] == "process"
+    assert updated.json()["view_state"]["endpoint_timeline_cluster_key"] == "timeline-44"
+    assert updated.json()["view_state"]["endpoint_timeline_cluster_action"] == "details"
     assert dashboard.status_code == 200
     assert dashboard.json()["view_state"]["operational_reason_filter"] == "retry pressure"
     assert dashboard.json()["view_state"]["hunt_cluster_mode"] == "process_guid"
     assert dashboard.json()["view_state"]["hunt_cluster_value"] == "proc-guid-1"
     assert dashboard.json()["view_state"]["hunt_cluster_key"] == "cluster-44"
     assert dashboard.json()["view_state"]["hunt_cluster_action"] == "case"
+    assert dashboard.json()["view_state"]["endpoint_timeline_cluster_mode"] == "process"
+    assert dashboard.json()["view_state"]["endpoint_timeline_cluster_key"] == "timeline-44"
+    assert dashboard.json()["view_state"]["endpoint_timeline_cluster_action"] == "details"
+    assert dashboard.json()["summary_labels"]["toolchain_updates"] == "Toolchain Updates"
+    assert dashboard.json()["summary_labels"]["toolchain_security"] == "Toolchain Security"
+    assert dashboard.json()["summary_labels"]["hunt_clusters"] == "Hunt Clusters [process_guid]"
+    assert dashboard.json()["summary_labels"]["endpoint_timeline_clusters"] == "Timeline Clusters [process]"
+    assert dashboard.json()["summary_labels"]["endpoint_lineage_clusters"] == "Endpoint Lineage"
+    assert dashboard.json()["summary_labels"]["operational_alerts"] == "Operational Alerts [retry pressure]"
+    assert dashboard.json()["summary_labels"]["operational_cases"] == "Operational Cases [retry pressure]"
 
 
 def test_soc_correlates_endpoint_posture_and_access_decision(monkeypatch, tmp_path):
@@ -3857,6 +4951,22 @@ def test_endpoint_process_and_file_telemetry_docs_are_searchable(monkeypatch, tm
             },
             headers=operator_headers,
         )
+        lineage_clusters = client.get(
+            "/endpoint/telemetry/lineage/clusters",
+            params={
+                "device_id": "device-11",
+                "process_guid": "proc-guid-11",
+            },
+            headers=operator_headers,
+        )
+        lineage_detail = client.get(
+            "/endpoint/telemetry/lineage/clusters/device-11::parent-guid-11::proc-guid-11",
+            params={
+                "device_id": "device-11",
+                "process_guid": "proc-guid-11",
+            },
+            headers=operator_headers,
+        )
 
     assert process_response.status_code == 200
     assert file_response.status_code == 200
@@ -3891,6 +5001,12 @@ def test_endpoint_process_and_file_telemetry_docs_are_searchable(monkeypatch, tm
         "endpoint.telemetry.connection",
         "endpoint.telemetry.file",
     ]
+    assert lineage_clusters.status_code == 200
+    assert lineage_clusters.json()["clusters"][0]["cluster_key"] == "device-11::parent-guid-11::proc-guid-11"
+    assert lineage_clusters.json()["clusters"][0]["parent_process_names"] == ["winword.exe"]
+    assert lineage_clusters.json()["clusters"][0]["filenames"] == ["payload.dll"]
+    assert lineage_detail.status_code == 200
+    assert len(lineage_detail.json()["cluster"]["events"]) == 3
     assert timeline.json()["timeline"][1]["recorded_at"] == "2026-04-01T12:00:00+00:00"
     assert timeline.json()["timeline"][1]["details"]["state_history"] == ["SYN_SENT", "ESTABLISHED"]
 
@@ -3937,6 +5053,165 @@ def test_network_snapshot_creates_normalized_connection_docs(monkeypatch, tmp_pa
     assert hunted.json()["events"][0]["details"]["remote_ip"] == "198.51.100.81"
 
 
+def test_network_snapshot_creates_normalized_flow_docs(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
+
+    service._record_network_monitor_snapshot(
+        {
+            "checked_at": "2026-04-01T12:00:00+00:00",
+            "suspicious_observations": [
+                {
+                    "remote_ip": "198.51.100.81",
+                    "states": ["ESTABLISHED"],
+                    "state_counts": {"ESTABLISHED": 3},
+                    "local_ports": [8443],
+                    "remote_ports": [51000],
+                    "hit_count": 3,
+                    "process_ids": [4242],
+                    "process_names": ["svchost.exe"],
+                    "sensitive_ports": [],
+                    "sample_connections": [
+                        {
+                            "state": "ESTABLISHED",
+                            "protocol": "tcp",
+                            "transport_family": "tcp",
+                            "service_name": "https-alt",
+                            "application_protocol": "https-alt",
+                            "flow_id": "flow:tcp:198.51.100.81:51000:10.0.0.5:8443:4242",
+                            "local_ip": "10.0.0.5",
+                            "local_port": 8443,
+                            "remote_ip": "198.51.100.81",
+                            "remote_port": 51000,
+                            "process_id": 4242,
+                            "process_name": "svchost.exe",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    with TestClient(service.app) as client:
+        events = client.get(
+            "/soc/events",
+            params={
+                "event_type": "network.telemetry.flow",
+                "flow_id": "flow:tcp:198.51.100.81:51000:10.0.0.5:8443:4242",
+                "service_name": "https-alt",
+                "application_protocol": "https-alt",
+                "local_ip": "10.0.0.5",
+                "local_port": "8443",
+                "remote_port": "51000",
+                "protocol": "tcp",
+                "state": "ESTABLISHED",
+            },
+            headers=headers,
+        )
+        hunted = client.get(
+            "/soc/hunt",
+            params={
+                "event_type": "network.telemetry.flow",
+                "flow_id": "flow:tcp:198.51.100.81:51000:10.0.0.5:8443:4242",
+                "service_name": "https-alt",
+                "application_protocol": "https-alt",
+                "local_ip": "10.0.0.5",
+                "local_port": "8443",
+                "remote_port": "51000",
+                "protocol": "tcp",
+                "state": "ESTABLISHED",
+            },
+            headers=headers,
+        )
+
+    event = events.json()["events"][0]
+    assert event["details"]["schema"] == "network_flow_v1"
+    assert event["details"]["document_type"] == "network_flow"
+    assert event["details"]["flow_id"] == "flow:tcp:198.51.100.81:51000:10.0.0.5:8443:4242"
+    assert event["details"]["service_name"] == "https-alt"
+    assert event["details"]["application_protocol"] == "https-alt"
+    assert event["details"]["local_ip"] == "10.0.0.5"
+    assert event["details"]["local_port"] == 8443
+    assert event["details"]["remote_port"] == 51000
+    assert event["details"]["protocol"] == "tcp"
+    assert hunted.json()["events"][0]["details"]["local_ip"] == "10.0.0.5"
+    assert hunted.json()["facets"]["service_name"] == [{"value": "https-alt", "count": 1}]
+    assert hunted.json()["facets"]["protocol"] == [{"value": "tcp", "count": 1}]
+
+
+def test_soc_event_and_hunt_routes_support_close_reason_and_reject_code_filters(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
+    events = [
+        service.SocEventRecord(
+            event_id="evt-vpn-close",
+            event_type="network.telemetry.vpn",
+            source="sensor-auth",
+            severity=service.SocSeverity.medium,
+            title="VPN session closed",
+            summary="VPN session closed because of idle timeout.",
+            details={
+                "schema": "network_vpn_v1",
+                "document_type": "network_vpn",
+                "username": "analyst",
+                "hostname": "vpn-gateway-1",
+                "close_reason": "idle-timeout",
+                "session_event": "disconnect",
+            },
+            tags=["network", "telemetry", "vpn"],
+            artifacts=[],
+            created_at=datetime(2026, 4, 1, 4, 0, tzinfo=timezone.utc),
+            linked_alert_id=None,
+        ),
+        service.SocEventRecord(
+            event_id="evt-radius-reject",
+            event_type="network.telemetry.radius",
+            source="sensor-auth",
+            severity=service.SocSeverity.high,
+            title="RADIUS reject",
+            summary="RADIUS authentication rejected for analyst.",
+            details={
+                "schema": "network_radius_v1",
+                "document_type": "network_radius",
+                "username": "analyst",
+                "hostname": "vpn-gateway-1",
+                "reject_code": "access-reject",
+                "outcome": "failure",
+            },
+            tags=["network", "telemetry", "radius"],
+            artifacts=[],
+            created_at=datetime(2026, 4, 1, 4, 5, tzinfo=timezone.utc),
+            linked_alert_id=None,
+        ),
+    ]
+    service.soc_manager._store.event_store.write(events)  # type: ignore[attr-defined]
+    service.soc_manager._store.event_index_store.rebuild(events)  # type: ignore[attr-defined]
+
+    with TestClient(service.app) as client:
+        vpn_events = client.get(
+            "/soc/events",
+            params={"event_type": "network.telemetry.vpn", "close_reason": "idle-timeout"},
+            headers=headers,
+        )
+        radius_events = client.get(
+            "/soc/events",
+            params={"event_type": "network.telemetry.radius", "reject_code": "access-reject"},
+            headers=headers,
+        )
+        hunted = client.get(
+            "/soc/hunt",
+            params={"source": "sensor-auth", "facet_limit": 5, "limit": 10},
+            headers=headers,
+        )
+
+    assert vpn_events.json()["events"][0]["details"]["close_reason"] == "idle-timeout"
+    assert radius_events.json()["events"][0]["details"]["reject_code"] == "access-reject"
+    assert hunted.json()["facets"]["close_reason"] == [{"value": "idle-timeout", "count": 1}]
+    assert hunted.json()["facets"]["reject_code"] == [{"value": "access-reject", "count": 1}]
+    assert hunted.json()["summaries"]["close_reasons"] == [{"value": "idle-timeout", "count": 1}]
+    assert hunted.json()["summaries"]["reject_codes"] == [{"value": "access-reject", "count": 1}]
+
+
 def test_packet_snapshot_creates_normalized_session_docs(monkeypatch, tmp_path):
     _install_test_managers(monkeypatch, tmp_path)
     headers = _operator_headers(monkeypatch)
@@ -3978,6 +5253,10 @@ def test_packet_snapshot_creates_normalized_session_docs(monkeypatch, tmp_path):
     assert event["details"]["schema"] == "packet_session_v1"
     assert event["details"]["document_type"] == "packet_session"
     assert event["details"]["session_key"] == "packet-session:198.51.100.91"
+    assert event["details"]["local_ip"] == "10.0.0.5"
+    assert event["details"]["local_port"] == 3389
+    assert event["details"]["remote_port"] == 51000
+    assert event["details"]["protocol"] == "tcp"
     assert event["details"]["evidence_mode"] == "socket_table"
     assert hunted.json()["events"][0]["details"]["session_key"] == "packet-session:198.51.100.91"
 
@@ -3998,9 +5277,26 @@ def test_dedicated_network_and_packet_telemetry_routes(monkeypatch, tmp_path):
                     "state_counts": {"ESTABLISHED": 3},
                     "local_ports": [8443],
                     "remote_ports": [51000],
+                    "process_ids": [4242],
+                    "process_names": ["svchost.exe"],
                     "hit_count": 3,
                     "sensitive_ports": [],
-                    "sample_connections": [],
+                    "sample_connections": [
+                        {
+                            "state": "ESTABLISHED",
+                            "protocol": "tcp",
+                            "transport_family": "tcp",
+                            "service_name": "https-alt",
+                            "application_protocol": "https-alt",
+                            "flow_id": "flow:tcp:198.51.100.81:51000:10.0.0.5:8443:4242",
+                            "process_id": 4242,
+                            "process_name": "svchost.exe",
+                            "local_ip": "10.0.0.5",
+                            "local_port": 8443,
+                            "remote_ip": "198.51.100.81",
+                            "remote_port": 51000,
+                        }
+                    ],
                 }
             ],
         }
@@ -4028,14 +5324,355 @@ def test_dedicated_network_and_packet_telemetry_routes(monkeypatch, tmp_path):
 
     with TestClient(service.app) as client:
         network_docs = client.get("/network/telemetry/connections", params={"remote_ip": "198.51.100.81"}, headers=headers)
+        network_flows = client.get(
+            "/network/telemetry/flows",
+            params={
+                "remote_ip": "198.51.100.81",
+                "process_name": "svchost.exe",
+                "flow_id": "flow:tcp:198.51.100.81:51000:10.0.0.5:8443:4242",
+                "service_name": "https-alt",
+                "application_protocol": "https-alt",
+                "local_ip": "10.0.0.5",
+                "local_port": "8443",
+                "remote_port": "51000",
+                "protocol": "tcp",
+                "state": "ESTABLISHED",
+            },
+            headers=headers,
+        )
+        network_summary = client.get(
+            "/network/telemetry/summary",
+            params={
+                "remote_ip": "198.51.100.81",
+                "process_name": "svchost.exe",
+                "flow_id": "flow:tcp:198.51.100.81:51000:10.0.0.5:8443:4242",
+                "service_name": "https-alt",
+                "application_protocol": "https-alt",
+                "local_ip": "10.0.0.5",
+                "local_port": "8443",
+                "remote_port": "51000",
+                "protocol": "tcp",
+                "state": "ESTABLISHED",
+            },
+            headers=headers,
+        )
         packet_docs = client.get("/packet/telemetry/sessions", params={"session_key": "packet-session:198.51.100.91"}, headers=headers)
+        packet_filtered = client.get(
+            "/packet/telemetry/sessions",
+            params={
+                "session_key": "packet-session:198.51.100.91",
+                "local_ip": "10.0.0.5",
+                "local_port": "3389",
+                "remote_port": "51000",
+                "protocol": "tcp",
+            },
+            headers=headers,
+        )
+        packet_summary = client.get(
+            "/packet/telemetry/summary",
+            params={
+                "session_key": "packet-session:198.51.100.91",
+                "local_ip": "10.0.0.5",
+                "local_port": "3389",
+                "remote_port": "51000",
+                "protocol": "tcp",
+            },
+            headers=headers,
+        )
 
     assert network_docs.status_code == 200
+    assert network_flows.status_code == 200
+    assert network_summary.status_code == 200
     assert packet_docs.status_code == 200
+    assert packet_filtered.status_code == 200
+    assert packet_summary.status_code == 200
     assert network_docs.json()["retention_hours"] == 24.0
+    assert network_flows.json()["retention_hours"] == 24.0
     assert packet_docs.json()["retention_hours"] == 48.0
     assert network_docs.json()["connections"][0]["details"]["remote_ip"] == "198.51.100.81"
+    assert network_flows.json()["flows"][0]["details"]["local_ip"] == "10.0.0.5"
+    assert network_flows.json()["flows"][0]["details"]["process_name"] == "svchost.exe"
+    assert network_flows.json()["flows"][0]["details"]["service_name"] == "https-alt"
+    assert network_summary.json()["facets"]["protocol"] == [{"value": "tcp", "count": 1}]
+    assert network_summary.json()["facets"]["service_name"] == [{"value": "https-alt", "count": 1}]
+    assert network_summary.json()["summaries"]["local_ports"] == [{"value": "8443", "count": 1}]
     assert packet_docs.json()["sessions"][0]["details"]["session_key"] == "packet-session:198.51.100.91"
+    assert packet_filtered.json()["sessions"][0]["details"]["local_ip"] == "10.0.0.5"
+    assert packet_summary.json()["facets"]["protocol"] == [{"value": "tcp", "count": 1}]
+    assert packet_summary.json()["summaries"]["local_ports"] == [{"value": "3389", "count": 1}]
+
+
+def test_soc_event_index_routes_expose_status_and_rebuild(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
+    service.soc_manager.ingest_event(
+        service.SocEventIngest(
+            event_type="endpoint.telemetry.process",
+            source="endpoint-a",
+            severity=service.SocSeverity.medium,
+            title="Process telemetry",
+            summary="Process seen",
+            details={"device_id": "device-11", "process_name": "powershell.exe"},
+            tags=["endpoint"],
+        )
+    )
+
+    with TestClient(service.app) as client:
+        status_response = client.get("/soc/events/index", headers=headers)
+        rebuild_response = client.post("/soc/events/index/rebuild", headers=headers)
+
+    assert status_response.status_code == 200
+    assert rebuild_response.status_code == 200
+    assert status_response.json()["indexed_event_count"] == 1
+    assert status_response.json()["dimension_counts"]["process_names"] >= 1
+    assert status_response.json()["indexed_at"] is not None
+    assert status_response.json()["stale"] is False
+    assert rebuild_response.json()["rebuilt"] is True
+
+
+def test_packet_capture_routes_return_retained_capture_text(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
+    capture_dir = tmp_path / "captures"
+    capture_dir.mkdir()
+    capture_id = "packet-capture-123"
+    etl_path = capture_dir / f"{capture_id}.etl"
+    txt_path = capture_dir / f"{capture_id}.txt"
+    metadata_path = capture_dir / f"{capture_id}.json"
+    etl_path.write_text("etl", encoding="utf-8")
+    txt_path.write_text(
+        "TCP 10.0.0.5:3389 -> 8.8.8.8:51000 TLS ClientHello SNI example.com GET / HTTP/1.1",
+        encoding="utf-8",
+    )
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "capture_id": capture_id,
+                "captured_at": "2026-04-03T01:00:00+00:00",
+                "etl_path": str(etl_path),
+                "txt_path": str(txt_path),
+                "etl_size_bytes": 3,
+                "txt_size_bytes": 19,
+                "primary_remote_ip": "8.8.8.8",
+                "primary_session_key": "packet-session:8.8.8.8",
+                "protocols": ["TCP"],
+                "local_ports": [3389],
+                "remote_ports": [51000],
+                "session_observations": [
+                    {
+                        "session_key": "packet-session:8.8.8.8",
+                        "remote_ip": "8.8.8.8",
+                        "protocols": ["TCP"],
+                        "local_ports": [3389],
+                        "remote_ports": [51000],
+                        "packet_count": 1,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monitor = service.PacketMonitor(
+        state_path=tmp_path / "packet_state.json",
+        capture_retention_enabled=True,
+        capture_retention_path=capture_dir,
+    )
+    monkeypatch.setattr(service, "packet_monitor", monitor)
+    monkeypatch.setattr(settings, "packet_monitor_capture_retention_enabled", True)
+
+    with TestClient(service.app) as client:
+        listing = client.get(
+            "/packet/telemetry/captures",
+            params={"remote_ip": "8.8.8.8", "protocol": "tcp", "local_port": "3389"},
+            headers=headers,
+        )
+        detail = client.get(f"/packet/telemetry/captures/{capture_id}", headers=headers)
+        text = client.get(f"/packet/telemetry/captures/{capture_id}/text", headers=headers)
+
+    assert listing.status_code == 200
+    assert detail.status_code == 200
+    assert text.status_code == 200
+    assert listing.json()["captures"][0]["capture_id"] == capture_id
+    assert detail.json()["capture"]["protocol_evidence"]["application_protocols"] == ["http", "tls"]
+    assert detail.json()["capture"]["protocol_evidence"]["hostnames"] == ["example.com"]
+    assert text.json()["text"] == "TCP 10.0.0.5:3389 -> 8.8.8.8:51000 TLS ClientHello SNI example.com GET / HTTP/1.1"
+
+
+def test_packet_capture_case_route_creates_case_from_retained_capture(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
+    capture_dir = tmp_path / "captures"
+    capture_dir.mkdir()
+    capture_id = "packet-capture-123"
+    etl_path = capture_dir / f"{capture_id}.etl"
+    txt_path = capture_dir / f"{capture_id}.txt"
+    metadata_path = capture_dir / f"{capture_id}.json"
+    etl_path.write_text("etl", encoding="utf-8")
+    txt_path.write_text(
+        "TCP 10.0.0.5:3389 -> 8.8.8.8:51000 TLS ClientHello SNI example.com",
+        encoding="utf-8",
+    )
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "capture_id": capture_id,
+                "captured_at": "2026-04-03T01:00:00+00:00",
+                "etl_path": str(etl_path),
+                "txt_path": str(txt_path),
+                "etl_size_bytes": 3,
+                "txt_size_bytes": 19,
+                "primary_remote_ip": "8.8.8.8",
+                "primary_session_key": "packet-session:8.8.8.8",
+                "protocols": ["TCP"],
+                "local_ports": [3389],
+                "remote_ports": [51000],
+                "session_observations": [
+                    {
+                        "session_key": "packet-session:8.8.8.8",
+                        "remote_ip": "8.8.8.8",
+                        "protocols": ["TCP"],
+                        "local_ports": [3389],
+                        "remote_ports": [51000],
+                        "protocol_evidence": {
+                            "application_protocols": ["tls"],
+                            "hostnames": ["example.com"],
+                            "indicators": ["tls_handshake"],
+                        },
+                        "packet_count": 7,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monitor = service.PacketMonitor(
+        state_path=tmp_path / "packet_state.json",
+        capture_retention_enabled=True,
+        capture_retention_path=capture_dir,
+    )
+    monkeypatch.setattr(service, "packet_monitor", monitor)
+
+    service.soc_manager.ingest_event(
+        service.SocEventIngest(
+            event_type="packet.monitor.finding",
+            source="packet-monitor",
+            severity=service.SocSeverity.high,
+            title="Packet monitor finding",
+            summary="Observed packet activity for 8.8.8.8.",
+            details={
+                "details": {
+                    "remote_ip": "8.8.8.8",
+                    "session_key": "packet-session:8.8.8.8",
+                    "retained_capture": {"capture_id": capture_id},
+                }
+            },
+            tags=["packet", "session"],
+        )
+    )
+
+    with TestClient(service.app) as client:
+        response = client.post(
+            f"/packet/telemetry/captures/{capture_id}/case",
+            json={"session_key": "packet-session:8.8.8.8", "assignee": "tier2"},
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "open"
+    assert payload["assignee"] == "tier2"
+    assert "packet_capture:packet-capture-123" in payload["observables"]
+    assert "application_protocol:tls" in payload["observables"]
+    assert "host:example.com" in payload["observables"]
+    assert "protocol_indicator:tls_handshake" in payload["observables"]
+
+
+def test_endpoint_query_route_supports_advanced_filters(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
+    service.soc_manager.ingest_event(
+        service.SocEventIngest(
+            event_type="endpoint.telemetry.file",
+            source="endpoint-a",
+            severity=service.SocSeverity.high,
+            title="Endpoint file telemetry: payload.dll",
+            summary="Endpoint device-11 reported file activity for payload.dll.",
+            details={
+                "document_type": "endpoint_file",
+                "device_id": "device-11",
+                "filename": "payload.dll",
+                "operation": "write",
+                "verdict": "suspicious",
+                "file_extension": ".dll",
+                "parent_process_name": "explorer.exe",
+                "reputation": "unknown",
+                "risk_flags": ["unsigned", "temp_path"],
+            },
+            tags=["endpoint", "telemetry", "file", "write", "unsigned"],
+        )
+    )
+
+    with TestClient(service.app) as client:
+        response = client.get(
+            "/endpoint/telemetry/query",
+            params={
+                "device_id": "device-11",
+                "document_type": "endpoint_file",
+                "parent_process_name": "explorer.exe",
+                "reputation": "unknown",
+                "risk_flag": "temp_path",
+                "verdict": "suspicious",
+                "operation": "write",
+                "file_extension": ".dll",
+            },
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    assert response.json()["match_count"] == 1
+    assert response.json()["events"][0]["details"]["filename"] == "payload.dll"
+
+
+def test_endpoint_query_case_route_creates_case_from_filtered_slice(monkeypatch, tmp_path):
+    _install_test_managers(monkeypatch, tmp_path)
+    headers = _operator_headers(monkeypatch)
+    service.soc_manager.ingest_event(
+        service.SocEventIngest(
+            event_type="endpoint.telemetry.file",
+            source="endpoint-a",
+            severity=service.SocSeverity.high,
+            title="Endpoint file telemetry: payload.dll",
+            summary="Endpoint device-12 reported file activity for payload.dll.",
+            details={
+                "document_type": "endpoint_file",
+                "device_id": "device-12",
+                "filename": "payload.dll",
+                "artifact_path": "C:/Temp/payload.dll",
+                "operation": "write",
+                "file_extension": ".dll",
+                "parent_process_name": "explorer.exe",
+            },
+            tags=["endpoint", "telemetry", "file"],
+        )
+    )
+
+    with TestClient(service.app) as client:
+        response = client.post(
+            "/endpoint/telemetry/query/case",
+            json={
+                "device_id": "device-12",
+                "operation": "write",
+                "file_extension": ".dll",
+                "assignee": "tier2",
+            },
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "open"
+    assert payload["assignee"] == "tier2"
+    assert "filename:payload.dll" in payload["observables"]
 
 
 def test_endpoint_scan_rejects_oversized_upload(monkeypatch, tmp_path):

@@ -87,11 +87,21 @@ class Settings(BaseSettings):
     environment: str = Field("dev", description="Deployment environment tag")
     audit_log_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "audit.jsonl"))
     soc_event_log_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "soc_events.jsonl"))
-    soc_event_index_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "soc_event_index.json"))
+    soc_event_index_backend: str = "sqlite"
+    soc_event_index_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "soc_event_index.db"))
     soc_alert_store_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "soc_alerts.json"))
     soc_case_store_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "soc_cases.json"))
     soc_detection_catalog_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "soc_detection_catalog.json"))
     soc_dashboard_view_state_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "soc_dashboard_view_state.json"))
+    linear_asks_forms_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "linear_asks_forms.json"))
+    toolchain_updates_state_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "toolchain_updates.json"))
+    toolchain_cache_state_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "toolchain_cache.json"))
+    toolchain_secret_override_state_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "toolchain_secret_overrides.json"))
+    toolchain_scheduler_state_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "toolchain_scheduler.json"))
+    toolchain_scheduler_run_on_startup: bool = True
+    toolchain_scheduler_background_enabled: bool = False
+    toolchain_scheduler_poll_seconds: float = 60.0
+    toolchain_policy_gate_fail_on_block: bool = False
     platform_node_name: Optional[str] = None
     platform_node_role: str = "standalone"
     platform_deployment_mode: str = "single-node"
@@ -167,6 +177,11 @@ class Settings(BaseSettings):
     packet_monitor_anomaly_multiplier: float = 2.0
     packet_monitor_learning_samples: int = 3
     packet_monitor_capture_bytes: int = 128
+    packet_monitor_capture_retention_enabled: bool = False
+    packet_monitor_capture_retention_path: str = Field(
+        default_factory=lambda: _default_runtime_path("logs", "packet_captures")
+    )
+    packet_monitor_capture_retention_limit: int = 20
     packet_monitor_sensitive_ports: List[int] = Field(default_factory=lambda: [22, 23, 135, 139, 445, 3389, 5900, 5985, 5986])
     stream_monitor_enabled: bool = True
     stream_monitor_every_ticks: int = 3
