@@ -1,0 +1,8 @@
+name: security-gateway
+channels:
+  - conda-forge
+dependencies:
+  - python=3.13
+  - pip
+  - pip:
+      - -e .[dev]
