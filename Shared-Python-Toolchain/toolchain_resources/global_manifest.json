@@ -1,0 +1,20 @@
+{
+  "toolchain_name": "Shared Python Toolchain",
+  "toolchain_home": "J:\\sturdy-spork\\Shared-Python-Toolchain",
+  "python_module": "toolchain_resources.runtime",
+  "python_autoload": {
+    "mechanism": "sitecustomize",
+    "loads_runtime": true
+  },
+  "console_scripts": {
+    "security_gateway": "security-gateway",
+    "toolchain_resources": "toolchain-resources",
+    "memory_optimizer": "memory-optimizer"
+  },
+  "environment_variables": {
+    "SECURITY_GATEWAY_TOOLCHAIN_HOME": "J:\\sturdy-spork\\Shared-Python-Toolchain",
+    "SECURITY_GATEWAY_TOOLCHAIN_MANIFEST": "J:\\sturdy-spork\\Shared-Python-Toolchain\\toolchain_resources\\global_manifest.json",
+    "SECURITY_GATEWAY_TOOLCHAIN_CLI": "toolchain-resources",
+    "SECURITY_GATEWAY_TOOLCHAIN_PYTHON_MODULE": "toolchain_resources.runtime"
+  }
+}

@@ -1,6 +1,7 @@
 """Live network monitoring for suspicious remote IP activity."""
 from __future__ import annotations
 
+import csv
 import json
 import subprocess
 from dataclasses import asdict, dataclass
@@ -26,6 +27,36 @@ class NetworkMonitorFinding:
 
 
 class NetworkMonitor:
+    _PORT_SERVICE_NAMES = {
+        22: "ssh",
+        25: "smtp",
+        53: "dns",
+        80: "http",
+        110: "pop3",
+        123: "ntp",
+        143: "imap",
+        389: "ldap",
+        443: "https",
+        445: "smb",
+        465: "smtps",
+        587: "submission",
+        636: "ldaps",
+        993: "imaps",
+        995: "pop3s",
+        1433: "mssql",
+        1521: "oracle",
+        3306: "mysql",
+        3389: "rdp",
+        5432: "postgresql",
+        5900: "vnc",
+        5985: "winrm-http",
+        5986: "winrm-https",
+        6379: "redis",
+        8080: "http-alt",
+        8443: "https-alt",
+        9200: "elasticsearch",
+    }
+
     def __init__(
         self,
         *,
@@ -69,6 +100,7 @@ class NetworkMonitor:
                 "last_checked_at": _utc_now().isoformat(),
                 "snapshot": snapshot,
                 "active_findings": [asdict(finding) for finding in active_findings],
+                "connection_history": self._updated_connection_history(snapshot, previous_state=previous_state),
             }
         )
         return {
@@ -77,6 +109,17 @@ class NetworkMonitor:
             "emitted_findings": [asdict(finding) for finding in emitted_findings],
             "resolved_findings": [asdict(finding) for finding in resolved_findings],
         }
+
+    def list_recent_observations(self, *, limit: int = 50, remote_ip: str | None = None) -> list[dict[str, Any]]:
+        state = self._read_state()
+        connection_history = state.get("connection_history") or {}
+        if not isinstance(connection_history, dict):
+            return []
+        observations = [payload for payload in connection_history.values() if isinstance(payload, dict)]
+        if remote_ip is not None:
+            observations = [item for item in observations if str(item.get("remote_ip") or "") == remote_ip]
+        observations.sort(key=lambda item: self._sortable_timestamp(item.get("last_seen_at")), reverse=True)
+        return observations[: max(1, limit)]
 
     def collect_snapshot(self) -> dict[str, Any]:
         result = self._runner(["netstat", "-nao", "-p", "tcp"])
@@ -87,11 +130,12 @@ class NetworkMonitor:
             if not line.startswith("TCP"):
                 continue
             parts = line.split()
-            if len(parts) < 4:
+            if len(parts) < 5:
                 continue
             local = parts[1]
             remote = parts[2]
             state = parts[3].upper()
+            process_id = self._parse_pid(parts[4])
             local_endpoint = self._parse_endpoint(local)
             remote_endpoint = self._parse_endpoint(remote)
             if local_endpoint is None or remote_endpoint is None:
@@ -114,10 +158,18 @@ class NetworkMonitor:
                     "local_ip": local_ip,
                     "local_port": local_port,
                     "state": state,
+                    "protocol": "tcp",
+                    "transport_family": "tcp",
+                    "process_id": process_id,
                     "sensitive_port": local_port in self._sensitive_ports,
+                    "service_name": self._service_name_for_port(local_port),
+                    "application_protocol": self._application_protocol_for_ports(local_port, remote_port),
                 }
             )
 
+        process_names = self._resolve_process_names(
+            {int(item["process_id"]) for item in inbound_candidates if isinstance(item.get("process_id"), int)}
+        )
         grouped: dict[str, dict[str, Any]] = {}
         for item in inbound_candidates:
             remote_ip = str(item["remote_ip"])
@@ -131,6 +183,8 @@ class NetworkMonitor:
                     "remote_ports": set(),
                     "hit_count": 0,
                     "sensitive_ports": set(),
+                    "process_ids": set(),
+                    "process_names": set(),
                     "sample_connections": [],
                 },
             )
@@ -142,17 +196,38 @@ class NetworkMonitor:
             record["local_ports"].add(int(item["local_port"]))
             record["remote_ports"].add(int(item["remote_port"]))
             record["hit_count"] += 1
+            process_id = item.get("process_id")
+            if isinstance(process_id, int):
+                record["process_ids"].add(process_id)
+                process_name = process_names.get(process_id)
+                if process_name:
+                    record["process_names"].add(process_name)
             if bool(item["sensitive_port"]):
                 record["sensitive_ports"].add(int(item["local_port"]))
             sample_connections = record["sample_connections"]
             if len(sample_connections) < self._evidence_sample_limit:
+                process_name = process_names.get(process_id) if isinstance(process_id, int) else None
                 sample_connections.append(
                     {
                         "state": state_name,
+                        "protocol": str(item["protocol"]),
                         "local_ip": str(item["local_ip"]),
                         "local_port": int(item["local_port"]),
                         "remote_ip": remote_ip,
                         "remote_port": int(item["remote_port"]),
+                        "process_id": process_id,
+                        "process_name": process_name,
+                        "transport_family": str(item["transport_family"]),
+                        "service_name": item.get("service_name"),
+                        "application_protocol": item.get("application_protocol"),
+                        "flow_id": self._build_flow_id(
+                            remote_ip=remote_ip,
+                            remote_port=int(item["remote_port"]),
+                            local_ip=str(item["local_ip"]),
+                            local_port=int(item["local_port"]),
+                            protocol=str(item["protocol"]),
+                            process_id=process_id,
+                        ),
                     }
                 )
 
@@ -170,6 +245,8 @@ class NetworkMonitor:
                     "remote_ports": sorted(value["remote_ports"]),
                     "hit_count": value["hit_count"],
                     "sensitive_ports": sorted(value["sensitive_ports"]),
+                    "process_ids": sorted(value["process_ids"]),
+                    "process_names": sorted(value["process_names"]),
                     "sample_connections": list(value["sample_connections"]),
                 }
             )
@@ -184,6 +261,27 @@ class NetworkMonitor:
             "dos_port_span_threshold": self._dos_port_span_threshold,
             "sensitive_ports": sorted(self._sensitive_ports),
         }
+
+    @classmethod
+    def _service_name_for_port(cls, port: int) -> str | None:
+        return cls._PORT_SERVICE_NAMES.get(port)
+
+    @classmethod
+    def _application_protocol_for_ports(cls, local_port: int, remote_port: int) -> str | None:
+        return cls._service_name_for_port(local_port) or cls._service_name_for_port(remote_port)
+
+    @staticmethod
+    def _build_flow_id(
+        *,
+        remote_ip: str,
+        remote_port: int,
+        local_ip: str,
+        local_port: int,
+        protocol: str,
+        process_id: int | None,
+    ) -> str:
+        process_part = str(process_id) if isinstance(process_id, int) else "na"
+        return f"flow:{protocol}:{remote_ip}:{remote_port}:{local_ip}:{local_port}:{process_part}"
 
     def evaluate_snapshot(self, snapshot: dict[str, Any]) -> list[NetworkMonitorFinding]:
         findings: list[NetworkMonitorFinding] = []
@@ -307,6 +405,31 @@ class NetworkMonitor:
             return None
 
     @staticmethod
+    def _parse_pid(value: str) -> int | None:
+        candidate = value.strip()
+        if not candidate.isdigit():
+            return None
+        return int(candidate)
+
+    def _resolve_process_names(self, process_ids: set[int]) -> dict[int, str]:
+        if not process_ids:
+            return {}
+        result = self._runner(["tasklist", "/fo", "csv", "/nh"])
+        if result.returncode != 0:
+            return {}
+        names: dict[int, str] = {}
+        for row in csv.reader(result.stdout.splitlines()):
+            if len(row) < 2:
+                continue
+            process_id = self._parse_pid(row[1])
+            if process_id is None or process_id not in process_ids:
+                continue
+            process_name = row[0].strip()
+            if process_name:
+                names[process_id] = process_name
+        return names
+
+    @staticmethod
     def _is_public_ip(value: str) -> bool:
         try:
             candidate = ip_address(value)
@@ -348,3 +471,70 @@ class NetworkMonitor:
             tags=["network", "recovery"],
             resolved=True,
         )
+
+    def _updated_connection_history(self, snapshot: dict[str, Any], *, previous_state: dict[str, Any]) -> dict[str, Any]:
+        history = previous_state.get("connection_history") or {}
+        next_history: dict[str, Any] = {
+            remote_ip: payload
+            for remote_ip, payload in history.items()
+            if isinstance(remote_ip, str) and isinstance(payload, dict)
+        }
+        checked_at = str(snapshot.get("checked_at") or _utc_now().isoformat())
+        observations = snapshot.get("suspicious_observations") or []
+        for item in observations:
+            if not isinstance(item, dict):
+                continue
+            remote_ip = str(item.get("remote_ip") or "")
+            if not remote_ip:
+                continue
+            previous = next_history.get(remote_ip)
+            if not isinstance(previous, dict):
+                previous = {}
+            next_history[remote_ip] = {
+                "remote_ip": remote_ip,
+                "states": sorted({*self._as_string_list(previous.get("states")), *self._as_string_list(item.get("states"))}),
+                "state_counts": self._merge_state_counts(previous.get("state_counts"), item.get("state_counts")),
+                "local_ports": sorted({*self._as_int_list(previous.get("local_ports")), *self._as_int_list(item.get("local_ports"))}),
+                "remote_ports": sorted({*self._as_int_list(previous.get("remote_ports")), *self._as_int_list(item.get("remote_ports"))})[-20:],
+                "sensitive_ports": sorted({*self._as_int_list(previous.get("sensitive_ports")), *self._as_int_list(item.get("sensitive_ports"))}),
+                "first_seen_at": str(previous.get("first_seen_at") or checked_at),
+                "last_seen_at": checked_at,
+                "sightings": int(previous.get("sightings") or 0) + 1,
+                "total_hits": int(previous.get("total_hits") or 0) + int(item.get("hit_count") or 0),
+                "max_hit_count": max(int(previous.get("max_hit_count") or 0), int(item.get("hit_count") or 0)),
+                "last_hit_count": int(item.get("hit_count") or 0),
+                "sample_connections": list(item.get("sample_connections") or [])[: self._evidence_sample_limit],
+            }
+        return next_history
+
+    @staticmethod
+    def _merge_state_counts(previous: Any, current: Any) -> dict[str, int]:
+        merged: dict[str, int] = {}
+        if isinstance(previous, dict):
+            for key, value in previous.items():
+                merged[str(key)] = int(value)
+        if isinstance(current, dict):
+            for key, value in current.items():
+                merged[str(key)] = max(merged.get(str(key), 0), int(value))
+        return merged
+
+    @staticmethod
+    def _as_string_list(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(item) for item in value]
+
+    @staticmethod
+    def _as_int_list(value: Any) -> list[int]:
+        if not isinstance(value, list):
+            return []
+        return [int(item) for item in value]
+
+    @staticmethod
+    def _sortable_timestamp(value: Any) -> datetime:
+        if not isinstance(value, str):
+            return datetime.min.replace(tzinfo=UTC)
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return datetime.min.replace(tzinfo=UTC)

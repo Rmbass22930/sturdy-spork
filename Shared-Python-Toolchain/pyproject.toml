@@ -28,11 +28,15 @@ dev = ["pytest>=8.1", "pytest-asyncio>=0.23"]
 [project.scripts]
 security-gateway = "security_gateway.cli:app"
 memory-optimizer = "memory_optimizer.cli:app"
+toolchain-resources = "toolchain_resources.cli:app"
 
 [tool.setuptools]
-packages = ["security_gateway", "memory_optimizer", "common_crypto"]
+packages = ["security_gateway", "memory_optimizer", "common_crypto", "toolchain_resources"]
 
 [tool.pytest.ini_options]
-addopts = ["--basetemp=.pytest_tmp"]
+addopts = ["-p", "pytest_local_tmp"]
 pythonpath = ["."]
 testpaths = ["tests"]
+
+[tool.ruff]
+cache-dir = "../.ruff_cache"

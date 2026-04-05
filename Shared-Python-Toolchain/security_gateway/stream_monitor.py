@@ -160,8 +160,9 @@ class StreamArtifactMonitor:
 
     @staticmethod
     def _scan_with_defender(target: Path, timeout_seconds: float) -> dict[str, Any]:
+        escaped_target = str(target).replace("'", "''")
         command = (
-            "param([string]$ScanPath) "
+            f"$ScanPath = '{escaped_target}'; "
             "$cmd = Get-Command Start-MpScan -ErrorAction SilentlyContinue; "
             "if (-not $cmd) { '{\"scan_status\":\"unavailable\",\"detections\":[]}' ; exit 0 } "
             "$before = @(Get-MpThreatDetection -ErrorAction SilentlyContinue | "
@@ -182,7 +183,7 @@ class StreamArtifactMonitor:
             "}"
         )
         result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", command, "-ScanPath", str(target)],
+            ["powershell", "-NoProfile", "-Command", command],
             capture_output=True,
             text=True,
             check=False,

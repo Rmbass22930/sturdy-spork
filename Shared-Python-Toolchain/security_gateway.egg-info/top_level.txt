@@ -1,3 +1,4 @@
 common_crypto
 memory_optimizer
 security_gateway
+toolchain_resources

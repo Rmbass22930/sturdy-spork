@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from security_gateway.stream_monitor import StreamArtifactMonitor
 
@@ -97,3 +99,22 @@ def test_run_check_tracks_resolution(tmp_path: Path) -> None:
 
     assert len(first["emitted_findings"]) == 1
     assert len(second["resolved_findings"]) == 1
+
+
+def test_scan_with_defender_embeds_literal_scan_path(monkeypatch: Any, tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout='{"scan_status":"clean","detections":[]}', stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = StreamArtifactMonitor._scan_with_defender(tmp_path / "payload.exe", 15.0)
+
+    assert result["scan_status"] == "clean"
+    args = captured["args"]
+    assert isinstance(args, list)
+    assert "-ScanPath" not in args
+    assert str(tmp_path / "payload.exe") in str(args[-1])

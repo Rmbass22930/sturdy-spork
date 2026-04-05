@@ -8,6 +8,14 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from toolchain_resources.runtime import load_toolchain_runtime
+except ImportError:  # pragma: no cover - frozen entrypoint fallback
+    load_toolchain_runtime = None  # type: ignore[assignment]
+
+if load_toolchain_runtime is not None:
+    load_toolchain_runtime(sync_updates=False)
+
+try:
     from .config import get_runtime_data_dir
 except ImportError:  # pragma: no cover - frozen entrypoint fallback
     from security_gateway.config import get_runtime_data_dir
@@ -54,6 +62,7 @@ def _resolve_uninstaller_path() -> Path | None:
     install_dir = _install_dir()
     for candidate in (
         install_dir / "SecurityGateway-Uninstall.exe",
+        install_dir / "uninstall" / "SecurityGateway-Uninstall.exe",
         install_dir / "Uninstall-SecurityGateway.ps1",
     ):
         if candidate.exists():
@@ -95,6 +104,15 @@ def _run_background_monitor() -> None:
     run_background_monitor()
 
 
+def _run_smoke_check() -> None:
+    try:
+        from .monitor_runtime import build_runtime_supervisor
+    except ImportError:  # pragma: no cover - frozen entrypoint fallback
+        from security_gateway.monitor_runtime import build_runtime_supervisor
+    supervisor = build_runtime_supervisor()
+    supervisor.perform_tasks()
+
+
 def _run_soc_dashboard() -> None:
     try:
         from .soc_dashboard import run_soc_dashboard
@@ -103,14 +121,35 @@ def _run_soc_dashboard() -> None:
     run_soc_dashboard()
 
 
-def main() -> int:
-    import tkinter as tk
-    from tkinter import messagebox
+def _finalize_smoke_check_exit(exit_code: int) -> None:
+    if getattr(sys, "frozen", False):
+        os._exit(exit_code)
+    try:
+        from .alerts import alert_manager
+    except ImportError:  # pragma: no cover - frozen entrypoint fallback
+        from security_gateway.alerts import alert_manager
+    try:
+        alert_manager.close()
+    except Exception:  # noqa: BLE001
+        pass
 
+
+def main() -> int:
     _ensure_runtime_directories()
     if len(sys.argv) > 1 and sys.argv[1] == "automation-run":
         _run_background_monitor()
         return 0
+    if len(sys.argv) > 1 and sys.argv[1] == "smoke-check":
+        try:
+            _run_smoke_check()
+        except Exception:
+            _finalize_smoke_check_exit(1)
+            raise
+        _finalize_smoke_check_exit(0)
+        return 0
+
+    import tkinter as tk
+    from tkinter import messagebox
 
     root = tk.Tk()
     root.title("Security Gateway")

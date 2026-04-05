@@ -1,28 +1,32 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import os
 from pathlib import Path
 
-project_root = Path.cwd()
-payload_env = os.environ.get("SECURITY_GATEWAY_PAYLOAD_PATH")
-if not payload_env:
-    raise SystemExit("SECURITY_GATEWAY_PAYLOAD_PATH is required. Use scripts/build-security-gateway.ps1.")
-payload_path = Path(payload_env)
-if not payload_path.exists():
-    raise SystemExit(f"Security Gateway payload missing: {payload_path}")
-uninstaller_env = os.environ.get("SECURITY_GATEWAY_UNINSTALLER_PATH")
-if not uninstaller_env:
-    raise SystemExit("SECURITY_GATEWAY_UNINSTALLER_PATH is required. Use scripts/build-security-gateway.ps1.")
-uninstaller_path = Path(uninstaller_env)
-if not uninstaller_path.exists():
-    raise SystemExit(f"Security Gateway uninstaller missing: {uninstaller_path}")
+
+def resolve_bundle_root(env_name: str, exe_name: str) -> Path:
+    value = os.environ.get(env_name)
+    if not value:
+        raise SystemExit(f"{env_name} is required. Use scripts/build-security-gateway.ps1.")
+    candidate = Path(value)
+    if candidate.is_dir():
+        bundle_root = candidate
+    else:
+        bundle_root = candidate.parent
+    exe_path = bundle_root / exe_name
+    if not exe_path.exists():
+        raise SystemExit(f"{exe_name} missing from bundle root: {bundle_root}")
+    return bundle_root
+
+
+payload_root = resolve_bundle_root("SECURITY_GATEWAY_PAYLOAD_PATH", "SecurityGateway.exe")
+uninstaller_root = resolve_bundle_root("SECURITY_GATEWAY_UNINSTALLER_PATH", "SecurityGateway-Uninstall.exe")
 
 a = Analysis(
-    ['installer\\installer.py'],
+    ['installer\\installer_gui.py'],
     pathex=[],
     binaries=[],
     datas=[
-        (str(payload_path), 'payload'),
-        (str(uninstaller_path), 'payload'),
         ('docs/INSTALL_GUIDE.pdf', 'docs'),
         ('installer/dependencies.json', 'installer'),
     ],
@@ -39,8 +43,8 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
+    [],
+    [],
     [],
     name='SecurityGatewayInstaller',
     debug=False,
@@ -48,11 +52,26 @@ exe = EXE(
     strip=False,
     upx=True,
     upx_exclude=[],
+    exclude_binaries=True,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
+    uac_admin=True,
+    runtime_tmpdir=os.environ.get("SECURITY_GATEWAY_RUNTIME_TMPDIR"),
     codesign_identity=None,
     entitlements_file=None,
     version='spec\\SecurityGatewayInstaller.version.txt',
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    Tree(str(payload_root), prefix='payload/SecurityGateway'),
+    Tree(str(uninstaller_root), prefix='payload/SecurityGateway-Uninstall'),
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name='SecurityGatewayInstaller',
 )

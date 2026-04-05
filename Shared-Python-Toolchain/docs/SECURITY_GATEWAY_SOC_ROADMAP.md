@@ -36,3 +36,6 @@ Security Gateway is not a drop-in replacement for Security Onion Pro. The practi
 
 ## Scope Rule
 Each phase should leave the service usable and testable. Avoid pretending the platform has SIEM-scale ingestion or enterprise SOC features before the persistence, analyst workflow, and operational model actually exist.
+
+## Comparison Reference
+For the Security Onion Pro parity baseline and implementation backlog, see [SECURITY_ONION_PRO_GAP_MATRIX.md](J:/sturdy-spork/Shared-Python-Toolchain/docs/SECURITY_ONION_PRO_GAP_MATRIX.md).

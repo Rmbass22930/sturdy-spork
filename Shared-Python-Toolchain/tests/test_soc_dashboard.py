@@ -1,5 +1,7 @@
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, Mapping, cast
 
 from security_gateway.soc_dashboard import SocDashboard
 from security_gateway.models import SocAlertStatus, SocCaseStatus, SocSeverity
@@ -8,7 +10,103 @@ from security_gateway.models import SocAlertStatus, SocCaseStatus, SocSeverity
 def test_format_status_line_includes_open_workloads_and_top_events() -> None:
     dashboard = {
         "summary": {"open_alerts": 3, "open_cases": 2},
+        "toolchain_updates_status": {
+            "count": 5,
+            "new_count": 1,
+            "seen_count": 1,
+            "applied_count": 3,
+            "providers": {"docker": 3, "linear": 2},
+            "recent_updates": [
+                {"provider": "docker", "title": "Docker Offload now generally available", "status": "applied"},
+            ],
+        },
+        "toolchain_security_status": {
+            "count": 4,
+            "ok_count": 2,
+            "warning_count": 1,
+            "error_count": 1,
+            "severity_counts": {"high": 2, "medium": 2},
+            "recent_checks": [
+                {"severity": "high", "title": "Operator Bearer Authentication", "status": "ok"},
+            ],
+        },
+        "toolchain_runtime_status": {
+            "language_count": 10,
+            "language_available_count": 8,
+            "package_manager_count": 17,
+            "package_manager_available_count": 12,
+            "secret_source_count": 6,
+            "secret_resolved_count": 5,
+            "schedule_count": 3,
+            "active_schedule_count": 2,
+            "scheduler_running": True,
+            "scheduler_poll_seconds": 60.0,
+            "scheduler_last_run_count": 1,
+            "enforcement_warn_count": 1,
+            "enforcement_block_count": 1,
+            "gate_warn_count": 1,
+            "gate_block_count": 1,
+        },
+        "hunt_cluster_status": {
+            "count": 4,
+            "cluster_mode_counts": {"remote_ip": 4, "device_id": 3, "process_guid": 2},
+            "active_mode": "device_id",
+            "active_value": "device-11",
+        },
+        "endpoint_timeline_status": {
+            "count": 3,
+            "active_mode": "remote_ip",
+            "cluster_mode_counts": {"process": 2, "remote_ip": 3},
+            "saved_cluster_key": "remote_ip:8.8.8.8",
+            "saved_action": "case",
+            "recent_clusters": [
+                {"label": "8.8.8.8", "severity": "high", "event_count": 4, "open_case_count": 1},
+            ],
+        },
+        "endpoint_lineage_status": {
+            "count": 2,
+            "active_mode": "device_id",
+            "active_value": "device-11",
+            "lineage_root_count": 2,
+            "lineage_process_count": 2,
+            "filename_count": 1,
+            "recent_clusters": [
+                {"label": "device-11 / winword.exe > powershell.exe", "severity": "high", "event_count": 3, "open_case_count": 1},
+            ],
+        },
+        "operational_status": {
+            "alert_count": 2,
+            "case_count": 1,
+            "reason_counts": {"stuck action": 1, "action failed": 1},
+            "active_filter": "stuck action",
+        },
+        "platform": {
+            "service_health": {"healthy_services": 6, "enabled_services": 8},
+            "topology": {"healthy_nodes": 2, "total_nodes": 3},
+        },
         "workload": {"stale_assigned_alerts": 1, "stale_active_cases": 4},
+        "packet_session_status": {"session_count": 5},
+        "network_evidence_status": {
+            "observation_count": 4,
+            "dns_count": 2,
+            "http_count": 1,
+            "tls_count": 3,
+            "certificate_count": 2,
+            "proxy_count": 1,
+            "auth_count": 1,
+            "vpn_count": 1,
+            "dhcp_count": 1,
+            "directory_auth_count": 1,
+            "radius_count": 1,
+            "nac_count": 1,
+        },
+        "identity_correlation_status": {
+            "count": 3,
+            "critical_count": 2,
+            "recent_correlations": [
+                {"alert_id": "alert-id-1", "correlation_rule": "network_auth_failure_burst", "severity": "critical", "title": "Repeated auth failures"},
+            ],
+        },
         "assignee_workload": [{"assignee": "tier1", "open_alerts": 2, "active_cases": 1}],
         "top_event_types": {"policy.access_decision": 4, "privacy.tracker_block": 3},
     }
@@ -18,6 +116,43 @@ def test_format_status_line_includes_open_workloads_and_top_events() -> None:
     assert "Open alerts: 3" in line
     assert "Open cases: 2" in line
     assert "Host findings: 2" in line
+    assert "Toolchain updates: 5" in line
+    assert "Toolchain update mix: new=1, seen=1, applied=3" in line
+    assert "Toolchain security: 4" in line
+    assert "Toolchain security mix: ok=2, warning=1, error=1" in line
+    assert "Toolchain runtime: 10 languages, 17 package managers, 3 schedules" in line
+    assert "Toolchain scheduler: running @ 60.0s" in line
+    assert "Toolchain runtime mix: langs=8, pkg=12, secrets=5, sched=2, warn=1, block=1, gate_warn=1, gate_block=1" in line
+    assert "Hunt clusters: 4" in line
+    assert "Hunt cluster mix: remote_ip=4, device_id=3, process_guid=2" in line
+    assert "Hunt filter: device_id=device-11" in line
+    assert "Endpoint timeline clusters: 3" in line
+    assert "Endpoint timeline mix: process=2, remote_ip=3" in line
+    assert "Endpoint timeline mode: remote_ip" in line
+    assert "Endpoint lineage clusters: 2" in line
+    assert "Endpoint lineage mix: roots=2, processes=2, files=1" in line
+    assert "Endpoint lineage filter: device_id=device-11" in line
+    assert "Operational alerts: 2" in line
+    assert "Operational cases: 1" in line
+    assert "Operational mix: stuck action=1, action failed=1" in line
+    assert "Operational filter: stuck action" in line
+    assert "Platform services: 6/8 healthy" in line
+    assert "Nodes: 2/3 healthy" in line
+    assert "Packet sessions: 5" in line
+    assert "Network evidence: 4" in line
+    assert "DNS telemetry: 2" in line
+    assert "HTTP telemetry: 1" in line
+    assert "TLS telemetry: 3" in line
+    assert "Certificate telemetry: 2" in line
+    assert "Proxy telemetry: 1" in line
+    assert "Auth telemetry: 1" in line
+    assert "VPN telemetry: 1" in line
+    assert "DHCP telemetry: 1" in line
+    assert "Directory auth telemetry: 1" in line
+    assert "RADIUS telemetry: 1" in line
+    assert "NAC telemetry: 1" in line
+    assert "Identity correlations: 3" in line
+    assert "Identity critical: 2" in line
     assert "Stale assigned alerts: 1" in line
     assert "Stale active cases: 4" in line
     assert "Loaded assignees: 1" in line
@@ -40,6 +175,30 @@ def test_format_status_line_handles_empty_event_types() -> None:
 
 def test_format_workload_detail_includes_assignees_and_aging() -> None:
     dashboard = {
+        "platform": {
+            "node_name": "gateway-1",
+            "node_role": "manager",
+            "deployment_mode": "single-node",
+            "topology": {
+                "total_nodes": 2,
+                "remote_node_count": 1,
+                "healthy_nodes": 1,
+                "degraded_nodes": 1,
+                "stale_nodes": 0,
+                "remote_nodes": [
+                    {"node_name": "sensor-a", "node_role": "sensor", "status": "degraded"},
+                ],
+            },
+            "service_health": {
+                "overall_status": "degraded",
+                "healthy_services": 6,
+                "enabled_services": 8,
+                "services": {
+                    "automation": {"status": "healthy", "enabled": True},
+                    "packet_monitor": {"status": "degraded", "enabled": True},
+                },
+            },
+        },
         "assignee_workload": [
             {"assignee": "tier1", "open_alerts": 3, "active_cases": 1, "stale_alerts": 1, "stale_cases": 0},
             {"assignee": "unassigned", "open_alerts": 2, "active_cases": 0, "stale_alerts": 0, "stale_cases": 0},
@@ -47,6 +206,163 @@ def test_format_workload_detail_includes_assignees_and_aging() -> None:
         "aging_buckets": {
             "alerts": {"0-4h": 1, "4-24h": 2, "24-72h": 3, "72h+": 4},
             "cases": {"0-4h": 5, "4-24h": 6, "24-72h": 7, "72h+": 8},
+        },
+        "tracker_feed_status": {"domain_count": 1200, "is_stale": False, "last_refresh_result": "success", "last_error": None},
+        "toolchain_updates_status": {
+            "count": 4,
+            "new_count": 1,
+            "seen_count": 1,
+            "applied_count": 2,
+            "providers": {"docker": 3, "linear": 1},
+            "recent_updates": [
+                {"provider": "docker", "title": "Docker Sandboxes for agent execution", "status": "applied"},
+            ],
+        },
+        "toolchain_security_status": {
+            "count": 3,
+            "ok_count": 1,
+            "warning_count": 1,
+            "error_count": 1,
+            "severity_counts": {"high": 2, "medium": 1},
+            "recent_checks": [
+                {"severity": "high", "title": "Operator Bearer Authentication", "status": "ok"},
+            ],
+        },
+        "toolchain_runtime_status": {
+            "language_count": 10,
+            "language_available_count": 8,
+            "package_manager_count": 17,
+            "package_manager_available_count": 12,
+            "secret_source_count": 6,
+            "secret_resolved_count": 5,
+            "provisioning_pending_count": 2,
+            "policy_noncompliant_count": 1,
+            "policy_unknown_count": 1,
+            "enforcement_warn_count": 1,
+            "enforcement_block_count": 1,
+            "schedule_count": 3,
+            "active_schedule_count": 2,
+            "scheduler_running": True,
+            "scheduler_poll_seconds": 60.0,
+            "scheduler_last_run_count": 1,
+            "recent_schedule_runs": [
+                {"job_id": "snapshot_report", "title": "Snapshot Report", "status": "completed", "ran_at": "2026-04-03T00:00:00+00:00"},
+            ],
+            "gate_warn_count": 1,
+            "gate_block_count": 1,
+            "cache": {"count": 7, "fresh_count": 5, "stale_count": 1, "expired_count": 1},
+            "recent_enforcement": [
+                {"title": "Python Version Policy", "status": "warn"},
+            ],
+            "recent_gates": [
+                {"title": "Startup Gate", "status": "warn"},
+            ],
+        },
+        "hunt_cluster_status": {
+            "count": 3,
+            "cluster_mode_counts": {"remote_ip": 3, "device_id": 2, "process_guid": 1},
+            "active_mode": "process_guid",
+            "active_value": "proc-guid-1",
+            "recent_clusters": [
+                {"label": "8.8.8.8", "severity": "critical", "event_count": 5, "open_case_count": 1},
+            ],
+        },
+        "endpoint_timeline_status": {
+            "count": 2,
+            "active_mode": "remote_ip",
+            "cluster_mode_counts": {"process": 1, "remote_ip": 2},
+            "saved_cluster_key": "remote_ip:8.8.8.8",
+            "saved_action": "details",
+            "recent_clusters": [
+                {"label": "8.8.8.8", "severity": "high", "event_count": 4, "open_case_count": 1},
+            ],
+        },
+        "view_state": {
+            "endpoint_lineage_cluster_mode": "device_id",
+            "endpoint_lineage_cluster_value": "device-11",
+            "endpoint_lineage_cluster_key": "lineage-11",
+            "endpoint_lineage_cluster_action": "case",
+        },
+        "endpoint_lineage_status": {
+            "count": 1,
+            "active_mode": "device_id",
+            "active_value": "device-11",
+            "lineage_root_count": 1,
+            "lineage_process_count": 1,
+            "filename_count": 1,
+            "recent_clusters": [
+                {"label": "device-11 / winword.exe > powershell.exe", "severity": "high", "event_count": 3, "open_case_count": 1},
+            ],
+        },
+        "operational_status": {
+            "alert_count": 2,
+            "case_count": 1,
+            "reason_counts": {"stuck action": 1, "action failed": 1},
+            "active_filter": "stuck action",
+        },
+        "packet_session_status": {
+            "session_count": 2,
+            "recent_sessions": [
+                {"remote_ip": "8.8.8.8", "remote_ip_display": "8.8.8.8 [open:1]", "total_packets": 10, "last_seen_at": "2026-03-30T00:00:00+00:00"},
+            ],
+        },
+        "network_evidence_status": {
+            "observation_count": 1,
+            "dns_count": 1,
+            "http_count": 1,
+            "tls_count": 1,
+            "certificate_count": 1,
+            "proxy_count": 1,
+            "auth_count": 1,
+            "vpn_count": 1,
+            "dhcp_count": 1,
+            "directory_auth_count": 1,
+            "radius_count": 1,
+            "nac_count": 1,
+            "recent_dns": [
+                {"hostname": "example.test", "remote_ip": "8.8.8.8", "query_type": "A"},
+            ],
+            "recent_http": [
+                {"hostname": "example.test", "method": "GET", "path": "/login"},
+            ],
+            "recent_tls": [
+                {"hostname": "example.test", "server_name": "example.test", "tls_version": "TLSv1.3"},
+            ],
+            "recent_certificates": [
+                {"hostname": "example.test", "subject": "CN=example.test", "issuer": "CN=Test Issuer"},
+            ],
+            "recent_proxy": [
+                {"hostname": "example.test", "proxy_type": "http-connect", "action": "allowed", "username": "tier1"},
+            ],
+            "recent_auth": [
+                {"username": "tier1", "outcome": "success", "auth_protocol": "kerberos", "hostname": "example.test"},
+            ],
+            "recent_vpn": [
+                {"username": "tier1", "tunnel_type": "wireguard", "assigned_ip": "10.8.0.5", "session_event": "disconnect", "close_reason": "idle-timeout", "hostname": "example.test"},
+            ],
+            "recent_dhcp": [
+                {"assigned_ip": "10.0.0.25", "mac_address": "00:11:22:33:44:55", "lease_action": "ack", "hostname": "example.test"},
+            ],
+            "recent_directory_auth": [
+                {"username": "tier1", "directory_service": "active-directory", "outcome": "success", "hostname": "example.test"},
+            ],
+            "recent_radius": [
+                {"username": "tier1", "outcome": "accept", "reject_code": "access-reject", "nas_identifier": "vpn-gateway-1", "hostname": "example.test"},
+            ],
+            "recent_nac": [
+                {"device_id": "device-11", "previous_posture": "quarantined", "posture": "compliant", "action": "allow", "hostname": "example.test"},
+            ],
+            "combined_evidence": [
+                {"remote_ip": "8.8.8.8", "severity": "high", "last_seen_at": "2026-03-30T00:00:00+00:00"},
+            ],
+        },
+        "identity_correlation_status": {
+            "count": 2,
+            "critical_count": 1,
+            "recent_correlations": [
+                {"correlation_rule": "network_vpn_disconnect_auth_failure_chain", "severity": "critical", "title": "VPN disconnect followed by auth failures"},
+                {"correlation_rule": "network_radius_reject_burst", "severity": "high", "title": "Repeated RADIUS rejects"},
+            ],
         },
     }
 
@@ -58,6 +374,4563 @@ def test_format_workload_detail_includes_assignees_and_aging() -> None:
     assert "- 72h+: 4" in text
     assert "Case Aging:" in text
     assert "- 24-72h: 7" in text
+    assert "Platform Services:" in text
+    assert "- node: gateway-1" in text
+    assert "- role: manager" in text
+    assert "- overall status: degraded" in text
+    assert "- nodes: 2 total, 1 remote, 1 healthy, 1 degraded, 0 stale" in text
+    assert "- sensor-a: role=sensor, status=degraded" in text
+    assert "- automation: status=healthy, enabled=True" in text
+    assert "- packet_monitor: status=degraded, enabled=True" in text
+    assert "Tracker Feed Status:" in text
+    assert "- domains: 1200" in text
+    assert "- last result: success" in text
+    assert "Toolchain Updates:" in text
+    assert "- count: 4" in text
+    assert "- new: 1" in text
+    assert "- seen: 1" in text
+    assert "- applied: 2" in text
+    assert "- docker: 3" in text
+    assert "- linear: 1" in text
+    assert "- docker: Docker Sandboxes for agent execution [applied]" in text
+    assert "Toolchain Security:" in text
+    assert "- count: 3" in text
+    assert "- ok: 1" in text
+    assert "- warning: 1" in text
+    assert "- error: 1" in text
+    assert "- high: 2" in text
+    assert "- medium: 1" in text
+    assert "- high: Operator Bearer Authentication [ok]" in text
+    assert "Toolchain Runtime:" in text
+    assert "- languages: 8/10" in text
+    assert "- package managers: 12/17" in text
+    assert "- secret resolutions: 5/6" in text
+    assert "- provisioning pending: 2" in text
+    assert "- policy noncompliant: 1" in text
+    assert "- policy unknown: 1" in text
+    assert "- enforcement warn: 1" in text
+    assert "- enforcement block: 1" in text
+    assert "- schedules: 2/3 active" in text
+    assert "- scheduler runtime: running @ 60.0s" in text
+    assert "- scheduler last run count: 1" in text
+    assert "- policy gates warn: 1" in text
+    assert "- policy gates block: 1" in text
+    assert "- cache: count=7, fresh=5, stale=1, expired=1" in text
+    assert "- Python Version Policy: warn" in text
+    assert "- gate Startup Gate: warn" in text
+    assert "- run Snapshot Report: completed at 2026-04-03T00:00:00+00:00" in text
+    assert "Operational Load:" in text
+    assert "- alerts: 2" in text
+    assert "- cases: 1" in text
+    assert "- active filter: stuck action" in text
+    assert "- stuck action: 1" in text
+    assert "- action failed: 1" in text
+    assert "Hunt Clusters:" in text
+    assert "- count: 3" in text
+    assert "- active filter: process_guid=proc-guid-1" in text
+    assert "- remote_ip: 3" in text
+    assert "- device_id: 2" in text
+    assert "- process_guid: 1" in text
+    assert "- 8.8.8.8: severity=critical, events=5, open_cases=1" in text
+    assert "Endpoint Timeline:" in text
+    assert "- count: 2" in text
+    assert "- active mode: remote_ip" in text
+    assert "- process: 1" in text
+    assert "- remote_ip: 2" in text
+    assert "- saved cluster: remote_ip:8.8.8.8" in text
+    assert "- saved action: details" in text
+    assert "- 8.8.8.8: severity=high, events=4, open_cases=1" in text
+    assert "Endpoint Lineage:" in text
+    assert "- count: 1" in text
+    assert "- active filter: device_id=device-11" in text
+    assert "- lineage roots: 1" in text
+    assert "- lineage processes: 1" in text
+    assert "- filenames: 1" in text
+    assert "- saved cluster: lineage-11" in text
+    assert "- saved action: case" in text
+    assert "- device-11 / winword.exe > powershell.exe: severity=high, events=3, open_cases=1" in text
+    assert "Packet Sessions:" in text
+    assert "- session count: 2" in text
+    assert "- 8.8.8.8 [open:1]: packets=10, last seen=2026-03-30T00:00:00+00:00" in text
+    assert "Network Evidence:" in text
+    assert "- observation count: 1" in text
+    assert "- dns telemetry: 1" in text
+    assert "- http telemetry: 1" in text
+    assert "- tls telemetry: 1" in text
+    assert "- certificate telemetry: 1" in text
+    assert "- proxy telemetry: 1" in text
+    assert "- auth telemetry: 1" in text
+    assert "- vpn telemetry: 1" in text
+    assert "- dhcp telemetry: 1" in text
+    assert "- directory auth telemetry: 1" in text
+    assert "- radius telemetry: 1" in text
+    assert "- nac telemetry: 1" in text
+    assert "- 8.8.8.8: severity=high, last seen=2026-03-30T00:00:00+00:00" in text
+    assert "- recent dns:" in text
+    assert "- dns example.test: remote_ip=8.8.8.8, query=A" in text
+    assert "- recent http:" in text
+    assert "- http example.test: method=GET, path=/login" in text
+    assert "- recent tls:" in text
+    assert "- tls example.test: server=example.test, version=TLSv1.3" in text
+    assert "- recent certificates:" in text
+    assert "- certificate example.test: subject=CN=example.test, issuer=CN=Test Issuer" in text
+    assert "- recent proxy:" in text
+    assert "- proxy example.test: type=http-connect, action=allowed, user=tier1" in text
+    assert "- recent auth:" in text
+    assert "- auth tier1: outcome=success, protocol=kerberos, host=example.test" in text
+    assert "- recent vpn:" in text
+    assert "- vpn tier1: tunnel=wireguard, assigned_ip=10.8.0.5, event=disconnect, reason=idle-timeout, host=example.test" in text
+    assert "- recent dhcp:" in text
+    assert "- dhcp 10.0.0.25: mac=00:11:22:33:44:55, action=ack, host=example.test" in text
+    assert "- recent directory auth:" in text
+    assert "- directory auth tier1: service=active-directory, outcome=success, host=example.test" in text
+    assert "- recent radius:" in text
+    assert "- radius tier1: outcome=accept, reject=access-reject, nas=vpn-gateway-1, host=example.test" in text
+    assert "- recent nac:" in text
+    assert "- nac device-11: posture=quarantined>compliant, action=allow, host=example.test" in text
+    assert "Identity Correlations:" in text
+    assert "- count: 2" in text
+    assert "- critical: 1" in text
+    assert "- recent identity correlations:" in text
+    assert "- network_vpn_disconnect_auth_failure_chain: severity=critical, title=VPN disconnect followed by auth failures" in text
+
+
+def test_format_operational_summary_label_includes_active_filter() -> None:
+    assert (
+        SocDashboard._format_operational_summary_label("Operational Alerts", "stuck action")
+        == "Operational Alerts [stuck action]"
+    )
+    assert SocDashboard._format_operational_summary_label("Operational Cases", None) == "Operational Cases"
+
+
+def test_format_endpoint_timeline_summary_label_includes_active_mode() -> None:
+    assert (
+        SocDashboard._format_endpoint_timeline_summary_label("Timeline Clusters", "remote_ip")
+        == "Timeline Clusters [remote_ip]"
+    )
+    assert SocDashboard._format_endpoint_timeline_summary_label("Timeline Clusters", None) == "Timeline Clusters"
+
+
+def test_format_hunt_cluster_summary_label_includes_active_mode() -> None:
+    assert (
+        SocDashboard._format_hunt_cluster_summary_label("Hunt Clusters", "process_guid")
+        == "Hunt Clusters [process_guid]"
+    )
+    assert SocDashboard._format_hunt_cluster_summary_label("Hunt Clusters", None) == "Hunt Clusters"
+
+
+def test_show_toolchain_runtime_summary_drilldown_includes_inventory_sections() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard._latest_dashboard = {
+        "toolchain_runtime_status": {
+            "language_count": 10,
+            "language_available_count": 8,
+            "package_manager_count": 17,
+            "package_manager_available_count": 12,
+            "secret_source_count": 6,
+            "secret_resolved_count": 5,
+            "schedule_count": 3,
+            "active_schedule_count": 2,
+            "gate_warn_count": 1,
+            "gate_block_count": 1,
+        }
+    }
+    dashboard.manager = SimpleNamespace(
+        list_toolchain_providers=lambda: [{"provider_id": "docker", "title": "Docker", "status": "configured"}],
+        list_toolchain_languages=lambda **_: [{"language_id": "python", "title": "Python", "status": "available"}],
+        list_toolchain_package_managers=lambda **_: [{"manager_id": "pip", "title": "pip", "status": "available"}],
+        list_toolchain_secret_sources=lambda **_: [{"secret_id": "operator_bearer", "title": "Operator Bearer", "status": "ok"}],
+        list_toolchain_version_policy=lambda **_: [{"target_id": "python", "title": "Python Version Policy", "status": "compliant"}],
+        list_toolchain_jobs=lambda: [{"job_id": "snapshot_report", "title": "Snapshot Report", "status": "ready"}],
+        list_toolchain_schedules=lambda: [{"schedule_id": "snapshot_report", "title": "Snapshot Report", "status": "active", "interval_minutes": 30}],
+        list_toolchain_policy_gates=lambda **_: [{"gate_id": "startup", "title": "Startup Gate", "status": "warn"}],
+    )
+    seen: list[tuple[str, str]] = []
+    dashboard._show_info_dialog = lambda title, body: seen.append((title, body))
+
+    dashboard._show_toolchain_runtime_summary_drilldown()
+
+    assert seen
+    title, body = seen[0]
+    assert title == "Toolchain Runtime"
+    assert "Providers:" in body
+    assert "- Docker: configured" in body
+    assert "Languages:" in body
+    assert "- Python: available" in body
+    assert "Package Managers:" in body
+    assert "- pip: available" in body
+    assert "Secret Sources:" in body
+    assert "- Operator Bearer: ok" in body
+    assert "Version Policy:" in body
+    assert "- Python Version Policy: compliant" in body
+    assert "Jobs:" in body
+    assert "- Snapshot Report: ready" in body
+    assert "Schedules:" in body
+    assert "- Snapshot Report: active every 30m" in body
+    assert "Policy Gates:" in body
+    assert "- Startup Gate: warn" in body
+
+
+def test_view_toolchain_scheduler_history_uses_runtime_status() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard._latest_dashboard = {
+        "toolchain_runtime_status": {
+            "scheduler_running": True,
+            "scheduler_poll_seconds": 60.0,
+            "scheduler_last_run_count": 1,
+            "recent_schedule_runs": [
+                {"title": "Snapshot Report", "status": "completed", "ran_at": "2026-04-03T00:00:00+00:00"},
+            ],
+        }
+    }
+    seen: list[tuple[str, str]] = []
+    dashboard._show_info_dialog = lambda title, body: seen.append((title, body))
+
+    dashboard.view_toolchain_scheduler_history()
+
+    assert seen
+    assert seen[0][0] == "Toolchain Scheduler History"
+    assert "Recent Runs:" in seen[0][1]
+    assert "- Snapshot Report: completed at 2026-04-03T00:00:00+00:00" in seen[0][1]
+
+
+def test_start_and_stop_toolchain_scheduler_runtime_action_refreshes_and_shows_result() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    refreshed: list[str] = []
+    shown: list[tuple[str, str]] = []
+    dashboard.refresh = lambda: refreshed.append("refresh")
+    dashboard.manager = SimpleNamespace(
+        start_toolchain_schedule_runtime=lambda **kwargs: {
+            "running": True,
+            "enabled": True,
+            "poll_seconds": kwargs.get("poll_seconds", 60.0),
+            "summary": "started",
+        },
+        stop_toolchain_schedule_runtime=lambda: {"running": False, "enabled": False, "poll_seconds": 60.0, "summary": "stopped"},
+    )
+    dashboard._show_info_dialog = lambda title, body: shown.append((title, body))
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_simpledialog = soc_dashboard_module.simpledialog
+    try:
+        soc_dashboard_module.simpledialog = cast(Any, None)
+        dashboard.start_toolchain_scheduler_runtime_action()
+        dashboard.stop_toolchain_scheduler_runtime_action()
+    finally:
+        soc_dashboard_module.simpledialog = original_simpledialog
+
+    assert refreshed == ["refresh", "refresh"]
+    assert shown[0][0] == "Toolchain Scheduler"
+    assert "Running: yes" in shown[0][1]
+    assert shown[1][0] == "Toolchain Scheduler"
+    assert "Running: no" in shown[1][1]
+
+
+def test_execute_toolchain_bootstrap_action_runs_selected_target() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    shown: list[tuple[str, str]] = []
+    dashboard.manager = SimpleNamespace(
+        list_toolchain_provisioning=lambda: [{"target_id": "python", "title": "Python", "status": "pending"}],
+        run_toolchain_bootstrap=lambda target_id, **kwargs: {
+            "result": {
+                "target_id": target_id,
+                "title": "Python",
+                "status": "executed",
+                "mode": kwargs.get("mode", "install"),
+                "summary": "Python install command completed successfully.",
+                "command": ["winget", "install", "Python.Python.3.13"],
+                "verified": True,
+            }
+        },
+    )
+    dashboard._select_summary_record_or_show_info = lambda *args, **kwargs: {"target_id": "python", "title": "Python", "status": "pending"}
+    dashboard.refresh = lambda: None
+    dashboard._show_info_dialog = lambda title, body: shown.append((title, body))
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_simpledialog = soc_dashboard_module.simpledialog
+    try:
+        soc_dashboard_module.simpledialog = cast(Any, None)
+        dashboard.execute_toolchain_bootstrap_action()
+    finally:
+        soc_dashboard_module.simpledialog = original_simpledialog
+
+    assert shown
+    assert shown[0][0] == "Toolchain Bootstrap"
+    assert "Target: Python" in shown[0][1]
+    assert "Status: executed" in shown[0][1]
+
+
+def test_format_packet_session_detail_includes_compact_summary() -> None:
+    text = SocDashboard._format_packet_session_detail(
+        {
+            "session_key": "packet-session:8.8.8.8",
+            "remote_ip": "8.8.8.8",
+            "protocols": ["TCP"],
+            "local_ips": ["192.168.1.10"],
+            "local_ports": [3389],
+            "remote_ports": [51000],
+            "sensitive_ports": [3389],
+            "first_seen_at": "2026-03-30T00:00:00+00:00",
+            "last_seen_at": "2026-03-30T01:00:00+00:00",
+            "related_alert_ids": ["alert-1"],
+            "related_case_ids": ["case-1"],
+            "open_case_count": 1,
+            "sightings": 2,
+            "total_packets": 10,
+            "max_packet_count": 7,
+            "last_packet_count": 7,
+            "sample_packet_endpoints": [
+                {"remote_ip": "8.8.8.8", "remote_port": 51000, "local_ip": "192.168.1.10", "local_port": 3389},
+            ],
+        }
+    )
+
+    assert "Packet Session: packet-session:8.8.8.8" in text
+    assert "Remote IP: 8.8.8.8" in text
+    assert "Related Alerts: 1" in text
+    assert "Open Cases: 1" in text
+    assert "Total Packets: 10" in text
+    assert "8.8.8.8:51000 -> 192.168.1.10:3389" in text
+
+
+def test_format_network_evidence_detail_includes_observation_and_session_context() -> None:
+    text = SocDashboard._format_network_evidence_detail(
+        {
+            "remote_ip": "8.8.8.8",
+            "severity": "high",
+            "last_seen_at": "2026-03-30T01:00:00+00:00",
+            "related_alert_ids": ["alert-1"],
+            "related_case_ids": ["case-1"],
+            "open_case_count": 1,
+            "observation": {
+                "sightings": 3,
+                "total_hits": 11,
+                "local_ports": [3389],
+                "sample_connections": [
+                    {"remote_ip": "8.8.8.8", "remote_port": 51000, "local_ip": "192.168.1.10", "local_port": 3389}
+                ],
+            },
+            "packet_session": {
+                "total_packets": 10,
+                "protocols": ["TCP"],
+                "sample_packet_endpoints": [
+                    {"protocol": "TCP", "remote_ip": "8.8.8.8", "remote_port": 51000, "local_ip": "192.168.1.10", "local_port": 3389}
+                ],
+            },
+        }
+    )
+
+    assert "Network Evidence: 8.8.8.8" in text
+    assert "Related Alerts: 1" in text
+    assert "Open Cases: 1" in text
+    assert "Observation Sightings: 3" in text
+    assert "Session Packets: 10" in text
+    assert "8.8.8.8:51000 -> 192.168.1.10:3389" in text
+    assert "TCP 8.8.8.8:51000 -> 192.168.1.10:3389" in text
+
+
+def test_format_remote_node_detail_includes_service_and_case_state() -> None:
+    text = SocDashboard._format_remote_node_detail(
+        {
+            "node_name": "sensor-a",
+            "node_role": "sensor",
+            "status": "degraded",
+            "last_seen_at": "2026-03-31T12:00:00+00:00",
+            "related_case_ids": ["case-1"],
+            "open_case_count": 1,
+            "service_health": {
+                "overall_status": "degraded",
+                "services": {"packet_monitor": {"status": "degraded", "enabled": True}},
+            },
+            "suppressed": True,
+            "suppressed_until": "2026-03-31T13:00:00+00:00",
+            "suppressed_by": "tier2",
+            "suppression_reason": "maintenance",
+            "suppression_scopes": ["remote_node_degraded"],
+            "maintenance_active": True,
+            "maintenance_status": "failed",
+            "maintenance_until": "2026-03-31T14:00:00+00:00",
+            "maintenance_by": "tier2",
+            "maintenance_reason": "patching",
+            "maintenance_services": ["packet_monitor"],
+            "maintenance_failed_at": "2026-03-31T12:03:00+00:00",
+            "maintenance_last_error": "maintenance execution failed",
+            "maintenance_retry_count": 1,
+            "maintenance_retriable": True,
+            "refresh_pending": True,
+            "refresh_status": "acknowledged",
+            "refresh_requested_at": "2026-03-31T11:55:00+00:00",
+            "refresh_requested_by": "tier2",
+            "refresh_request_reason": "refresh health",
+            "refresh_acknowledged_at": "2026-03-31T12:01:00+00:00",
+            "refresh_completed_at": "2026-03-31T12:05:00+00:00",
+            "refresh_fulfilled_at": "2026-03-31T12:05:00+00:00",
+            "refresh_result": "success",
+            "refresh_completion_note": "local refresh cycle completed",
+            "refresh_failed_at": "2026-03-31T12:02:00+00:00",
+            "refresh_last_error": "previous refresh failure",
+            "refresh_retry_count": 1,
+            "refresh_retriable": True,
+            "drained": True,
+            "drain_status": "failed",
+            "drain_requested_at": "2026-03-31T11:58:00+00:00",
+            "drain_at": "2026-03-31T11:58:00+00:00",
+            "drain_acknowledged_at": "2026-03-31T12:01:00+00:00",
+            "drain_completed_at": "2026-03-31T12:20:00+00:00",
+            "drain_result": "failed",
+            "drain_completion_note": "drain failed",
+            "drain_failed_at": "2026-03-31T12:20:00+00:00",
+            "drain_last_error": "drain failed",
+            "drain_retry_count": 1,
+            "drain_retriable": True,
+            "drained_by": "tier2",
+            "drain_reason": "patching",
+            "drain_services": ["packet_monitor"],
+            "action_failures": ["maintenance", "drain"],
+            "action_history": [
+                {"at": "2026-03-31T11:55:00+00:00", "action": "refresh", "transition": "requested", "actor": "tier2"},
+                {"at": "2026-03-31T12:01:00+00:00", "action": "refresh", "transition": "acknowledged", "actor": "sensor-a"},
+                {"at": "2026-03-31T12:20:00+00:00", "action": "drain", "transition": "failed", "actor": "sensor-a", "result": "failed", "note": "drain failed"},
+            ],
+            "metadata": {"acknowledged_by": "tier2", "acknowledged_at": "2026-03-31T11:50:00+00:00"},
+        }
+    )
+
+    assert "Remote Node: sensor-a" in text
+    assert "Status: degraded" in text
+    assert "Related Cases: 1" in text
+    assert "Open Cases: 1" in text
+    assert "Suppressed: True" in text
+    assert "Suppression Reason: maintenance" in text
+    assert "Suppression Scopes: remote_node_degraded" in text
+    assert "Action Failures: maintenance, drain" in text
+    assert "Maintenance Active: True" in text
+    assert "Maintenance Status: failed" in text
+    assert "Maintenance Services: packet_monitor" in text
+    assert "Maintenance Last Error: maintenance execution failed" in text
+    assert "Refresh Pending: True" in text
+    assert "Refresh Status: acknowledged" in text
+    assert "Refresh Requested By: tier2" in text
+    assert "Refresh Completed At: 2026-03-31T12:05:00+00:00" in text
+    assert "Refresh Result: success" in text
+    assert "Refresh Last Error: previous refresh failure" in text
+    assert "Drained: True" in text
+    assert "Drain Status: failed" in text
+    assert "Drain Result: failed" in text
+    assert "Drain Last Error: drain failed" in text
+    assert "Drain Services: packet_monitor" in text
+    assert "Action History:" in text
+    assert "- 2026-03-31T11:55:00+00:00: refresh/requested actor=tier2" in text
+    assert "result=failed note=drain failed" in text
+    assert "packet_monitor: status=degraded, enabled=True" in text
+    assert "acknowledged_by: tier2" in text
+
+
+def test_view_packet_sessions_pivots_selected_event() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard._collect_packet_sessions = lambda limit=50: [
+        {"session_key": "packet-session:8.8.8.8", "remote_ip": "8.8.8.8", "remote_ip_display": "8.8.8.8 [open:1]", "last_seen_at": "2026-03-30T01:00:00+00:00", "total_packets": 10}
+    ]
+    event = type("Event", (), {"event_type": "packet.monitor.finding", "model_dump": lambda self, mode="json": {"event_id": "evt-1", "event_type": "packet.monitor.finding"}})()
+    dashboard.manager = type("Manager", (), {"query_events": lambda self, text, limit=100: [event]})()
+    selected: list[dict[str, Any]] = []
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._pivot_from_event = lambda payload: selected.append(payload)
+    dashboard._show_info_dialog = lambda title, body: (_ for _ in ()).throw(AssertionError("should not show dialog"))
+
+    dashboard.view_packet_sessions()
+
+    assert selected == [{"event_id": "evt-1", "event_type": "packet.monitor.finding"}]
+
+
+def test_collect_packet_sessions_adds_investigation_state() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.packet_monitor = type(
+        "PacketMonitor",
+        (),
+        {
+            "list_recent_sessions": lambda self, limit=100: [
+                {"session_key": "packet-session:8.8.8.8", "remote_ip": "8.8.8.8", "last_seen_at": "2026-03-30T01:00:00+00:00", "total_packets": 10}
+            ]
+        },
+    )()
+    dashboard.all_alert_rows_by_id = {"alert-1": {"alert_id": "alert-1", "source_event_ids": ["evt-1"], "title": "Overlap alert"}}
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "query_events": lambda self, text, limit=100: [type("Event", (), {"event_type": "packet.monitor.finding", "model_dump": lambda self, mode="json": {"event_id": "evt-1", "event_type": "packet.monitor.finding"}})()],
+            "list_cases": lambda self: [type("Case", (), {"model_dump": lambda self, mode="json": {"case_id": "case-1", "status": "open", "source_event_ids": ["evt-1"], "title": "Investigate 8.8.8.8"}})()],
+        },
+    )()
+
+    rows = dashboard._collect_packet_sessions(limit=50)
+
+    assert rows[0]["remote_ip_display"] == "8.8.8.8 [open:1]"
+    assert rows[0]["related_alert_ids"] == ["alert-1"]
+    assert rows[0]["related_case_ids"] == ["case-1"]
+    assert rows[0]["open_case_ids"] == ["case-1"]
+    assert rows[0]["open_case_count"] == 1
+
+
+def test_collect_network_evidence_merges_observations_and_sessions_by_remote_ip() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.all_alert_rows_by_id = {
+        "alert-1": {"alert_id": "alert-1", "source_event_ids": ["evt-1"], "title": "Overlap alert"},
+    }
+    event = type("Event", (), {"event_type": "network.monitor.finding", "model_dump": lambda self, mode="json": {"event_id": "evt-1", "event_type": "network.monitor.finding"}})()
+    case = type("Case", (), {"model_dump": lambda self, mode="json": {"case_id": "case-1", "status": "open", "source_event_ids": ["evt-1"], "title": "Investigate 8.8.8.8"}})()
+    dashboard.manager = type("Manager", (), {"query_events": lambda self, text, limit=100: [event], "list_cases": lambda self: [case]})()
+
+    rows = dashboard._collect_network_evidence(
+        observations=[
+            {"remote_ip": "8.8.8.8", "last_seen_at": "2026-03-30T01:00:00+00:00", "sensitive_ports": [3389], "sightings": 2},
+        ],
+        packet_sessions=[
+            {"remote_ip": "8.8.8.8", "last_seen_at": "2026-03-30T01:05:00+00:00", "sensitive_ports": [3389], "total_packets": 10},
+            {"remote_ip": "1.1.1.1", "last_seen_at": "2026-03-30T00:05:00+00:00", "sensitive_ports": [], "total_packets": 3},
+        ],
+    )
+
+    assert [row["remote_ip"] for row in rows] == ["8.8.8.8", "1.1.1.1"]
+    assert rows[0]["severity"] == "high"
+    assert rows[0]["title"] == "Network evidence for 8.8.8.8 (open cases: 1)"
+    assert rows[0]["observation"]["sightings"] == 2
+    assert rows[0]["packet_session"]["total_packets"] == 10
+    assert rows[0]["related_alert_ids"] == ["alert-1"]
+    assert rows[0]["related_case_ids"] == ["case-1"]
+    assert rows[0]["open_case_ids"] == ["case-1"]
+    assert rows[0]["open_case_count"] == 1
+
+
+def test_collect_endpoint_timeline_clusters_uses_manager_payload() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_endpoint_timeline_clusters": lambda self, cluster_by="process", limit=100, **filters: {
+                "clusters": [
+                    {
+                        "cluster_by": cluster_by,
+                        "cluster_key": "device-11:proc-guid-1",
+                        "label": "device-11 / powershell.exe",
+                        "event_count": 3,
+                        "open_case_count": 1,
+                        "open_case_ids": ["case-1"],
+                    }
+                ]
+            }
+        },
+    )()
+
+    rows = dashboard._collect_endpoint_timeline_clusters(cluster_by="process", limit=50, device_id="device-11")
+
+    assert rows == [
+        {
+            "cluster_by": "process",
+            "cluster_key": "device-11:proc-guid-1",
+            "label": "device-11 / powershell.exe",
+            "event_count": 3,
+            "open_case_count": 1,
+            "open_case_ids": ["case-1"],
+            "title": "device-11 / powershell.exe (open cases: 1)",
+        }
+    ]
+
+
+def test_view_endpoint_timeline_pivots_selected_event() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_endpoint_timeline": lambda self, limit=100, **filters: [
+                type(
+                    "Event",
+                    (),
+                    {
+                        "model_dump": lambda self, mode="json": {
+                            "event_id": "evt-proc-1",
+                            "event_type": "endpoint.telemetry.process",
+                            "recorded_at": "2026-03-31T00:00:00+00:00",
+                            "title": "Endpoint process telemetry: powershell.exe",
+                        }
+                    },
+                )()
+            ]
+        },
+    )()
+    selected: list[dict[str, Any]] = []
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._show_info_dialog = lambda title, body: (_ for _ in ()).throw(AssertionError("should not show dialog"))
+    dashboard._pivot_from_event = lambda payload: selected.append(payload)
+
+    dashboard.view_endpoint_timeline()
+
+    assert selected == [
+        {
+            "event_id": "evt-proc-1",
+            "event_type": "endpoint.telemetry.process",
+            "recorded_at": "2026-03-31T00:00:00+00:00",
+            "title": "Endpoint process telemetry: powershell.exe",
+        }
+    ]
+
+
+def test_view_endpoint_timeline_clusters_selects_cluster_then_event() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    selections: list[tuple[str, list[dict[str, Any]]]] = []
+    selected_events: list[dict[str, Any]] = []
+    dashboard._choose_endpoint_timeline_cluster_mode = lambda: "process"
+    dashboard._collect_endpoint_timeline_clusters = lambda cluster_by="process", limit=100: [
+        {
+            "cluster_by": "process",
+            "cluster_key": "device-11:proc-guid-1",
+            "label": "device-11 / powershell.exe",
+            "event_count": 2,
+            "open_case_ids": [],
+            "open_case_count": 0,
+            "event_types": {"endpoint.telemetry.process": 1, "endpoint.telemetry.connection": 1},
+        }
+    ]
+    dashboard._resolve_endpoint_timeline_cluster_events = lambda payload: [
+        {
+            "event_id": "evt-proc-1",
+            "event_type": "endpoint.telemetry.process",
+            "recorded_at": "2026-03-31T00:00:00+00:00",
+            "title": "Endpoint process telemetry: powershell.exe",
+        }
+    ]
+
+    def _select(kind: str, rows: list[dict[str, Any]], title: str) -> dict[str, Any]:
+        selections.append((kind, rows))
+        return rows[0]
+
+    dashboard._select_summary_record = _select
+    dashboard._show_info_dialog = lambda title, body: (_ for _ in ()).throw(AssertionError("should not show dialog"))
+    dashboard._pivot_from_event = lambda payload: selected_events.append(payload)
+
+    dashboard.view_endpoint_timeline_clusters()
+
+    assert selections[0][0] == "endpoint_timeline_cluster"
+    assert selections[1][0] == "endpoint_timeline"
+    assert selected_events == [
+        {
+            "event_id": "evt-proc-1",
+            "event_type": "endpoint.telemetry.process",
+            "recorded_at": "2026-03-31T00:00:00+00:00",
+            "title": "Endpoint process telemetry: powershell.exe",
+        }
+    ]
+
+
+def test_view_endpoint_timeline_clusters_prefers_detail_route_before_event_load() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    detail_calls: list[tuple[str, dict[str, Any]]] = []
+    resolved_calls: list[dict[str, Any]] = []
+    selected_events: list[dict[str, Any]] = []
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "get_endpoint_timeline_cluster": lambda self, cluster_key, **filters: detail_calls.append((cluster_key, filters))
+            or {
+                "cluster_by": "process",
+                "cluster_key": cluster_key,
+                "label": "device-11 / powershell.exe",
+                "event_count": 3,
+                "device_ids": ["device-11"],
+                "process_guids": ["proc-guid-1"],
+                "process_names": ["powershell.exe"],
+                "remote_ips": ["8.8.8.8"],
+                "open_case_ids": [],
+                "open_case_count": 0,
+            }
+        },
+    )()
+    dashboard._choose_endpoint_timeline_cluster_mode = lambda: "process"
+    dashboard._collect_endpoint_timeline_clusters = lambda cluster_by="process", limit=100: [
+        {
+            "cluster_by": "process",
+            "cluster_key": "device-11:proc-guid-1",
+            "label": "device-11 / powershell.exe",
+            "event_count": 1,
+            "device_ids": ["device-11"],
+            "process_guids": ["proc-guid-1"],
+            "open_case_ids": [],
+            "open_case_count": 0,
+        }
+    ]
+    dashboard._resolve_endpoint_timeline_cluster_events = lambda payload: resolved_calls.append(payload) or [
+        {
+            "event_id": "evt-proc-1",
+            "event_type": "endpoint.telemetry.process",
+            "recorded_at": "2026-03-31T00:00:00+00:00",
+            "title": "Endpoint process telemetry: powershell.exe",
+        }
+    ]
+    dashboard._select_summary_record_or_show_info = lambda kind, rows, title, **kwargs: rows[0]
+    dashboard._handle_existing_case_guard = lambda **kwargs: False
+    dashboard._pivot_from_event = lambda payload: selected_events.append(payload)
+
+    dashboard.view_endpoint_timeline_clusters()
+
+    assert detail_calls == [("device-11:proc-guid-1", {"cluster_by": "process", "device_id": "device-11", "process_guid": "proc-guid-1"})]
+    assert resolved_calls[0]["event_count"] == 3
+    assert selected_events[0]["event_id"] == "evt-proc-1"
+
+
+def test_view_endpoint_timeline_clusters_restores_saved_cluster_selection_and_action() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    detail_calls: list[dict[str, Any]] = []
+    selected_cases: list[dict[str, Any]] = []
+    dashboard.saved_endpoint_timeline_cluster_mode = "remote_ip"
+    dashboard.saved_endpoint_timeline_cluster_key = "timeline-22"
+    dashboard.saved_endpoint_timeline_cluster_action = "existing_case"
+    dashboard._choose_endpoint_timeline_cluster_mode = lambda: "remote_ip"
+    dashboard._collect_endpoint_timeline_clusters = lambda cluster_by="process", limit=100: [
+        {
+            "cluster_by": cluster_by,
+            "cluster_key": "timeline-11",
+            "label": "8.8.8.8",
+            "event_count": 1,
+            "open_case_ids": [],
+            "open_case_count": 0,
+        },
+        {
+            "cluster_by": cluster_by,
+            "cluster_key": "timeline-22",
+            "label": "9.9.9.9",
+            "event_count": 2,
+            "open_case_ids": ["case-22"],
+            "open_case_count": 1,
+        },
+    ]
+    dashboard._select_summary_record_or_show_info = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("should use saved endpoint timeline cluster selection before opening chooser")
+    )
+    dashboard._resolve_endpoint_timeline_cluster_detail = lambda payload: detail_calls.append(payload) or payload
+    dashboard._resolve_case_for_network_evidence = lambda case_ids: {"case_id": "case-22", "title": "Existing timeline case"}
+    dashboard._pivot_from_case = lambda payload: selected_cases.append(payload)
+
+    dashboard.view_endpoint_timeline_clusters()
+
+    assert detail_calls and detail_calls[0]["cluster_key"] == "timeline-22"
+    assert selected_cases == [{"case_id": "case-22", "title": "Existing timeline case"}]
+
+
+def test_view_endpoint_timeline_clusters_uses_active_dashboard_mode_control() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    collect_calls: list[tuple[str, int]] = []
+    dashboard.endpoint_timeline_cluster_mode_var = type("Var", (), {"get": lambda self: "remote_ip"})()
+    dashboard._collect_endpoint_timeline_clusters = lambda cluster_by="process", limit=100: collect_calls.append((cluster_by, limit)) or [
+        {
+            "cluster_by": cluster_by,
+            "cluster_key": "timeline-11",
+            "label": "8.8.8.8",
+            "event_count": 1,
+            "open_case_ids": [],
+            "open_case_count": 0,
+        }
+    ]
+    dashboard._resolve_endpoint_timeline_cluster_detail = lambda payload: payload
+    dashboard._choose_endpoint_timeline_cluster_action = lambda payload: "details"
+    dashboard._select_summary_record_or_show_info = lambda kind, rows, title, **kwargs: rows[0]
+    shown_details: list[str] = []
+    dashboard._show_info_dialog = lambda title, text: shown_details.append(title)
+
+    dashboard.view_endpoint_timeline_clusters()
+
+    assert collect_calls == [("remote_ip", 100)]
+    assert shown_details == ["Endpoint Timeline Cluster"]
+
+
+def test_promote_endpoint_timeline_to_case_uses_manager_path() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    created_payloads: list[Any] = []
+
+    class Manager:
+        def create_case_from_endpoint_timeline(self, payload: Any) -> Any:
+            created_payloads.append(payload)
+            return type("Case", (), {"case_id": "case-timeline-1"})()
+
+    dashboard.manager = Manager()
+    dashboard.case_tree = type("Tree", (), {"selection_set": lambda self, value: setattr(self, "selected", value)})()
+    dashboard._choose_endpoint_timeline_cluster_mode = lambda: "process"
+    dashboard._collect_endpoint_timeline_clusters = lambda cluster_by="process", limit=100: [
+        {
+            "cluster_by": "process",
+            "cluster_key": "device-11:proc-guid-1",
+            "label": "device-11 / powershell.exe",
+            "event_count": 3,
+            "device_ids": ["device-11"],
+            "process_names": ["powershell.exe"],
+            "process_guids": ["proc-guid-1"],
+            "remote_ips": ["8.8.8.8"],
+            "filenames": ["payload.dll"],
+            "related_alert_ids": ["alert-1"],
+            "open_case_ids": [],
+        }
+    ]
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._current_analyst_identity = lambda: "tier2"
+    dashboard.refresh = lambda: None
+    dashboard._refresh_case_detail = lambda: None
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        dashboard.promote_endpoint_timeline_to_case()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert created_payloads
+    payload = created_payloads[0]
+    assert payload.device_id == "device-11"
+    assert payload.process_guid == "proc-guid-1"
+    assert payload.remote_ip == "8.8.8.8"
+    assert payload.assignee == "tier2"
+
+
+def test_promote_endpoint_timeline_to_case_prefers_detail_route() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    detail_calls: list[tuple[str, dict[str, Any]]] = []
+    created_payloads: list[Any] = []
+
+    class Manager:
+        def get_endpoint_timeline_cluster(self, cluster_key: str, **filters: Any) -> dict[str, Any]:
+            detail_calls.append((cluster_key, filters))
+            return {
+                "cluster_by": "process",
+                "cluster_key": cluster_key,
+                "label": "device-11 / powershell.exe",
+                "event_count": 3,
+                "device_ids": ["device-11"],
+                "process_names": ["powershell.exe"],
+                "process_guids": ["proc-guid-1"],
+                "remote_ips": ["8.8.8.8"],
+                "filenames": ["payload.dll"],
+                "related_alert_ids": ["alert-1"],
+                "open_case_ids": [],
+            }
+
+        def create_case_from_endpoint_timeline(self, payload: Any) -> Any:
+            created_payloads.append(payload)
+            return type("Case", (), {"case_id": "case-timeline-1"})()
+
+    dashboard.manager = Manager()
+    dashboard.case_tree = type("Tree", (), {"selection_set": lambda self, value: setattr(self, "selected", value)})()
+    dashboard._choose_endpoint_timeline_cluster_mode = lambda: "process"
+    dashboard._collect_endpoint_timeline_clusters = lambda cluster_by="process", limit=100: [
+        {
+            "cluster_by": "process",
+            "cluster_key": "device-11:proc-guid-1",
+            "label": "device-11 / powershell.exe",
+            "event_count": 1,
+            "device_ids": ["device-11"],
+            "process_guids": ["proc-guid-1"],
+            "open_case_ids": [],
+            "open_case_count": 0,
+        }
+    ]
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._handle_existing_case_choice = lambda **kwargs: False
+    dashboard._current_analyst_identity = lambda: "tier2"
+    dashboard.refresh = lambda: None
+    dashboard._refresh_case_detail = lambda: None
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        dashboard.promote_endpoint_timeline_to_case()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert detail_calls == [("device-11:proc-guid-1", {"cluster_by": "process", "device_id": "device-11", "process_guid": "proc-guid-1"})]
+    assert created_payloads[0].limit == 3
+    assert created_payloads[0].process_guid == "proc-guid-1"
+
+
+def test_collect_endpoint_lineage_clusters_uses_manager_payload() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_endpoint_lineage_clusters": lambda self, limit=100, **filters: {
+                "clusters": [
+                    {
+                        "cluster_key": "device-11:proc-guid-1",
+                        "label": "device-11 / winword.exe > powershell.exe",
+                        "event_count": 3,
+                        "severity": "high",
+                        "open_case_count": 1,
+                        "open_case_ids": ["case-1"],
+                    }
+                ]
+            }
+        },
+    )()
+
+    rows = dashboard._collect_endpoint_lineage_clusters(limit=50, device_id="device-11")
+
+    assert rows == [
+        {
+            "cluster_key": "device-11:proc-guid-1",
+            "label": "device-11 / winword.exe > powershell.exe",
+            "event_count": 3,
+            "severity": "high",
+            "open_case_count": 1,
+            "open_case_ids": ["case-1"],
+            "title": "device-11 / winword.exe > powershell.exe (open cases: 1)",
+        }
+    ]
+
+
+def test_view_endpoint_lineage_clusters_selects_cluster_then_event() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    selections: list[tuple[str, list[dict[str, Any]]]] = []
+    selected_events: list[dict[str, Any]] = []
+    dashboard._collect_endpoint_lineage_clusters = lambda limit=100: [
+        {
+            "cluster_key": "device-11:proc-guid-1",
+            "label": "device-11 / winword.exe > powershell.exe",
+            "event_count": 2,
+            "severity": "high",
+            "open_case_ids": [],
+            "open_case_count": 0,
+        }
+    ]
+    dashboard._resolve_endpoint_lineage_cluster_detail = lambda payload: payload
+    dashboard._resolve_endpoint_lineage_cluster_events = lambda payload: [
+        {
+            "event_id": "evt-lineage-1",
+            "event_type": "endpoint.telemetry.file",
+            "recorded_at": "2026-03-31T00:00:00+00:00",
+            "title": "Endpoint file telemetry: payload.dll",
+        }
+    ]
+
+    def _select(kind: str, rows: list[dict[str, Any]], title: str, **kwargs: Any) -> dict[str, Any]:
+        selections.append((kind, rows))
+        return rows[0]
+
+    dashboard._select_summary_record_or_show_info = _select
+    dashboard._pivot_from_event = lambda payload: selected_events.append(payload)
+
+    dashboard.view_endpoint_lineage_clusters()
+
+    assert selections[0][0] == "endpoint_lineage_cluster"
+    assert selections[1][0] == "event"
+    assert selected_events == [
+        {
+            "event_id": "evt-lineage-1",
+            "event_type": "endpoint.telemetry.file",
+            "recorded_at": "2026-03-31T00:00:00+00:00",
+            "title": "Endpoint file telemetry: payload.dll",
+        }
+    ]
+
+
+def test_view_endpoint_lineage_clusters_prefers_detail_route_before_event_load() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    detail_calls: list[tuple[str, dict[str, Any]]] = []
+    resolved_calls: list[dict[str, Any]] = []
+    selected_events: list[dict[str, Any]] = []
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "get_endpoint_lineage_cluster": lambda self, cluster_key, **filters: detail_calls.append((cluster_key, filters))
+            or {
+                "cluster_key": cluster_key,
+                "label": "device-11 / winword.exe > powershell.exe",
+                "event_count": 3,
+                "severity": "critical",
+                "device_ids": ["device-11"],
+                "process_names": ["powershell.exe"],
+                "process_guids": ["proc-guid-1"],
+                "remote_ips": ["8.8.8.8"],
+                "open_case_ids": [],
+                "open_case_count": 0,
+            }
+        },
+    )()
+    dashboard._collect_endpoint_lineage_clusters = lambda limit=100: [
+        {
+            "cluster_key": "device-11:proc-guid-1",
+            "label": "device-11 / winword.exe > powershell.exe",
+            "event_count": 1,
+            "severity": "high",
+            "device_ids": ["device-11"],
+            "process_guids": ["proc-guid-1"],
+            "open_case_ids": [],
+            "open_case_count": 0,
+        }
+    ]
+    dashboard._resolve_endpoint_lineage_cluster_events = lambda payload: resolved_calls.append(payload) or [
+        {
+            "event_id": "evt-lineage-1",
+            "event_type": "endpoint.telemetry.file",
+            "recorded_at": "2026-03-31T00:00:00+00:00",
+            "title": "Endpoint file telemetry: payload.dll",
+        }
+    ]
+    dashboard._select_summary_record_or_show_info = lambda kind, rows, title, **kwargs: rows[0]
+    dashboard._pivot_from_event = lambda payload: selected_events.append(payload)
+
+    dashboard.view_endpoint_lineage_clusters()
+
+    assert detail_calls == [("device-11:proc-guid-1", {"device_id": "device-11", "process_guid": "proc-guid-1"})]
+    assert resolved_calls[0]["event_count"] == 3
+    assert selected_events[0]["event_id"] == "evt-lineage-1"
+
+
+def test_view_endpoint_lineage_clusters_restores_saved_cluster_selection_and_action() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    detail_calls: list[dict[str, Any]] = []
+    selected_cases: list[dict[str, Any]] = []
+    dashboard.saved_endpoint_lineage_cluster_key = "lineage-22"
+    dashboard.saved_endpoint_lineage_cluster_action = "existing_case"
+    dashboard._collect_endpoint_lineage_clusters = lambda limit=100: [
+        {
+            "cluster_key": "lineage-11",
+            "label": "device-11 / winword.exe > powershell.exe",
+            "event_count": 1,
+            "severity": "medium",
+            "open_case_ids": [],
+            "open_case_count": 0,
+        },
+        {
+            "cluster_key": "lineage-22",
+            "label": "device-22 / excel.exe > cmd.exe",
+            "event_count": 2,
+            "severity": "high",
+            "open_case_ids": ["case-22"],
+            "open_case_count": 1,
+        },
+    ]
+    dashboard._select_summary_record_or_show_info = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("should use saved endpoint lineage cluster selection before opening chooser")
+    )
+    dashboard._resolve_endpoint_lineage_cluster_detail = lambda payload: detail_calls.append(payload) or payload
+    dashboard._resolve_case_for_network_evidence = lambda case_ids: {"case_id": "case-22", "title": "Existing lineage case"}
+    dashboard._pivot_from_case = lambda payload: selected_cases.append(payload)
+
+    dashboard.view_endpoint_lineage_clusters()
+
+    assert detail_calls and detail_calls[0]["cluster_key"] == "lineage-22"
+    assert selected_cases == [{"case_id": "case-22", "title": "Existing lineage case"}]
+
+
+def test_view_endpoint_lineage_clusters_uses_active_dashboard_filter() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    collect_calls: list[tuple[int, dict[str, Any]]] = []
+    dashboard.endpoint_lineage_cluster_mode_var = type("Var", (), {"get": lambda self: "device_id"})()
+    dashboard.endpoint_lineage_cluster_value_var = type("Var", (), {"get": lambda self: "device-11"})()
+    dashboard._collect_endpoint_lineage_clusters = (
+        lambda limit=100, **filters: collect_calls.append((limit, filters))
+        or [
+            {
+                "cluster_key": "device-11:proc-guid-1",
+                "label": "device-11 / winword.exe > powershell.exe",
+                "event_count": 1,
+                "severity": "medium",
+                "open_case_ids": [],
+                "open_case_count": 0,
+            }
+        ]
+    )
+    shown_details: list[tuple[str, str]] = []
+    dashboard._resolve_endpoint_lineage_cluster_detail = lambda payload: payload
+    dashboard._choose_endpoint_lineage_cluster_action = lambda payload: "details"
+    dashboard._show_info_dialog = lambda title, body: shown_details.append((title, body))
+    dashboard._select_summary_record_or_show_info = lambda kind, rows, title, **kwargs: rows[0]
+
+    dashboard.view_endpoint_lineage_clusters()
+
+    assert collect_calls == [(100, {"device_id": "device-11"})]
+    assert shown_details
+    assert shown_details[0][0] == "Endpoint Lineage Cluster"
+
+
+def test_promote_endpoint_lineage_cluster_to_case_uses_remote_manager_path() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    created_payloads: list[Any] = []
+
+    class Manager:
+        def create_case_from_endpoint_lineage_cluster(self, payload: Any) -> Any:
+            created_payloads.append(payload)
+            return type("Case", (), {"case_id": "case-lineage-1"})()
+
+        def create_case(self, payload: Any) -> Any:
+            raise AssertionError("should prefer remote lineage cluster case route")
+
+    dashboard.manager = Manager()
+    dashboard.case_tree = type("Tree", (), {"selection_set": lambda self, value: setattr(self, "selected", value)})()
+    dashboard._collect_endpoint_lineage_clusters = lambda limit=100: [
+        {
+            "cluster_key": "device-11:proc-guid-1",
+            "label": "device-11 / winword.exe > powershell.exe",
+            "event_count": 3,
+            "severity": "critical",
+            "device_ids": ["device-11"],
+            "process_names": ["powershell.exe"],
+            "process_guids": ["proc-guid-1"],
+            "remote_ips": ["8.8.8.8"],
+            "related_alert_ids": ["alert-1"],
+            "open_case_ids": [],
+        }
+    ]
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._resolve_endpoint_lineage_cluster_detail = lambda payload: payload
+    dashboard._handle_existing_case_choice = lambda **kwargs: False
+    dashboard._current_analyst_identity = lambda: "tier2"
+    dashboard.refresh = lambda: None
+    dashboard._refresh_case_detail = lambda: None
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        dashboard.promote_endpoint_lineage_cluster_to_case()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert created_payloads
+    payload = created_payloads[0]
+    assert payload.cluster_key == "device-11:proc-guid-1"
+    assert payload.device_id == "device-11"
+    assert payload.process_guid == "proc-guid-1"
+    assert payload.remote_ip == "8.8.8.8"
+    assert payload.assignee == "tier2"
+
+
+def test_collect_hunt_telemetry_clusters_uses_manager_payload() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_hunt_telemetry_clusters": lambda self, cluster_by="remote_ip", limit=100, **filters: [
+                {
+                    "cluster_by": cluster_by,
+                    "cluster_key": "8.8.8.8",
+                    "label": "8.8.8.8",
+                    "event_count": 4,
+                    "severity": "high",
+                    "open_case_count": 1,
+                    "open_case_ids": ["case-1"],
+                }
+            ]
+        },
+    )()
+
+    rows = dashboard._collect_hunt_telemetry_clusters(cluster_by="remote_ip", limit=50, remote_ip="8.8.8.8")
+
+    assert rows == [
+        {
+            "cluster_by": "remote_ip",
+            "cluster_key": "8.8.8.8",
+            "label": "8.8.8.8",
+            "event_count": 4,
+            "severity": "high",
+            "open_case_count": 1,
+            "open_case_ids": ["case-1"],
+            "title": "8.8.8.8 (open cases: 1)",
+        }
+    ]
+
+
+def test_view_hunt_telemetry_clusters_selects_cluster_then_event() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    selections: list[tuple[str, list[dict[str, Any]]]] = []
+    selected_events: list[dict[str, Any]] = []
+    dashboard._choose_hunt_telemetry_cluster_mode = lambda: "remote_ip"
+    dashboard._collect_hunt_telemetry_clusters = lambda cluster_by="remote_ip", limit=100: [
+        {
+            "cluster_by": "remote_ip",
+            "cluster_key": "8.8.8.8",
+            "label": "8.8.8.8",
+            "event_count": 2,
+            "severity": "high",
+            "open_case_ids": [],
+            "open_case_count": 0,
+        }
+    ]
+    dashboard._resolve_hunt_telemetry_cluster_detail = lambda payload: payload
+    dashboard._choose_hunt_telemetry_cluster_action = lambda payload: "events"
+    dashboard._resolve_hunt_telemetry_cluster_events = lambda payload: [
+        {
+            "event_id": "evt-telemetry-1",
+            "event_type": "endpoint.telemetry.connection",
+            "recorded_at": "2026-03-31T00:00:00+00:00",
+            "title": "Endpoint connection telemetry: powershell.exe -> 8.8.8.8",
+        }
+    ]
+
+    def _select(kind: str, rows: list[dict[str, Any]], title: str, **kwargs: Any) -> dict[str, Any]:
+        selections.append((kind, rows))
+        return rows[0]
+
+    dashboard._select_summary_record_or_show_info = _select
+    dashboard._pivot_from_event = lambda payload: selected_events.append(payload)
+
+    dashboard.view_hunt_telemetry_clusters()
+
+    assert selections[0][0] == "hunt_telemetry_cluster"
+    assert selections[1][0] == "event"
+    assert selected_events == [
+        {
+            "event_id": "evt-telemetry-1",
+            "event_type": "endpoint.telemetry.connection",
+            "recorded_at": "2026-03-31T00:00:00+00:00",
+            "title": "Endpoint connection telemetry: powershell.exe -> 8.8.8.8",
+        }
+    ]
+
+
+def test_view_hunt_telemetry_clusters_prefers_detail_route_before_event_load() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    detail_calls: list[tuple[str, dict[str, Any]]] = []
+    resolved_calls: list[dict[str, Any]] = []
+    selected_events: list[dict[str, Any]] = []
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "get_hunt_telemetry_cluster": lambda self, cluster_key, **filters: detail_calls.append((cluster_key, filters))
+            or {
+                "cluster_by": "remote_ip",
+                "cluster_key": cluster_key,
+                "label": "8.8.8.8",
+                "event_count": 3,
+                "severity": "critical",
+                "remote_ips": ["8.8.8.8"],
+                "device_ids": ["device-11"],
+                "process_guids": ["proc-guid-1"],
+                "open_case_ids": [],
+                "open_case_count": 0,
+            }
+        },
+    )()
+    dashboard._choose_hunt_telemetry_cluster_mode = lambda: "remote_ip"
+    dashboard._collect_hunt_telemetry_clusters = lambda cluster_by="remote_ip", limit=100: [
+        {
+            "cluster_by": "remote_ip",
+            "cluster_key": "8.8.8.8",
+            "label": "8.8.8.8",
+            "event_count": 1,
+            "severity": "high",
+            "remote_ips": ["8.8.8.8"],
+            "device_ids": ["device-11"],
+            "process_guids": ["proc-guid-1"],
+            "open_case_ids": [],
+            "open_case_count": 0,
+        }
+    ]
+    dashboard._resolve_hunt_telemetry_cluster_events = lambda payload: resolved_calls.append(payload) or [
+        {
+            "event_id": "evt-telemetry-1",
+            "event_type": "endpoint.telemetry.connection",
+            "recorded_at": "2026-03-31T00:00:00+00:00",
+            "title": "Endpoint connection telemetry: powershell.exe -> 8.8.8.8",
+        }
+    ]
+    dashboard._select_summary_record_or_show_info = lambda kind, rows, title, **kwargs: rows[0]
+    dashboard._choose_hunt_telemetry_cluster_action = lambda payload: "events"
+    dashboard._pivot_from_event = lambda payload: selected_events.append(payload)
+
+    dashboard.view_hunt_telemetry_clusters()
+
+    assert detail_calls == [("8.8.8.8", {"cluster_by": "remote_ip", "device_id": "device-11", "process_guid": "proc-guid-1", "remote_ip": "8.8.8.8"})]
+    assert resolved_calls[0]["event_count"] == 3
+    assert selected_events[0]["event_id"] == "evt-telemetry-1"
+
+
+def test_view_hunt_telemetry_clusters_uses_active_dashboard_filter() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    collect_calls: list[tuple[str, int, dict[str, Any]]] = []
+    dashboard.hunt_cluster_mode_var = type("Var", (), {"get": lambda self: "device_id"})()
+    dashboard.hunt_cluster_value_var = type("Var", (), {"get": lambda self: "device-11"})()
+    dashboard._collect_hunt_telemetry_clusters = (
+        lambda cluster_by="remote_ip", limit=100, **filters: collect_calls.append((cluster_by, limit, filters))
+        or [
+            {
+                "cluster_by": cluster_by,
+                "cluster_key": "device-11",
+                "label": "device-11",
+                "event_count": 1,
+                "severity": "medium",
+                "open_case_ids": [],
+                "open_case_count": 0,
+            }
+        ]
+    )
+    dashboard._resolve_hunt_telemetry_cluster_detail = lambda payload: payload
+    dashboard._choose_hunt_telemetry_cluster_action = lambda payload: "details"
+    shown_details: list[str] = []
+    dashboard._select_summary_record_or_show_info = lambda kind, rows, title, **kwargs: rows[0]
+    dashboard._show_info_dialog = lambda title, text: shown_details.append(title)
+
+    dashboard.view_hunt_telemetry_clusters()
+
+    assert collect_calls == [("device_id", 100, {"device_id": "device-11"})]
+    assert shown_details == ["Hunt Telemetry Cluster"]
+
+
+def test_view_hunt_telemetry_clusters_restores_saved_cluster_selection_and_action() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    detail_calls: list[dict[str, Any]] = []
+    selected_cases: list[dict[str, Any]] = []
+    dashboard.hunt_cluster_mode_var = type("Var", (), {"get": lambda self: "remote_ip"})()
+    dashboard.hunt_cluster_value_var = type("Var", (), {"get": lambda self: ""})()
+    dashboard.saved_hunt_cluster_key = "cluster-22"
+    dashboard.saved_hunt_cluster_action = "existing_case"
+    dashboard._collect_hunt_telemetry_clusters = lambda cluster_by="remote_ip", limit=100, **filters: [
+        {
+            "cluster_by": cluster_by,
+            "cluster_key": "cluster-11",
+            "label": "8.8.8.8",
+            "event_count": 1,
+            "open_case_ids": [],
+            "open_case_count": 0,
+        },
+        {
+            "cluster_by": cluster_by,
+            "cluster_key": "cluster-22",
+            "label": "9.9.9.9",
+            "event_count": 2,
+            "open_case_ids": ["case-22"],
+            "open_case_count": 1,
+        },
+    ]
+    dashboard._select_summary_record_or_show_info = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("should use saved cluster selection before opening chooser")
+    )
+    dashboard._resolve_hunt_telemetry_cluster_detail = lambda payload: detail_calls.append(payload) or payload
+    dashboard._resolve_case_for_network_evidence = lambda case_ids: {"case_id": "case-22", "title": "Existing case"}
+    dashboard._pivot_from_case = lambda payload: selected_cases.append(payload)
+
+    dashboard.view_hunt_telemetry_clusters()
+
+    assert detail_calls and detail_calls[0]["cluster_key"] == "cluster-22"
+    assert selected_cases == [{"case_id": "case-22", "title": "Existing case"}]
+
+
+def test_view_hunt_telemetry_clusters_can_open_existing_case_directly() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    selected_cases: list[dict[str, Any]] = []
+    dashboard._choose_hunt_telemetry_cluster_mode = lambda: "device_id"
+    dashboard._collect_hunt_telemetry_clusters = lambda cluster_by="remote_ip", limit=100: [
+        {
+            "cluster_by": cluster_by,
+            "cluster_key": "device-11",
+            "label": "device-11",
+            "event_count": 4,
+            "severity": "high",
+            "open_case_ids": ["case-11"],
+            "open_case_count": 1,
+        }
+    ]
+    dashboard._resolve_hunt_telemetry_cluster_detail = lambda payload: payload
+    dashboard._choose_hunt_telemetry_cluster_action = lambda payload: "existing_case"
+    dashboard._resolve_case_for_network_evidence = lambda case_ids: {"case_id": "case-11", "title": "Existing hunt case"}
+    dashboard._select_summary_record_or_show_info = lambda kind, rows, title, **kwargs: rows[0]
+    dashboard._pivot_from_case = lambda payload: selected_cases.append(payload)
+    dashboard._resolve_hunt_telemetry_cluster_events = lambda payload: (_ for _ in ()).throw(AssertionError("should not load events"))
+
+    dashboard.view_hunt_telemetry_clusters()
+
+    assert selected_cases == [{"case_id": "case-11", "title": "Existing hunt case"}]
+
+
+def test_promote_hunt_telemetry_cluster_to_case_uses_remote_manager_path() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    created_payloads: list[Any] = []
+
+    class Manager:
+        def create_case_from_hunt_telemetry_cluster(self, payload: Any) -> Any:
+            created_payloads.append(payload)
+            return type("Case", (), {"case_id": "case-hunt-1"})()
+
+        def create_case(self, payload: Any) -> Any:
+            raise AssertionError("should prefer remote hunt cluster case route")
+
+    dashboard.manager = Manager()
+    dashboard.case_tree = type("Tree", (), {"selection_set": lambda self, value: setattr(self, "selected", value)})()
+    dashboard._choose_hunt_telemetry_cluster_mode = lambda: "remote_ip"
+    dashboard._collect_hunt_telemetry_clusters = lambda cluster_by="remote_ip", limit=100: [
+        {
+            "cluster_by": "remote_ip",
+            "cluster_key": "8.8.8.8",
+            "label": "8.8.8.8",
+            "event_count": 4,
+            "severity": "critical",
+            "device_ids": ["device-11"],
+            "process_names": ["powershell.exe"],
+            "process_guids": ["proc-guid-1"],
+            "remote_ips": ["8.8.8.8"],
+            "filenames": ["payload.dll"],
+            "session_keys": ["sess-1"],
+            "signers": ["Unknown"],
+            "open_case_ids": [],
+        }
+    ]
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._resolve_hunt_telemetry_cluster_detail = lambda payload: payload
+    dashboard._handle_existing_case_choice = lambda **kwargs: False
+    dashboard._current_analyst_identity = lambda: "tier2"
+    dashboard.refresh = lambda: None
+    dashboard._refresh_case_detail = lambda: None
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        dashboard.promote_hunt_telemetry_cluster_to_case()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert created_payloads
+    payload = created_payloads[0]
+    assert payload.cluster_by == "remote_ip"
+    assert payload.cluster_key == "8.8.8.8"
+    assert payload.device_id == "device-11"
+    assert payload.process_guid == "proc-guid-1"
+    assert payload.remote_ip == "8.8.8.8"
+    assert payload.assignee == "tier2"
+
+
+def test_collect_remote_nodes_adds_case_and_acknowledgement_state() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    now = datetime.now(UTC)
+    dashboard._latest_dashboard = {
+        "platform": {
+            "topology": {
+                "remote_nodes": [
+                    {
+                        "node_name": "sensor-a",
+                        "node_role": "sensor",
+                        "status": "degraded",
+                        "last_seen_at": now.isoformat(),
+                        "maintenance": {"active": False, "status": "failed"},
+                        "drain": {"active": False, "status": "failed"},
+                        "metadata": {
+                            "acknowledged_by": "tier2",
+                            "acknowledged_at": (now - timedelta(minutes=30)).isoformat(),
+                            "pressure_suppressions": [
+                                {
+                                    "suppressed_by": "tier2",
+                                    "suppressed_until": "2999-01-01T00:00:00+00:00",
+                                    "suppression_reason": "maintenance",
+                                    "scopes": ["remote_node_degraded"],
+                                }
+                            ],
+                            "maintenance_by": "tier2",
+                            "maintenance_until": "2999-01-01T02:00:00+00:00",
+                            "maintenance_reason": "patching",
+                            "maintenance_services": ["packet_monitor"],
+                            "maintenance_failed_at": (now - timedelta(minutes=17)).isoformat(),
+                            "maintenance_last_error": "maintenance execution failed",
+                            "maintenance_retry_count": 1,
+                            "maintenance_retriable": True,
+                            "refresh_pending": True,
+                            "refresh_acknowledged_at": (now - timedelta(minutes=19)).isoformat(),
+                            "refresh_requested_by": "tier2",
+                            "refresh_requested_at": (now - timedelta(minutes=25)).isoformat(),
+                            "drain_requested_at": (now - timedelta(minutes=22)).isoformat(),
+                            "drain_at": (now - timedelta(minutes=22)).isoformat(),
+                            "drain_failed_at": (now - timedelta(minutes=2)).isoformat(),
+                            "drain_last_error": "drain failed",
+                            "drain_retry_count": 1,
+                            "drain_retriable": True,
+                            "drained_by": "tier2",
+                            "drain_reason": "patching",
+                            "drain_services": ["packet_monitor"],
+                            "action_history": [
+                                {"at": (now - timedelta(minutes=40)).isoformat(), "action": "drain", "transition": "failed", "actor": "sensor-a", "result": "failed"},
+                                {"at": (now - timedelta(minutes=30)).isoformat(), "action": "refresh", "transition": "retried", "actor": "tier2"},
+                                {"at": (now - timedelta(minutes=20)).isoformat(), "action": "refresh", "transition": "retried", "actor": "tier2"},
+                                {"at": (now - timedelta(minutes=2)).isoformat(), "action": "drain", "transition": "failed", "actor": "sensor-a", "result": "failed"},
+                            ],
+                        },
+                    }
+                ]
+            }
+        }
+    }
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "dashboard": lambda self: dashboard._latest_dashboard,
+            "resolve_remote_node_cases": lambda self, node_payload: [
+                type(
+                    "Case",
+                    (),
+                    {
+                        "case_id": "case-1",
+                        "status": SocCaseStatus.open,
+                        "model_dump": lambda self, mode="json": {"case_id": "case-1", "status": "open"},
+                    },
+                )()
+            ],
+        },
+    )()
+
+    rows = dashboard._collect_remote_nodes()
+
+    assert rows[0]["title"] == "sensor-a (open cases: 1) [suppressed] [refresh requested] [action failed] [repeat failures] [retry pressure] [action stuck]"
+    assert rows[0]["related_case_ids"] == ["case-1"]
+    assert rows[0]["open_case_ids"] == ["case-1"]
+    assert rows[0]["acknowledged_by"] == "tier2"
+    assert rows[0]["suppressed"] is True
+    assert rows[0]["suppression_scopes"] == ["remote_node_degraded"]
+    assert rows[0]["maintenance_active"] is False
+    assert rows[0]["maintenance_by"] == "tier2"
+    assert rows[0]["maintenance_status"] == "failed"
+    assert rows[0]["refresh_pending"] is True
+    assert rows[0]["refresh_status"] == "acknowledged"
+    assert rows[0]["drained"] is False
+    assert rows[0]["drain_status"] == "failed"
+    assert rows[0]["action_failures"] == ["maintenance", "drain"]
+    assert rows[0]["repeated_failure_active"] is True
+    assert rows[0]["retry_pressure_active"] is True
+    assert rows[0]["stuck_actions_active"] is True
+    assert rows[0]["repeated_failures"] == {"drain": 2}
+    assert rows[0]["retry_pressure"] == {"refresh": 2}
+    assert rows[0]["stuck_actions"][0]["action"] == "refresh"
+    assert rows[0]["action_history"][0]["transition"] == "failed"
+
+
+def test_escalate_remote_node_creates_case_and_refreshes() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_rows_by_id = {}
+    created_payloads: list[Any] = []
+
+    class Manager:
+        def create_case_from_remote_node(self, payload: Any) -> Any:
+            created_payloads.append(payload)
+            return type("Case", (), {"case_id": "case-22"})()
+
+    dashboard.manager = Manager()
+    dashboard.case_tree = type("Tree", (), {"selection_set": lambda self, value: setattr(self, "selected", value)})()
+    dashboard._collect_remote_nodes = lambda: [
+        {
+            "node_name": "sensor-a",
+            "node_role": "sensor",
+            "status": "degraded",
+            "service_health": {"services": {"packet_monitor": {"status": "degraded", "enabled": True}}},
+            "metadata": {},
+            "open_case_ids": [],
+        }
+    ]
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._current_analyst_identity = lambda: "tier2"
+    dashboard.refresh = lambda: None
+    dashboard._refresh_case_detail = lambda: None
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        dashboard.escalate_remote_node()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert created_payloads
+    assert created_payloads[0]["node_name"] == "sensor-a"
+    assert created_payloads[0]["node_role"] == "sensor"
+    assert getattr(dashboard.case_tree, "selected") == "case-22"
+
+
+def test_escalate_remote_node_prefers_platform_client_when_available() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_rows_by_id = {}
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "create_case_from_remote_node": lambda self, payload: (_ for _ in ()).throw(AssertionError("manager path should not be used")),
+        },
+    )()
+    def _create_case_from_remote_node(_self: Any, payload: Any) -> Any:
+        created_payloads.append(dict(payload))
+        return type("Case", (), {"case_id": "case-22"})()
+
+    created_payloads: list[dict[str, Any]] = []
+    dashboard.platform_client = type(
+        "PlatformClient",
+        (),
+        {"create_case_from_remote_node": _create_case_from_remote_node},
+    )()
+    dashboard.case_tree = type("Tree", (), {"selection_set": lambda self, value: setattr(self, "selected", value)})()
+    dashboard._collect_remote_nodes = lambda: [
+        {
+            "node_name": "sensor-a",
+            "node_role": "sensor",
+            "status": "degraded",
+            "metadata": {},
+            "open_case_ids": [],
+        }
+    ]
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._current_analyst_identity = lambda: "tier2"
+    dashboard.refresh = lambda: None
+    dashboard._refresh_case_detail = lambda: None
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        dashboard.escalate_remote_node()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert created_payloads
+    assert created_payloads[0]["node_name"] == "sensor-a"
+    assert getattr(dashboard.case_tree, "selected") == "case-22"
+
+
+def test_acknowledge_remote_node_updates_registry_and_refreshes() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard._collect_remote_nodes = lambda: [{"node_name": "sensor-a"}]
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._current_analyst_identity = lambda: "tier2"
+    refreshed: list[bool] = []
+    dashboard.refresh = lambda: refreshed.append(True)
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    original_update = soc_dashboard_module.update_platform_node_metadata
+    calls: list[tuple[str, dict[str, Any]]] = []
+    def _fake_update_platform_node_metadata(
+        node_name: str,
+        metadata_updates: Mapping[str, Any],
+        *,
+        path: Any = None,
+    ) -> dict[str, Any]:
+        calls.append((node_name, dict(metadata_updates)))
+        return {"node_name": node_name}
+
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        soc_dashboard_module.update_platform_node_metadata = _fake_update_platform_node_metadata
+        dashboard.acknowledge_remote_node()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+        soc_dashboard_module.update_platform_node_metadata = original_update
+
+    assert calls
+    assert calls[0][0] == "sensor-a"
+    assert calls[0][1]["acknowledged_by"] == "tier2"
+    assert refreshed == [True]
+
+
+def test_suppress_remote_node_updates_registry_and_refreshes() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard._collect_remote_nodes = lambda: [{"node_name": "sensor-a"}]
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._current_analyst_identity = lambda: "tier2"
+    refreshed: list[bool] = []
+    dashboard.refresh = lambda: refreshed.append(True)
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    original_simpledialog = soc_dashboard_module.simpledialog
+    original_suppress = soc_dashboard_module.suppress_platform_node
+    calls: list[tuple[str, int, str, Any, list[str]]] = []
+
+    def _fake_suppress_platform_node(
+        node_name: str,
+        *,
+        minutes: int,
+        suppressed_by: str,
+        reason: str | None = None,
+        scopes: Any = None,
+        path: Any = None,
+    ) -> dict[str, Any]:
+        calls.append((node_name, minutes, suppressed_by, reason, list(scopes or [])))
+        return {"node_name": node_name}
+
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        soc_dashboard_module.simpledialog = type(
+            "Dialog",
+            (),
+            {
+                "askinteger": staticmethod(lambda *args, **kwargs: 30),
+                "askstring": staticmethod(lambda *args, **kwargs: "maintenance"),
+            },
+        )()
+        soc_dashboard_module.suppress_platform_node = _fake_suppress_platform_node
+        dashboard.suppress_remote_node()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+        soc_dashboard_module.simpledialog = original_simpledialog
+        soc_dashboard_module.suppress_platform_node = original_suppress
+
+    assert calls == [("sensor-a", 30, "tier2", "maintenance", ["remote_node_health"])]
+    assert refreshed == [True]
+
+
+def test_clear_remote_node_suppression_updates_registry_and_refreshes() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard._collect_remote_nodes = lambda: [{"node_name": "sensor-a"}]
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._current_analyst_identity = lambda: "tier2"
+    refreshed: list[bool] = []
+    dashboard.refresh = lambda: refreshed.append(True)
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    original_clear = soc_dashboard_module.clear_platform_node_suppression
+    calls: list[tuple[str, str, Any, Any]] = []
+
+    def _fake_clear_platform_node_suppression(
+        node_name: str,
+        *,
+        cleared_by: str | None = None,
+        scopes: Any = None,
+        path: Any = None,
+    ) -> dict[str, Any]:
+        calls.append((node_name, str(cleared_by), scopes, path))
+        return {"node_name": node_name}
+
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        soc_dashboard_module.clear_platform_node_suppression = _fake_clear_platform_node_suppression
+        dashboard.clear_remote_node_suppression()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+        soc_dashboard_module.clear_platform_node_suppression = original_clear
+
+    assert calls[0][0] == "sensor-a"
+    assert calls[0][1] == "tier2"
+    assert calls[0][2] is None
+    assert refreshed == [True]
+
+
+def test_start_remote_node_maintenance_updates_registry_and_refreshes() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard._collect_remote_nodes = lambda: [{"node_name": "sensor-a"}]
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._current_analyst_identity = lambda: "tier2"
+    refreshed: list[bool] = []
+    dashboard.refresh = lambda: refreshed.append(True)
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    original_simpledialog = soc_dashboard_module.simpledialog
+    original_start = soc_dashboard_module.start_platform_node_maintenance
+    calls: list[tuple[str, int, str, Any, list[str]]] = []
+
+    def _fake_start_platform_node_maintenance(
+        node_name: str,
+        *,
+        minutes: int,
+        maintenance_by: str,
+        reason: str | None = None,
+        services: Any = None,
+        path: Any = None,
+    ) -> dict[str, Any]:
+        calls.append((node_name, minutes, maintenance_by, reason, list(services or [])))
+        return {"node_name": node_name}
+
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        soc_dashboard_module.simpledialog = type(
+            "Dialog",
+            (),
+            {
+                "askinteger": staticmethod(lambda *args, **kwargs: 45),
+                "askstring": staticmethod(lambda *args, **kwargs: "packet_monitor"),
+            },
+        )()
+        soc_dashboard_module.start_platform_node_maintenance = _fake_start_platform_node_maintenance
+        dashboard.start_remote_node_maintenance()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+        soc_dashboard_module.simpledialog = original_simpledialog
+        soc_dashboard_module.start_platform_node_maintenance = original_start
+
+    assert calls == [("sensor-a", 45, "tier2", "packet_monitor", ["packet_monitor"])]
+    assert refreshed == [True]
+
+
+def test_clear_remote_node_maintenance_updates_registry_and_refreshes() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard._collect_remote_nodes = lambda: [{"node_name": "sensor-a"}]
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._current_analyst_identity = lambda: "tier2"
+    refreshed: list[bool] = []
+    dashboard.refresh = lambda: refreshed.append(True)
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    original_clear = soc_dashboard_module.clear_platform_node_maintenance
+    calls: list[tuple[str, str, Any]] = []
+
+    def _fake_clear_platform_node_maintenance(
+        node_name: str,
+        *,
+        cleared_by: str | None = None,
+        path: Any = None,
+    ) -> dict[str, Any]:
+        calls.append((node_name, str(cleared_by), path))
+        return {"node_name": node_name}
+
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        soc_dashboard_module.clear_platform_node_maintenance = _fake_clear_platform_node_maintenance
+        dashboard.clear_remote_node_maintenance()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+        soc_dashboard_module.clear_platform_node_maintenance = original_clear
+
+    assert calls[0][0] == "sensor-a"
+    assert calls[0][1] == "tier2"
+    assert refreshed == [True]
+
+
+def test_request_remote_node_refresh_updates_registry_and_refreshes() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard._collect_remote_nodes = lambda: [{"node_name": "sensor-a"}]
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._current_analyst_identity = lambda: "tier2"
+    refreshed: list[bool] = []
+    dashboard.refresh = lambda: refreshed.append(True)
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    original_simpledialog = soc_dashboard_module.simpledialog
+    original_request = soc_dashboard_module.request_platform_node_refresh
+    calls: list[tuple[str, str, Any]] = []
+
+    def _fake_request_platform_node_refresh(
+        node_name: str,
+        *,
+        requested_by: str,
+        reason: str | None = None,
+        path: Any = None,
+    ) -> dict[str, Any]:
+        calls.append((node_name, requested_by, reason))
+        return {"node_name": node_name}
+
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        soc_dashboard_module.simpledialog = type(
+            "Dialog",
+            (),
+            {"askstring": staticmethod(lambda *args, **kwargs: "refresh health")},
+        )()
+        soc_dashboard_module.request_platform_node_refresh = _fake_request_platform_node_refresh
+        dashboard.request_remote_node_refresh()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+        soc_dashboard_module.simpledialog = original_simpledialog
+        soc_dashboard_module.request_platform_node_refresh = original_request
+
+    assert calls == [("sensor-a", "tier2", "refresh health")]
+    assert refreshed == [True]
+
+
+def test_drain_remote_node_updates_registry_and_refreshes() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard._collect_remote_nodes = lambda: [{"node_name": "sensor-a"}]
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._current_analyst_identity = lambda: "tier2"
+    refreshed: list[bool] = []
+    dashboard.refresh = lambda: refreshed.append(True)
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    original_simpledialog = soc_dashboard_module.simpledialog
+    original_drain = soc_dashboard_module.start_platform_node_drain
+    calls: list[tuple[str, str, Any, list[str]]] = []
+
+    values = iter(["packet_monitor,network_monitor", "patching"])
+
+    def _fake_start_platform_node_drain(
+        node_name: str,
+        *,
+        drained_by: str,
+        reason: str | None = None,
+        services: Any = None,
+        path: Any = None,
+    ) -> dict[str, Any]:
+        calls.append((node_name, drained_by, reason, list(services or [])))
+        return {"node_name": node_name}
+
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        soc_dashboard_module.simpledialog = type(
+            "Dialog",
+            (),
+            {"askstring": staticmethod(lambda *args, **kwargs: next(values))},
+        )()
+        soc_dashboard_module.start_platform_node_drain = _fake_start_platform_node_drain
+        dashboard.drain_remote_node()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+        soc_dashboard_module.simpledialog = original_simpledialog
+        soc_dashboard_module.start_platform_node_drain = original_drain
+
+    assert calls == [("sensor-a", "tier2", "patching", ["packet_monitor", "network_monitor"])]
+    assert refreshed == [True]
+
+
+def test_mark_remote_node_ready_updates_registry_and_refreshes() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard._collect_remote_nodes = lambda: [{"node_name": "sensor-a"}]
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._current_analyst_identity = lambda: "tier2"
+    refreshed: list[bool] = []
+    dashboard.refresh = lambda: refreshed.append(True)
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    original_clear = soc_dashboard_module.clear_platform_node_drain
+    calls: list[tuple[str, str, Any]] = []
+
+    def _fake_clear_platform_node_drain(
+        node_name: str,
+        *,
+        cleared_by: str | None = None,
+        path: Any = None,
+    ) -> dict[str, Any]:
+        calls.append((node_name, str(cleared_by), path))
+        return {"node_name": node_name}
+
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        soc_dashboard_module.clear_platform_node_drain = _fake_clear_platform_node_drain
+        dashboard.mark_remote_node_ready()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+        soc_dashboard_module.clear_platform_node_drain = original_clear
+
+    assert calls[0][0] == "sensor-a"
+    assert calls[0][1] == "tier2"
+    assert refreshed == [True]
+
+
+def test_retry_remote_node_action_requeues_failed_action() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard._collect_remote_nodes = lambda: [
+        {
+            "node_name": "sensor-a",
+            "maintenance_status": "failed",
+            "maintenance_retriable": True,
+            "refresh_status": "completed",
+            "refresh_retriable": False,
+            "drain_status": "inactive",
+            "drain_retriable": False,
+        }
+    ]
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._current_analyst_identity = lambda: "tier2"
+    refreshed: list[bool] = []
+    dashboard.refresh = lambda: refreshed.append(True)
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    original_retry = soc_dashboard_module.retry_platform_node_action
+    calls: list[tuple[str, str, str, Any]] = []
+
+    def _fake_retry_platform_node_action(
+        node_name: str,
+        *,
+        action: str,
+        requested_by: str,
+        path: Any = None,
+    ) -> dict[str, Any]:
+        calls.append((node_name, action, requested_by, path))
+        return {"node_name": node_name}
+
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        soc_dashboard_module.retry_platform_node_action = _fake_retry_platform_node_action
+        dashboard.retry_remote_node_action()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+        soc_dashboard_module.retry_platform_node_action = original_retry
+
+    assert calls[0][0] == "sensor-a"
+    assert calls[0][1] == "maintenance"
+    assert calls[0][2] == "tier2"
+    assert refreshed == [True]
+
+
+def test_cancel_remote_node_action_cancels_pending_action() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard._collect_remote_nodes = lambda: [
+        {
+            "node_name": "sensor-a",
+            "maintenance_status": "inactive",
+            "maintenance_retriable": False,
+            "refresh_status": "requested",
+            "refresh_retriable": False,
+            "drain_status": "inactive",
+            "drain_retriable": False,
+        }
+    ]
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._current_analyst_identity = lambda: "tier2"
+    refreshed: list[bool] = []
+    dashboard.refresh = lambda: refreshed.append(True)
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    original_cancel = soc_dashboard_module.cancel_platform_node_action
+    calls: list[tuple[str, str, str, Any]] = []
+
+    def _fake_cancel_platform_node_action(
+        node_name: str,
+        *,
+        action: str,
+        cancelled_by: str,
+        path: Any = None,
+    ) -> dict[str, Any]:
+        calls.append((node_name, action, cancelled_by, path))
+        return {"node_name": node_name}
+
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        soc_dashboard_module.cancel_platform_node_action = _fake_cancel_platform_node_action
+        dashboard.cancel_remote_node_action()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+        soc_dashboard_module.cancel_platform_node_action = original_cancel
+
+    assert calls[0][0] == "sensor-a"
+    assert calls[0][1] == "refresh"
+    assert calls[0][2] == "tier2"
+    assert refreshed == [True]
+
+
+def test_acknowledge_remote_node_uses_manager_control_plane_when_available() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard._collect_remote_nodes = lambda: [{"node_name": "sensor-a"}]
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._current_analyst_identity = lambda: "tier2"
+    refreshed: list[bool] = []
+    dashboard.refresh = lambda: refreshed.append(True)
+    calls: list[tuple[str, str | None]] = []
+    def _acknowledge_platform_node(_self: Any, node_name: str, acknowledged_by: str | None = None) -> dict[str, Any]:
+        calls.append((node_name, acknowledged_by))
+        return {"node_name": node_name}
+
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {"acknowledge_platform_node": _acknowledge_platform_node},
+    )()
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+
+    original_messagebox = soc_dashboard_module.messagebox
+    original_update = soc_dashboard_module.update_platform_node_metadata
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+
+        def _unexpected_local_update(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            raise AssertionError("local platform registry path should not be used")
+
+        soc_dashboard_module.update_platform_node_metadata = _unexpected_local_update
+        dashboard.acknowledge_remote_node()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+        soc_dashboard_module.update_platform_node_metadata = original_update
+
+    assert calls == [("sensor-a", "tier2")]
+    assert refreshed == [True]
+
+
+def test_acknowledge_remote_node_prefers_platform_client_when_available() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard._collect_remote_nodes = lambda: [{"node_name": "sensor-a"}]
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._current_analyst_identity = lambda: "tier2"
+    refreshed: list[bool] = []
+    dashboard.refresh = lambda: refreshed.append(True)
+    platform_calls: list[tuple[str, str | None]] = []
+    manager_calls: list[tuple[str, str | None]] = []
+
+    def _platform_ack(_self: Any, node_name: str, acknowledged_by: str | None = None) -> dict[str, Any]:
+        platform_calls.append((node_name, acknowledged_by))
+        return {"node_name": node_name}
+
+    def _manager_ack(_self: Any, node_name: str, acknowledged_by: str | None = None) -> dict[str, Any]:
+        manager_calls.append((node_name, acknowledged_by))
+        return {"node_name": node_name}
+
+    dashboard.platform_client = type("PlatformClient", (), {"acknowledge_platform_node": _platform_ack})()
+    dashboard.manager = type("Manager", (), {"acknowledge_platform_node": _manager_ack})()
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+
+    original_messagebox = soc_dashboard_module.messagebox
+    original_update = soc_dashboard_module.update_platform_node_metadata
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+
+        def _unexpected_local_update(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            raise AssertionError("local platform registry path should not be used")
+
+        soc_dashboard_module.update_platform_node_metadata = _unexpected_local_update
+        dashboard.acknowledge_remote_node()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+        soc_dashboard_module.update_platform_node_metadata = original_update
+
+    assert platform_calls == [("sensor-a", "tier2")]
+    assert manager_calls == []
+    assert refreshed == [True]
+
+
+def test_retry_remote_node_action_uses_manager_control_plane_when_available() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard._collect_remote_nodes = lambda: [
+        {
+            "node_name": "sensor-a",
+            "maintenance_status": "inactive",
+            "maintenance_retriable": False,
+            "refresh_status": "failed",
+            "refresh_retriable": True,
+            "drain_status": "inactive",
+            "drain_retriable": False,
+        }
+    ]
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._current_analyst_identity = lambda: "tier2"
+    refreshed: list[bool] = []
+    dashboard.refresh = lambda: refreshed.append(True)
+    calls: list[tuple[str, str, str | None]] = []
+    def _retry_platform_node_action(
+        _self: Any,
+        node_name: str,
+        action: str,
+        requested_by: str | None = None,
+    ) -> dict[str, Any]:
+        calls.append((node_name, action, requested_by))
+        return {"node_name": node_name}
+
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {"retry_platform_node_action": _retry_platform_node_action},
+    )()
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+
+    original_messagebox = soc_dashboard_module.messagebox
+    original_retry = soc_dashboard_module.retry_platform_node_action
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+
+        def _unexpected_local_retry(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            raise AssertionError("local platform registry path should not be used")
+
+        soc_dashboard_module.retry_platform_node_action = _unexpected_local_retry
+        dashboard.retry_remote_node_action()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+        soc_dashboard_module.retry_platform_node_action = original_retry
+
+    assert calls == [("sensor-a", "refresh", "tier2")]
+    assert refreshed == [True]
+
+
+def test_retry_remote_node_action_prefers_platform_client_when_available() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard._collect_remote_nodes = lambda: [
+        {
+            "node_name": "sensor-a",
+            "maintenance_status": "inactive",
+            "maintenance_retriable": False,
+            "refresh_status": "failed",
+            "refresh_retriable": True,
+            "drain_status": "inactive",
+            "drain_retriable": False,
+        }
+    ]
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._current_analyst_identity = lambda: "tier2"
+    refreshed: list[bool] = []
+    dashboard.refresh = lambda: refreshed.append(True)
+    platform_calls: list[tuple[str, str, str | None]] = []
+    manager_calls: list[tuple[str, str, str | None]] = []
+
+    def _platform_retry(_self: Any, node_name: str, action: str, requested_by: str | None = None) -> dict[str, Any]:
+        platform_calls.append((node_name, action, requested_by))
+        return {"node_name": node_name}
+
+    def _manager_retry(_self: Any, node_name: str, action: str, requested_by: str | None = None) -> dict[str, Any]:
+        manager_calls.append((node_name, action, requested_by))
+        return {"node_name": node_name}
+
+    dashboard.platform_client = type("PlatformClient", (), {"retry_platform_node_action": _platform_retry})()
+    dashboard.manager = type("Manager", (), {"retry_platform_node_action": _manager_retry})()
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+
+    original_messagebox = soc_dashboard_module.messagebox
+    original_retry = soc_dashboard_module.retry_platform_node_action
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+
+        def _unexpected_local_retry(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            raise AssertionError("local platform registry path should not be used")
+
+        soc_dashboard_module.retry_platform_node_action = _unexpected_local_retry
+        dashboard.retry_remote_node_action()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+        soc_dashboard_module.retry_platform_node_action = original_retry
+
+    assert platform_calls == [("sensor-a", "refresh", "tier2")]
+    assert manager_calls == []
+    assert refreshed == [True]
+
+
+def test_collect_remote_nodes_prefers_platform_client_over_dashboard_payload() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.platform_client = type(
+        "PlatformClient",
+        (),
+        {
+            "list_remote_nodes": lambda self, limit=500: [
+                {
+                    "node_name": "sensor-a",
+                    "status": "healthy",
+                    "metadata": {},
+                    "maintenance": {},
+                    "refresh": {},
+                    "drain": {},
+                }
+            ]
+        },
+    )()
+    dashboard._latest_dashboard = {
+        "platform": {
+            "topology": {
+                "remote_nodes": [
+                    {
+                        "node_name": "stale-dashboard-node",
+                        "status": "degraded",
+                        "metadata": {},
+                    }
+                ]
+            }
+        }
+    }
+    dashboard.manager = type("Manager", (), {"resolve_remote_node_cases": lambda self, row: []})()
+
+    rows = dashboard._collect_remote_nodes()
+
+    assert [row["node_name"] for row in rows] == ["sensor-a"]
+
+
+def test_collect_remote_nodes_prefers_platform_case_resolution_when_available() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.platform_client = type(
+        "PlatformClient",
+        (),
+        {
+            "list_remote_nodes": lambda self, limit=500: [
+                {
+                    "node_name": "sensor-a",
+                    "status": "healthy",
+                    "metadata": {},
+                    "maintenance": {},
+                    "refresh": {},
+                    "drain": {},
+                }
+            ],
+            "resolve_remote_node_cases": lambda self, row: [
+                SimpleNamespace(model_dump=lambda mode="json": {"case_id": "case-1", "status": "open"})
+            ],
+        },
+    )()
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {"resolve_remote_node_cases": lambda self, row: (_ for _ in ()).throw(AssertionError("manager path should not be used"))},
+    )()
+
+    rows = dashboard._collect_remote_nodes()
+
+    assert rows[0]["related_case_ids"] == ["case-1"]
+    assert rows[0]["open_case_ids"] == ["case-1"]
+
+
+def test_view_remote_nodes_prefers_platform_detail_client() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard._collect_remote_nodes = lambda: [{"node_name": "sensor-a", "status": "healthy"}]
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard.platform_client = type(
+        "PlatformClient",
+        (),
+        {"get_platform_node_detail": lambda self, node_name: {"node_name": node_name, "status": "degraded", "open_case_count": 2}},
+    )()
+    shown: list[str] = []
+    dashboard._show_info_dialog = lambda title, body: shown.append(body)
+
+    original_formatter = SocDashboard._format_remote_node_detail
+    try:
+        cast(Any, SocDashboard)._format_remote_node_detail = staticmethod(
+            lambda payload: f"{payload['node_name']}:{payload.get('status')}:{payload.get('open_case_count')}"
+        )
+        dashboard.view_remote_nodes()
+    finally:
+        cast(Any, SocDashboard)._format_remote_node_detail = original_formatter
+
+    assert shown == ["sensor-a:degraded:2"]
+
+
+def test_filter_remote_nodes_by_action_history() -> None:
+    rows = [
+        {
+            "node_name": "sensor-a",
+            "action_failures": ["drain"],
+            "action_history": [
+                {"action": "refresh", "transition": "retried"},
+                {"action": "drain", "transition": "failed"},
+            ],
+        },
+        {
+            "node_name": "sensor-b",
+            "action_failures": [],
+            "action_history": [
+                {"action": "drain", "transition": "cancelled"},
+            ],
+        },
+    ]
+
+    failed = SocDashboard._filter_remote_nodes_by_action_history(rows, "failed")
+    retried = SocDashboard._filter_remote_nodes_by_action_history(rows, "retried")
+    cancelled = SocDashboard._filter_remote_nodes_by_action_history(rows, "cancelled")
+
+    assert [item["node_name"] for item in failed] == ["sensor-a"]
+    assert [item["node_name"] for item in retried] == ["sensor-a"]
+    assert [item["node_name"] for item in cancelled] == ["sensor-b"]
+
+
+def test_filter_remote_nodes_by_action_pressure() -> None:
+    rows = [
+        {"node_name": "sensor-a", "repeated_failure_active": True, "retry_pressure_active": False, "stuck_actions_active": False},
+        {"node_name": "sensor-b", "repeated_failure_active": False, "retry_pressure_active": True, "stuck_actions_active": False},
+        {"node_name": "sensor-c", "repeated_failure_active": False, "retry_pressure_active": False, "stuck_actions_active": True},
+        {"node_name": "sensor-d", "repeated_failure_active": False, "retry_pressure_active": False, "stuck_actions_active": False},
+    ]
+
+    all_active = SocDashboard._filter_remote_nodes_by_action_pressure(rows, "all_active")
+    repeated = SocDashboard._filter_remote_nodes_by_action_pressure(rows, "repeated_failures")
+    retried = SocDashboard._filter_remote_nodes_by_action_pressure(rows, "retry_pressure")
+    stuck = SocDashboard._filter_remote_nodes_by_action_pressure(rows, "stuck_actions")
+
+    assert [item["node_name"] for item in all_active] == ["sensor-a", "sensor-b", "sensor-c"]
+    assert [item["node_name"] for item in repeated] == ["sensor-a"]
+    assert [item["node_name"] for item in retried] == ["sensor-b"]
+    assert [item["node_name"] for item in stuck] == ["sensor-c"]
+
+
+def test_view_remote_node_action_pressure_opens_existing_case_when_operator_chooses_yes() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_rows_by_id = {"case-7": {"case_id": "case-7", "title": "Existing node pressure case", "status": "open"}}
+    dashboard._collect_remote_nodes = lambda: [
+        {
+            "node_name": "sensor-a",
+            "status": "degraded",
+            "repeated_failure_active": True,
+            "retry_pressure_active": False,
+            "stuck_actions_active": False,
+            "open_case_ids": ["case-7"],
+        }
+    ]
+    dashboard._choose_action_dialog = lambda *args, **kwargs: "all_active"
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    opened: list[dict[str, Any]] = []
+    dashboard._pivot_from_case = lambda payload: opened.append(payload)
+    dashboard._show_info_dialog = lambda title, body: (_ for _ in ()).throw(AssertionError("should not show detail"))
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(
+            Any,
+            type("MessageBox", (), {"askyesnocancel": staticmethod(lambda *args, **kwargs: True)})(),
+        )
+        dashboard.view_remote_node_action_pressure()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert opened == [{"case_id": "case-7", "title": "Existing node pressure case", "status": "open"}]
+
+
+def test_view_network_evidence_pivots_selected_event() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.packet_monitor = type(
+        "PacketMonitor",
+        (),
+        {"list_recent_sessions": lambda self, limit=100: [{"remote_ip": "8.8.8.8", "last_seen_at": "2026-03-30T01:05:00+00:00", "total_packets": 10}]},
+    )()
+    dashboard.network_monitor = type(
+        "NetworkMonitor",
+        (),
+        {"list_recent_observations": lambda self, limit=100: [{"remote_ip": "8.8.8.8", "last_seen_at": "2026-03-30T01:00:00+00:00", "sensitive_ports": [3389]}]},
+    )()
+    event = type("Event", (), {"event_type": "network.monitor.finding", "model_dump": lambda self, mode="json": {"event_id": "evt-2", "event_type": "network.monitor.finding"}})()
+    dashboard.manager = type("Manager", (), {"query_events": lambda self, text, limit=100: [event]})()
+    selected: list[dict[str, Any]] = []
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._pivot_from_event = lambda payload: selected.append(payload)
+    dashboard._show_info_dialog = lambda title, body: (_ for _ in ()).throw(AssertionError("should not show dialog"))
+
+    dashboard.view_network_evidence()
+
+    assert selected == [{"event_id": "evt-2", "event_type": "network.monitor.finding"}]
+
+
+def test_view_network_certificates_pivots_selected_event() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard._collect_network_protocol_records = lambda method_name, limit=50, **filters: [
+        {
+            "event_id": "evt-cert-1",
+            "event_type": "network.telemetry.certificate",
+            "severity": "medium",
+            "title": "Certificate for example.test",
+        }
+    ]
+    selected: list[dict[str, Any]] = []
+
+    def _pivot_from_event(payload: dict[str, Any]) -> None:
+        selected.append(payload)
+
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._pivot_from_event = _pivot_from_event
+    dashboard._show_info_dialog = lambda title, body: (_ for _ in ()).throw(AssertionError("should not show dialog"))
+
+    dashboard.view_network_certificates()
+
+    assert selected == [
+        {
+            "event_id": "evt-cert-1",
+            "event_type": "network.telemetry.certificate",
+            "severity": "medium",
+            "title": "Certificate for example.test",
+        }
+    ]
+
+
+def test_view_network_radius_pivots_selected_event() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard._collect_network_protocol_records = lambda method_name, limit=50, **filters: [
+        {
+            "event_id": "evt-radius-1",
+            "event_type": "network.telemetry.radius",
+            "severity": "critical",
+            "title": "RADIUS rejects for analyst",
+        }
+    ]
+    selected: list[dict[str, Any]] = []
+
+    def _pivot_from_event(payload: dict[str, Any]) -> None:
+        selected.append(payload)
+
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._pivot_from_event = _pivot_from_event
+    dashboard._show_info_dialog = lambda title, body: (_ for _ in ()).throw(AssertionError("should not show dialog"))
+
+    dashboard.view_network_radius()
+
+    assert selected == [
+        {
+            "event_id": "evt-radius-1",
+            "event_type": "network.telemetry.radius",
+            "severity": "critical",
+            "title": "RADIUS rejects for analyst",
+        }
+    ]
+
+
+def test_pivot_from_network_evidence_can_open_related_alert() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.all_alert_rows_by_id = {
+        "alert-1": {"alert_id": "alert-1", "source_event_ids": ["evt-2"], "title": "Overlap alert"},
+    }
+    event = type("Event", (), {"event_type": "network.monitor.finding", "model_dump": lambda self, mode="json": {"event_id": "evt-2", "event_type": "network.monitor.finding"}})()
+    dashboard.manager = type("Manager", (), {"query_events": lambda self, text, limit=100: [event], "list_cases": lambda self: []})()
+    selected: list[dict[str, Any]] = []
+    dashboard._choose_network_evidence_pivot = lambda *args, **kwargs: "alerts"
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._pivot_from_alert = lambda payload: selected.append(payload)
+    dashboard._show_info_dialog = lambda title, body: (_ for _ in ()).throw(AssertionError("should not show dialog"))
+
+    dashboard._pivot_from_network_evidence(
+        {
+            "remote_ip": "8.8.8.8",
+            "packet_session": {"session_key": "packet-session:8.8.8.8"},
+        }
+    )
+
+    assert selected == [{"alert_id": "alert-1", "source_event_ids": ["evt-2"], "title": "Overlap alert"}]
+
+
+def test_pivot_from_network_evidence_can_open_related_case() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.all_alert_rows_by_id = {}
+    event = type("Event", (), {"event_type": "network.monitor.finding", "model_dump": lambda self, mode="json": {"event_id": "evt-2", "event_type": "network.monitor.finding"}})()
+    case = type("Case", (), {"model_dump": lambda self, mode="json": {"case_id": "case-1", "source_event_ids": ["evt-2"], "title": "Investigate 8.8.8.8"}})()
+    dashboard.manager = type("Manager", (), {"query_events": lambda self, text, limit=100: [event], "list_cases": lambda self: [case]})()
+    selected: list[dict[str, Any]] = []
+    dashboard._choose_network_evidence_pivot = lambda *args, **kwargs: "cases"
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._pivot_from_case = lambda payload: selected.append(payload)
+    dashboard._show_info_dialog = lambda title, body: (_ for _ in ()).throw(AssertionError("should not show dialog"))
+
+    dashboard._pivot_from_network_evidence({"remote_ip": "8.8.8.8"})
+
+    assert selected == [{"case_id": "case-1", "source_event_ids": ["evt-2"], "title": "Investigate 8.8.8.8"}]
+
+
+def test_pivot_from_network_evidence_can_open_packet_session() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    selected: list[dict[str, Any]] = []
+    dashboard.manager = type("Manager", (), {"query_events": lambda self, text, limit=100: []})()
+    dashboard._choose_network_evidence_pivot = lambda *args, **kwargs: "session"
+    dashboard._pivot_from_packet_session = lambda payload: selected.append(payload)
+    dashboard._show_info_dialog = lambda title, body: (_ for _ in ()).throw(AssertionError("should not show dialog"))
+
+    dashboard._pivot_from_network_evidence(
+        {
+            "remote_ip": "8.8.8.8",
+            "packet_session": {"session_key": "packet-session:8.8.8.8", "remote_ip": "8.8.8.8"},
+        }
+    )
+
+    assert selected == [{"session_key": "packet-session:8.8.8.8", "remote_ip": "8.8.8.8"}]
+
+
+def test_promote_network_evidence_to_case_creates_case_and_refreshes() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_rows_by_id = {}
+    dashboard.packet_monitor = type(
+        "PacketMonitor",
+        (),
+        {"list_recent_sessions": lambda self, limit=100: [{"remote_ip": "8.8.8.8", "session_key": "packet-session:8.8.8.8", "protocols": ["TCP"], "total_packets": 10}]},
+    )()
+    dashboard.network_monitor = type(
+        "NetworkMonitor",
+        (),
+        {"list_recent_observations": lambda self, limit=100: [{"remote_ip": "8.8.8.8", "local_ports": [3389], "remote_ports": [51000], "sensitive_ports": [3389], "total_hits": 4}]},
+    )()
+    created_requests: list[Any] = []
+
+    class Manager:
+        def create_case_from_network_evidence(self, payload: Any, request: Any) -> Any:
+            created_requests.append((payload, request))
+            return type("Case", (), {"case_id": "case-2"})()
+
+    dashboard.manager = Manager()
+    dashboard.case_tree = type("Tree", (), {"selection_set": lambda self, value: setattr(self, "selected", value)})()
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._current_analyst_identity = lambda: "tier1-analyst"
+    dashboard.refresh = lambda: None
+    dashboard._refresh_case_detail = lambda: None
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        dashboard.promote_network_evidence_to_case()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert created_requests
+    assert created_requests[0][0]["remote_ip"] == "8.8.8.8"
+    assert created_requests[0][1].remote_ip == "8.8.8.8"
+    assert created_requests[0][1].assignee == "tier1-analyst"
+    assert getattr(dashboard.case_tree, "selected") == "case-2"
+
+
+def test_promote_network_evidence_to_case_opens_existing_case_when_operator_chooses_yes() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_rows_by_id = {"case-9": {"case_id": "case-9", "title": "Existing investigation", "status": "open"}}
+    dashboard._collect_network_evidence = lambda: [{"remote_ip": "8.8.8.8", "open_case_ids": ["case-9"], "open_case_count": 1}]
+    dashboard.manager = type("Manager", (), {})()
+    opened: list[dict[str, Any]] = []
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._pivot_from_case = lambda payload: opened.append(payload)
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(
+            Any,
+            type("MessageBox", (), {"askyesnocancel": staticmethod(lambda *args, **kwargs: True)})(),
+        )
+        dashboard.promote_network_evidence_to_case()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert opened == [{"case_id": "case-9", "title": "Existing investigation", "status": "open"}]
+
+
+def test_promote_network_evidence_to_case_stops_when_operator_cancels() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_rows_by_id = {"case-9": {"case_id": "case-9", "title": "Existing investigation", "status": "open"}}
+    dashboard._collect_network_evidence = lambda: [{"remote_ip": "8.8.8.8", "open_case_ids": ["case-9"], "open_case_count": 1}]
+
+    class Manager:
+        def create_case_from_network_evidence(self, payload: Any, request: Any) -> Any:
+            raise AssertionError("should not create a case")
+
+    dashboard.manager = Manager()
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(
+            Any,
+            type("MessageBox", (), {"askyesnocancel": staticmethod(lambda *args, **kwargs: None)})(),
+        )
+        dashboard.promote_network_evidence_to_case()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+
+def test_promote_packet_session_to_case_opens_existing_case_when_operator_chooses_yes() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_rows_by_id = {"case-7": {"case_id": "case-7", "title": "Existing packet investigation", "status": "open"}}
+    dashboard.packet_monitor = type(
+        "PacketMonitor",
+        (),
+        {"list_recent_sessions": lambda self, limit=50: [{"remote_ip": "8.8.8.8", "session_key": "packet-session:8.8.8.8"}]},
+    )()
+    dashboard.manager = type("Manager", (), {})()
+    dashboard._resolve_packet_session_events = lambda session_payload: [{"event_id": "evt-1"}]
+    dashboard._resolve_network_evidence_cases = lambda related_events: [{"case_id": "case-7", "title": "Existing packet investigation", "status": "open"}]
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    opened: list[dict[str, Any]] = []
+    dashboard._pivot_from_case = lambda payload: opened.append(payload)
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(
+            Any,
+            type("MessageBox", (), {"askyesnocancel": staticmethod(lambda *args, **kwargs: True)})(),
+        )
+        dashboard.promote_packet_session_to_case()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert opened == [{"case_id": "case-7", "title": "Existing packet investigation", "status": "open"}]
+
+
+def test_promote_packet_session_to_case_stops_when_operator_cancels() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_rows_by_id = {"case-7": {"case_id": "case-7", "title": "Existing packet investigation", "status": "open"}}
+    dashboard.packet_monitor = type(
+        "PacketMonitor",
+        (),
+        {"list_recent_sessions": lambda self, limit=50: [{"remote_ip": "8.8.8.8", "session_key": "packet-session:8.8.8.8"}]},
+    )()
+
+    class Manager:
+        def create_case_from_packet_session(self, payload: Any, request: Any) -> Any:
+            raise AssertionError("should not create a case")
+
+    dashboard.manager = Manager()
+    dashboard._resolve_packet_session_events = lambda session_payload: [{"event_id": "evt-1"}]
+    dashboard._resolve_network_evidence_cases = lambda related_events: [{"case_id": "case-7", "title": "Existing packet investigation", "status": "open"}]
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(
+            Any,
+            type("MessageBox", (), {"askyesnocancel": staticmethod(lambda *args, **kwargs: None)})(),
+        )
+        dashboard.promote_packet_session_to_case()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+
+def test_build_packet_session_case_payload_uses_session_and_event_context() -> None:
+    payload = SocDashboard._build_packet_session_case_payload(
+        {
+            "session_key": "packet-session:8.8.8.8",
+            "remote_ip": "8.8.8.8",
+            "protocols": ["TCP"],
+            "local_ports": [3389],
+            "remote_ports": [51000, 51001],
+            "sensitive_ports": [3389],
+            "total_packets": 10,
+        },
+        source_events=[{"event_id": "evt-1"}, {"event_id": "evt-2"}],
+        assignee="tier1-analyst",
+    )
+
+    assert payload.title == "Investigate packet session 8.8.8.8"
+    assert payload.severity.value == "critical"
+    assert payload.source_event_ids == ["evt-1", "evt-2"]
+    assert "8.8.8.8" in payload.observables
+    assert "packet-session:8.8.8.8" in payload.observables
+    assert "protocol:TCP" in payload.observables
+    assert "local_port:3389" in payload.observables
+    assert payload.assignee == "tier1-analyst"
+
+
+def test_promote_packet_session_to_case_creates_case_and_refreshes() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.packet_monitor = type(
+        "PacketMonitor",
+        (),
+        {
+            "list_recent_sessions": lambda self, limit=50: [
+                {"session_key": "packet-session:8.8.8.8", "remote_ip": "8.8.8.8", "protocols": ["TCP"], "local_ports": [3389], "remote_ports": [51000], "sensitive_ports": [3389], "total_packets": 10}
+            ]
+        },
+    )()
+    created_payloads: list[Any] = []
+    class Manager:
+        def create_case(self, payload: Any) -> Any:
+            created_payloads.append(payload)
+            return type("Case", (), {"case_id": "case-1"})()
+
+    dashboard.manager = Manager()
+    dashboard.case_tree = type("Tree", (), {"selection_set": lambda self, value: setattr(self, "selected", value)})()
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._resolve_packet_session_events = lambda session_payload: [{"event_id": "evt-1"}]
+    dashboard._current_analyst_identity = lambda: "tier1-analyst"
+    dashboard.refresh = lambda: None
+    dashboard._refresh_case_detail = lambda: None
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        dashboard.promote_packet_session_to_case()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert created_payloads
+    assert created_payloads[0].title == "Investigate packet session 8.8.8.8"
+    assert created_payloads[0].source_event_ids == ["evt-1"]
+    assert getattr(dashboard.case_tree, "selected") == "case-1"
+
+
+def test_view_detection_rules_shows_selected_rule_detail() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_rows_by_id = {"case-9": {"case_id": "case-9", "status": "open", "title": "Existing investigation"}}
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_detection_rules": lambda self: [
+                type(
+                    "Rule",
+                    (),
+                    {
+                        "model_dump": lambda self, mode="json": {
+                            "rule_id": "packet_network_remote_overlap",
+                            "title": "Packet and network remote overlap",
+                            "description": "Correlates packet-session evidence with suspicious network monitor findings for the same remote IP.",
+                            "category": "correlation",
+                            "enabled": True,
+                            "hit_count": 2,
+                            "open_alert_count": 1,
+                            "last_match_at": "2026-03-31T00:00:00+00:00",
+                            "parameters": {"window_hours": 24},
+                        }
+                    },
+                )()
+            ],
+            "query_alerts": lambda self, correlation_rule=None, limit=50: [
+                type(
+                    "Alert",
+                    (),
+                    {
+                        "model_dump": lambda self, mode="json": {
+                            "alert_id": "alert-1",
+                            "title": "Packet and network evidence for 8.8.8.8",
+                            "status": "open",
+                            "severity": "critical",
+                            "correlation_rule": "packet_network_remote_overlap",
+                            "correlation_key": "8.8.8.8",
+                            "linked_case_id": "case-9",
+                        }
+                    },
+                )()
+            ],
+        },
+    )()
+    dialogs: list[tuple[str, str]] = []
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._show_info_dialog = lambda title, body: dialogs.append((title, body))
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(
+            Any,
+            type("MessageBox", (), {"askyesnocancel": staticmethod(lambda *args, **kwargs: False)})(),
+        )
+        dashboard.view_detection_rules()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert dialogs
+    assert dialogs[-1][0] == "Detection Rule"
+    assert "Detection Rule: packet_network_remote_overlap" in dialogs[-1][1]
+    assert "Related Cases: 1" in dialogs[-1][1]
+    assert "Open Cases: 1" in dialogs[-1][1]
+
+
+def test_view_detection_rules_opens_existing_case_when_operator_chooses_yes() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_rows_by_id = {"case-9": {"case_id": "case-9", "status": "open", "title": "Existing investigation"}}
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_detection_rules": lambda self: [
+                type(
+                    "Rule",
+                    (),
+                    {
+                        "model_dump": lambda self, mode="json": {
+                            "rule_id": "packet_network_remote_overlap",
+                            "title": "Packet and network remote overlap",
+                            "description": "Correlates packet-session evidence with suspicious network monitor findings for the same remote IP.",
+                            "category": "correlation",
+                            "enabled": True,
+                            "hit_count": 2,
+                            "open_alert_count": 1,
+                            "last_match_at": "2026-03-31T00:00:00+00:00",
+                            "parameters": {"window_hours": 24},
+                        }
+                    },
+                )()
+            ],
+            "query_alerts": lambda self, correlation_rule=None, limit=50: [
+                type(
+                    "Alert",
+                    (),
+                    {
+                        "model_dump": lambda self, mode="json": {
+                            "alert_id": "alert-1",
+                            "title": "Packet and network evidence for 8.8.8.8",
+                            "status": "open",
+                            "severity": "critical",
+                            "correlation_rule": "packet_network_remote_overlap",
+                            "correlation_key": "8.8.8.8",
+                            "linked_case_id": "case-9",
+                        }
+                    },
+                )()
+            ],
+        },
+    )()
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    opened: list[dict[str, Any]] = []
+    dashboard._pivot_from_case = lambda payload: opened.append(payload)
+    dashboard._show_info_dialog = lambda title, body: (_ for _ in ()).throw(AssertionError("should not show dialog"))
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(
+            Any,
+            type("MessageBox", (), {"askyesnocancel": staticmethod(lambda *args, **kwargs: True)})(),
+        )
+        dashboard.view_detection_rules()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert opened == [{"case_id": "case-9", "status": "open", "title": "Existing investigation"}]
+
+
+def test_view_packet_overlap_correlations_pivots_selected_alert() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    alert = type(
+        "Alert",
+        (),
+        {
+            "model_dump": lambda self, mode="json": {
+                "alert_id": "alert-1",
+                "title": "Packet and network evidence for 8.8.8.8",
+                "status": "open",
+                "severity": "critical",
+                "correlation_rule": "packet_network_remote_overlap",
+            }
+        },
+    )()
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {"query_alerts": lambda self, correlation_rule=None, limit=50: [alert]},
+    )()
+    selected: list[dict[str, Any]] = []
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._pivot_from_alert = lambda payload: selected.append(payload)
+    dashboard._show_info_dialog = lambda title, body: (_ for _ in ()).throw(AssertionError("should not show dialog"))
+
+    dashboard.view_packet_overlap_correlations()
+
+    assert selected == [
+        {
+            "alert_id": "alert-1",
+            "title": "Packet and network evidence for 8.8.8.8",
+            "status": "open",
+            "severity": "critical",
+            "correlation_rule": "packet_network_remote_overlap",
+        }
+    ]
+
+
+def test_view_identity_correlations_pivots_selected_alert() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    auth_alert = type(
+        "Alert",
+        (),
+        {
+            "model_dump": lambda self, mode="json": {
+                "alert_id": "alert-auth-1",
+                "title": "Repeated auth failures for analyst",
+                "status": "open",
+                "severity": "critical",
+                "correlation_rule": "network_auth_failure_burst",
+            }
+        },
+    )()
+    ignored_alert = type(
+        "Alert",
+        (),
+        {
+            "model_dump": lambda self, mode="json": {
+                "alert_id": "alert-web-1",
+                "title": "DNS and HTTP overlap",
+                "status": "open",
+                "severity": "high",
+                "correlation_rule": "network_dns_http_followup",
+            }
+        },
+    )()
+    dashboard.manager = type("Manager", (), {"list_alerts": lambda self: [auth_alert, ignored_alert]})()
+    selected: list[dict[str, Any]] = []
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._choose_identity_correlation_action = lambda payload: "open"
+    dashboard._pivot_from_alert = lambda payload: selected.append(payload)
+    dashboard._show_info_dialog = lambda title, body: (_ for _ in ()).throw(AssertionError("should not show dialog"))
+
+    dashboard.view_identity_correlations()
+
+    assert selected == [
+        {
+            "alert_id": "alert-auth-1",
+            "title": "Repeated auth failures for analyst",
+            "status": "open",
+            "severity": "critical",
+            "correlation_rule": "network_auth_failure_burst",
+        }
+    ]
+
+
+def test_view_identity_correlations_opens_linked_case_when_requested() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    auth_alert = type(
+        "Alert",
+        (),
+        {
+            "model_dump": lambda self, mode="json": {
+                "alert_id": "alert-auth-2",
+                "title": "VPN disconnect auth chain",
+                "status": "open",
+                "severity": "critical",
+                "correlation_rule": "network_vpn_disconnect_auth_failure_chain",
+                "linked_case_id": "case-2",
+            }
+        },
+    )()
+    dashboard.manager = type("Manager", (), {"list_alerts": lambda self: [auth_alert]})()
+    dashboard.case_rows_by_id = {"case-2": {"case_id": "case-2", "title": "Identity case"}}  # type: ignore[attr-defined]
+    selected_cases: list[dict[str, Any]] = []
+    def _pivot_from_case(payload: dict[str, Any]) -> None:
+        selected_cases.append(payload)
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._choose_identity_correlation_action = lambda payload: "case"
+    dashboard._pivot_from_case = _pivot_from_case
+    dashboard._show_info_dialog = lambda title, body: (_ for _ in ()).throw(AssertionError("should not show dialog"))
+
+    dashboard.view_identity_correlations()
+
+    assert selected_cases == [{"case_id": "case-2", "title": "Identity case"}]
+
+
+def test_view_identity_correlations_promotes_selected_alert_to_case() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    auth_alert = type(
+        "Alert",
+        (),
+        {
+            "model_dump": lambda self, mode="json": {
+                "alert_id": "alert-auth-3",
+                "title": "RADIUS reject burst",
+                "status": "open",
+                "severity": "critical",
+                "correlation_rule": "network_radius_reject_burst",
+            }
+        },
+    )()
+    promoted: list[tuple[str, Any]] = []
+    selected_cases: list[str] = []
+    def _promote_alert_to_case(_self: Any, alert_id: str, payload: Any) -> Any:
+        promoted.append((alert_id, payload))
+        return (
+            None,
+            type("Case", (), {"case_id": "case-identity-3"})(),
+        )
+
+    def _selection_set(_self: Any, value: str) -> None:
+        selected_cases.append(value)
+
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_alerts": lambda self: [auth_alert],
+            "get_alert": lambda self, alert_id: type(
+                "AlertRecord",
+                (),
+                {
+                    "title": "RADIUS reject burst",
+                    "summary": "Multiple RADIUS rejects",
+                    "severity": type("Severity", (), {"value": "critical"})(),
+                    "assignee": "tier2",
+                },
+            )(),
+            "promote_alert_to_case": _promote_alert_to_case,
+        },
+    )()
+    dashboard.case_tree = type("Tree", (), {"selection_set": _selection_set})()
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._choose_identity_correlation_action = lambda payload: "promote"
+    dashboard._current_analyst_identity = lambda: "analyst"
+    dashboard._refresh_case_detail = lambda: None
+    dashboard.refresh = lambda: None
+    dashboard._show_info_dialog = lambda title, body: (_ for _ in ()).throw(AssertionError("should not show dialog"))
+
+    dashboard.view_identity_correlations()
+
+    assert len(promoted) == 1
+    assert promoted[0][0] == "alert-auth-3"
+    assert promoted[0][1].acted_by == "analyst"
+    assert selected_cases == ["case-identity-3"]
+
+
+def test_toggle_detection_rule_updates_enabled_state() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    updated_calls: list[tuple[str, Any]] = []
+    def _update_detection_rule(_self: Any, rule_id: str, payload: Any) -> Any:
+        updated_calls.append((rule_id, payload))
+        return type("Rule", (), {"rule_id": rule_id, "enabled": False})()
+
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_detection_rules": lambda self: [
+                type(
+                    "Rule",
+                    (),
+                    {
+                        "model_dump": lambda self, mode="json": {
+                            "rule_id": "packet_network_remote_overlap",
+                            "enabled": True,
+                            "hit_count": 2,
+                            "title": "Packet and network remote overlap",
+                        }
+                    },
+                )()
+            ],
+            "update_detection_rule": _update_detection_rule,
+        },
+    )()
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard.refresh = lambda: None
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        dashboard.toggle_detection_rule()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert updated_calls
+    assert updated_calls[0][0] == "packet_network_remote_overlap"
+    assert updated_calls[0][1].enabled is False
+
+
+def test_update_detection_rule_parameter_coerces_and_updates_value() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.root = object()
+    updated_calls: list[tuple[str, Any]] = []
+    def _update_detection_rule(_self: Any, rule_id: str, payload: Any) -> Any:
+        updated_calls.append((rule_id, payload))
+        return type("Rule", (), {"rule_id": rule_id, "parameters": payload.parameters})()
+
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_detection_rules": lambda self: [
+                type(
+                    "Rule",
+                    (),
+                    {
+                        "model_dump": lambda self, mode="json": {
+                            "rule_id": "packet_network_remote_overlap",
+                            "enabled": True,
+                            "parameters": {"window_hours": 24},
+                            "title": "Packet and network remote overlap",
+                        }
+                    },
+                )()
+            ],
+            "update_detection_rule": _update_detection_rule,
+        },
+    )()
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard.refresh = lambda: None
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_simpledialog = soc_dashboard_module.simpledialog
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        responses = iter(["window_hours", "48"])
+        soc_dashboard_module.simpledialog = cast(
+            Any,
+            type("SimpleDialog", (), {"askstring": staticmethod(lambda *args, **kwargs: next(responses))})(),
+        )
+        soc_dashboard_module.messagebox = cast(Any, None)
+        dashboard.update_detection_rule_parameter()
+    finally:
+        soc_dashboard_module.simpledialog = original_simpledialog
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert updated_calls
+    assert updated_calls[0][0] == "packet_network_remote_overlap"
+    assert updated_calls[0][1].parameters == {"window_hours": 48}
+
+
+def test_view_detection_rule_alerts_pivots_selected_alert() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    alert = type(
+        "Alert",
+        (),
+        {
+            "model_dump": lambda self, mode="json": {
+                "alert_id": "alert-1",
+                "title": "Packet and network evidence for 8.8.8.8",
+                "status": "open",
+                "severity": "critical",
+                "correlation_rule": "packet_network_remote_overlap",
+            }
+        },
+    )()
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_detection_rules": lambda self: [
+                type("Rule", (), {"model_dump": lambda self, mode="json": {"rule_id": "packet_network_remote_overlap", "enabled": True, "title": "Rule"}})()
+            ],
+            "query_alerts": lambda self, correlation_rule=None, limit=50: [alert],
+        },
+    )()
+    selected: list[dict[str, Any]] = []
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._pivot_from_alert = lambda payload: selected.append(payload)
+    dashboard._show_info_dialog = lambda title, body: (_ for _ in ()).throw(AssertionError("should not show dialog"))
+
+    dashboard.view_detection_rule_alerts()
+
+    assert selected == [
+        {
+            "alert_id": "alert-1",
+            "title": "Packet and network evidence for 8.8.8.8",
+            "status": "open",
+            "severity": "critical",
+            "correlation_rule": "packet_network_remote_overlap",
+        }
+    ]
+
+
+def test_group_rule_alerts_clusters_by_correlation_key() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_rows_by_id = {
+        "case-1": {"case_id": "case-1", "status": "open", "title": "Existing investigation"},
+    }
+    dashboard.manager = type("Manager", (), {})()
+
+    groups = dashboard._group_rule_alerts(
+        [
+            {"alert_id": "alert-1", "severity": "high", "correlation_key": "8.8.8.8", "linked_case_id": "case-1", "title": "A"},
+            {"alert_id": "alert-2", "severity": "critical", "correlation_key": "8.8.8.8", "linked_case_id": "case-1", "title": "B"},
+            {"alert_id": "alert-3", "severity": "medium", "correlation_key": "1.1.1.1", "title": "C"},
+        ]
+    )
+
+    assert groups[0]["group_key"] == "8.8.8.8"
+    assert groups[0]["alert_count"] == 2
+    assert groups[0]["severity"] == "critical"
+    assert groups[0]["open_case_count"] == 1
+    assert groups[0]["title"] == "8.8.8.8 (open cases: 1)"
+    assert groups[1]["group_key"] == "1.1.1.1"
+
+    text = SocDashboard._format_summary_records("alert_group", groups)
+    assert "open_cases=1" in text
+
+
+def test_view_detection_rule_alerts_selects_group_then_alert() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_rows_by_id = {}
+    alert_one = {
+        "alert_id": "alert-1",
+        "title": "Packet and network evidence for 8.8.8.8",
+        "status": "open",
+        "severity": "critical",
+        "correlation_rule": "packet_network_remote_overlap",
+        "correlation_key": "8.8.8.8",
+    }
+    alert_two = {
+        "alert_id": "alert-2",
+        "title": "Packet and network evidence for 8.8.8.8",
+        "status": "open",
+        "severity": "high",
+        "correlation_rule": "packet_network_remote_overlap",
+        "correlation_key": "8.8.8.8",
+    }
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_detection_rules": lambda self: [
+                type("Rule", (), {"model_dump": lambda self, mode="json": {"rule_id": "packet_network_remote_overlap", "enabled": True, "title": "Rule"}})()
+            ],
+            "query_alerts": lambda self, correlation_rule=None, limit=50: [type("Alert", (), {"model_dump": lambda self, mode="json": alert_one})(), type("Alert", (), {"model_dump": lambda self, mode="json": alert_two})()],
+        },
+    )()
+    selections: list[tuple[str, list[dict[str, Any]]]] = []
+    selected: list[dict[str, Any]] = []
+
+    def _select(kind: str, rows: list[dict[str, Any]], title: str) -> dict[str, Any]:
+        selections.append((kind, rows))
+        return rows[0]
+
+    dashboard._select_summary_record = _select
+    dashboard._pivot_from_alert = lambda payload: selected.append(payload)
+    dashboard._show_info_dialog = lambda title, body: (_ for _ in ()).throw(AssertionError("should not show dialog"))
+
+    dashboard.view_detection_rule_alerts()
+
+    assert selections[1][0] == "alert_group"
+    assert selections[1][1][0]["group_key"] == "8.8.8.8"
+    assert selections[2][0] == "alert"
+    assert selected == [alert_one]
+
+
+def test_view_detection_rule_alerts_prefers_detail_route_before_alert_select() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_rows_by_id = {}
+    dashboard.event_rows_by_id = {}
+    detail_calls: list[tuple[str, str]] = []
+    selected: list[dict[str, Any]] = []
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_detection_rules": lambda self: [
+                type("Rule", (), {"model_dump": lambda self, mode="json": {"rule_id": "endpoint_timeline_execution_chain", "enabled": True, "title": "Rule"}})()
+            ],
+            "list_detection_rule_alert_groups": lambda self, rule_id: [
+                {"group_key": "device-1:proc-guid-1", "alert_count": 1, "severity": "critical", "title": "device-1:proc-guid-1"}
+            ],
+            "get_detection_rule_alert_group": lambda self, rule_id, group_key: detail_calls.append((rule_id, group_key))
+            or {
+                "group_key": group_key,
+                "alerts": [
+                    {
+                        "alert_id": "alert-1",
+                        "title": "Endpoint timeline execution chain",
+                        "status": "open",
+                        "severity": "critical",
+                        "correlation_rule": "endpoint_timeline_execution_chain",
+                        "correlation_key": group_key,
+                        "source_event_ids": ["evt-1", "evt-2", "evt-3"],
+                    }
+                ],
+                "open_case_ids": [],
+                "open_case_count": 0,
+            },
+        },
+    )()
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._select_summary_record_or_show_info = lambda kind, rows, title, **kwargs: rows[0]
+    dashboard._choose_rule_group_pivot = lambda **kwargs: "grouped"
+    dashboard._pivot_from_alert = lambda payload: selected.append(payload)
+    dashboard._show_info_dialog = lambda title, body: (_ for _ in ()).throw(AssertionError("should not show dialog"))
+
+    dashboard.view_detection_rule_alerts()
+
+    assert detail_calls == [("endpoint_timeline_execution_chain", "device-1:proc-guid-1")]
+    assert selected[0]["alert_id"] == "alert-1"
+
+
+def test_view_detection_rule_alerts_opens_existing_case_from_group_guard() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_rows_by_id = {"case-9": {"case_id": "case-9", "title": "Existing investigation", "status": "open"}}
+    alert_one = {
+        "alert_id": "alert-1",
+        "title": "Packet and network evidence for 8.8.8.8",
+        "status": "open",
+        "severity": "critical",
+        "correlation_rule": "packet_network_remote_overlap",
+        "correlation_key": "8.8.8.8",
+        "linked_case_id": "case-9",
+    }
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_detection_rules": lambda self: [
+                type("Rule", (), {"model_dump": lambda self, mode="json": {"rule_id": "packet_network_remote_overlap", "enabled": True, "title": "Rule"}})()
+            ],
+            "query_alerts": lambda self, correlation_rule=None, limit=50: [type("Alert", (), {"model_dump": lambda self, mode="json": alert_one})()],
+        },
+    )()
+    selections: list[tuple[str, list[dict[str, Any]]]] = []
+    opened: list[dict[str, Any]] = []
+
+    def _select(kind: str, rows: list[dict[str, Any]], title: str) -> dict[str, Any]:
+        selections.append((kind, rows))
+        return rows[0]
+
+    dashboard._select_summary_record = _select
+    dashboard._pivot_from_case = lambda payload: opened.append(payload)
+    dashboard._show_info_dialog = lambda title, body: (_ for _ in ()).throw(AssertionError("should not show dialog"))
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(
+            Any,
+            type("MessageBox", (), {"askyesnocancel": staticmethod(lambda *args, **kwargs: True)})(),
+        )
+        dashboard.view_detection_rule_alerts()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert selections[1][0] == "alert_group"
+    assert opened == [{"case_id": "case-9", "title": "Existing investigation", "status": "open"}]
+
+
+def test_view_detection_rule_alerts_can_open_endpoint_timeline_for_endpoint_group() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_rows_by_id = {
+        "case-1": {
+            "case_id": "case-1",
+            "observables": ["device:device-1", "process_guid:proc-guid-1"],
+            "status": "open",
+        }
+    }
+    alert_one = {
+        "alert_id": "alert-1",
+        "title": "Endpoint timeline execution chain",
+        "status": "open",
+        "severity": "critical",
+        "correlation_rule": "endpoint_timeline_execution_chain",
+        "correlation_key": "device-1:proc-guid-1",
+        "linked_case_id": "case-1",
+        "source_event_ids": ["evt-1", "evt-2"],
+    }
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_detection_rules": lambda self: [
+                type("Rule", (), {"model_dump": lambda self, mode="json": {"rule_id": "endpoint_timeline_execution_chain", "enabled": True, "title": "Rule"}})()
+            ],
+            "query_alerts": lambda self, correlation_rule=None, limit=50: [type("Alert", (), {"model_dump": lambda self, mode="json": alert_one})()],
+        },
+    )()
+    dashboard._resolve_source_events = lambda alert_payload: [
+        {
+            "event_id": "evt-1",
+            "event_type": "endpoint.telemetry.process",
+            "details": {
+                "device_id": "device-1",
+                "process_guid": "proc-guid-1",
+                "process_name": "powershell.exe",
+            },
+        }
+    ]
+    selections: list[tuple[str, list[dict[str, Any]]]] = []
+    selected_events: list[dict[str, Any]] = []
+
+    def _select(kind: str, rows: list[dict[str, Any]], title: str) -> dict[str, Any]:
+        selections.append((kind, rows))
+        return rows[0]
+
+    dashboard._select_summary_record = _select
+    dashboard._handle_existing_case_guard = lambda **kwargs: False
+    dashboard._choose_rule_group_pivot = lambda **kwargs: "timeline"
+    dashboard._collect_endpoint_timeline = lambda limit=100, **filters: [
+        {
+            "event_id": "evt-2",
+            "event_type": "endpoint.telemetry.connection",
+            "recorded_at": "2026-03-31T00:10:00+00:00",
+            "title": "Endpoint connection telemetry: powershell.exe",
+            "details": {
+                "device_id": "device-1",
+                "process_guid": "proc-guid-1",
+                "remote_ip": "8.8.8.8",
+            },
+        }
+    ]
+    dashboard._select_summary_record_or_show_info = lambda kind, rows, title, **kwargs: rows[0]
+    dashboard._pivot_from_event = lambda payload: selected_events.append(payload)
+    dashboard._show_info_dialog = lambda title, body: (_ for _ in ()).throw(AssertionError("should not show dialog"))
+
+    dashboard.view_detection_rule_alerts()
+
+    assert selections[0][0] == "detection_rule"
+    assert selected_events == [
+        {
+            "event_id": "evt-2",
+            "event_type": "endpoint.telemetry.connection",
+            "recorded_at": "2026-03-31T00:10:00+00:00",
+            "title": "Endpoint connection telemetry: powershell.exe",
+            "details": {
+                "device_id": "device-1",
+                "process_guid": "proc-guid-1",
+                "remote_ip": "8.8.8.8",
+            },
+        }
+    ]
+
+
+def test_view_detection_rule_alerts_can_promote_endpoint_timeline_group_to_case() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    created_payloads: list[Any] = []
+    dashboard.case_rows_by_id = {
+        "case-1": {
+            "case_id": "case-1",
+            "observables": ["device:device-1", "process_guid:proc-guid-1"],
+            "status": "open",
+        }
+    }
+    alert_one = {
+        "alert_id": "alert-1",
+        "title": "Endpoint timeline execution chain",
+        "status": "open",
+        "severity": "critical",
+        "correlation_rule": "endpoint_timeline_execution_chain",
+        "correlation_key": "device-1:proc-guid-1",
+        "linked_case_id": "case-1",
+        "source_event_ids": ["evt-1"],
+    }
+
+    class Manager:
+        def list_detection_rules(self) -> list[Any]:
+            return [type("Rule", (), {"model_dump": lambda self, mode="json": {"rule_id": "endpoint_timeline_execution_chain", "enabled": True, "title": "Rule"}})()]
+
+        def query_alerts(self, correlation_rule=None, limit=50) -> list[Any]:
+            return [type("Alert", (), {"model_dump": lambda self, mode="json": alert_one})()]
+
+        def create_case_from_detection_rule_alert_group(self, rule_id: str, payload: Any) -> Any:
+            assert rule_id == "endpoint_timeline_execution_chain"
+            created_payloads.append(payload)
+            return type("Case", (), {"case_id": "case-rule-1"})()
+
+        def create_case_from_endpoint_timeline(self, payload: Any) -> Any:
+            raise AssertionError("should prefer detection-rule alert group route")
+
+    dashboard.manager = Manager()
+    dashboard.case_tree = type("Tree", (), {"selection_set": lambda self, value: setattr(self, "selected", value)})()
+    dashboard._resolve_source_events = lambda alert_payload: [
+        {
+            "event_id": "evt-1",
+            "event_type": "endpoint.telemetry.process",
+            "details": {
+                "device_id": "device-1",
+                "process_guid": "proc-guid-1",
+                "process_name": "powershell.exe",
+            },
+        }
+    ]
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._handle_existing_case_guard = lambda **kwargs: False
+    dashboard._choose_rule_group_pivot = lambda **kwargs: "case"
+    dashboard._current_analyst_identity = lambda: "tier2"
+    dashboard.refresh = lambda: None
+    dashboard._refresh_case_detail = lambda: None
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        dashboard.view_detection_rule_alerts()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert created_payloads
+    payload = created_payloads[0]
+    assert payload.group_key == "device-1:proc-guid-1"
+    assert payload.assignee == "tier2"
+
+
+def test_view_detection_rule_evidence_pivots_selected_event() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    alert = type(
+        "Alert",
+        (),
+        {
+            "model_dump": lambda self, mode="json": {
+                "alert_id": "alert-1",
+                "title": "Packet and network evidence for 8.8.8.8",
+                "status": "open",
+                "severity": "critical",
+                "correlation_rule": "packet_network_remote_overlap",
+                "source_event_ids": ["evt-1"],
+            }
+        },
+    )()
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_detection_rules": lambda self: [
+                type("Rule", (), {"model_dump": lambda self, mode="json": {"rule_id": "packet_network_remote_overlap", "enabled": True, "title": "Rule"}})()
+            ],
+            "query_alerts": lambda self, correlation_rule=None, limit=50: [alert],
+        },
+    )()
+    selected: list[dict[str, Any]] = []
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._resolve_source_events = lambda alert_payload: [{"event_id": "evt-1", "event_type": "packet.monitor.finding"}]
+    dashboard._pivot_from_event = lambda payload: selected.append(payload)
+    dashboard._show_info_dialog = lambda title, body: (_ for _ in ()).throw(AssertionError("should not show dialog"))
+
+    dashboard.view_detection_rule_evidence()
+
+    assert selected == [{"event_id": "evt-1", "event_type": "packet.monitor.finding"}]
+
+
+def test_group_rule_evidence_clusters_by_remote_ip_and_orders_by_severity() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_cases": lambda self: [
+                type("Case", (), {"model_dump": lambda self, mode="json": {"case_id": "case-1", "status": "open", "source_event_ids": ["evt-1", "evt-2"], "title": "Existing investigation"}})()
+            ]
+        },
+    )()
+
+    groups = dashboard._group_rule_evidence(
+        [
+            {
+                "event_id": "evt-1",
+                "event_type": "packet.monitor.finding",
+                "severity": "high",
+                "title": "Packet finding",
+                "details": {"details": {"remote_ip": "8.8.8.8"}},
+            },
+            {
+                "event_id": "evt-2",
+                "event_type": "network.monitor.finding",
+                "severity": "critical",
+                "title": "Network finding",
+                "details": {"details": {"remote_ip": "8.8.8.8"}},
+            },
+            {
+                "event_id": "evt-3",
+                "event_type": "endpoint.malware_detected",
+                "severity": "medium",
+                "title": "Malware",
+                "details": {"filename": "bad.exe"},
+            },
+        ]
+    )
+
+    assert groups[0]["group_key"] == "8.8.8.8"
+    assert groups[0]["event_count"] == 2
+    assert groups[0]["severity"] == "critical"
+    assert groups[0]["open_case_count"] == 1
+    assert groups[0]["title"] == "8.8.8.8 (open cases: 1)"
+    assert groups[1]["group_key"] == "bad.exe"
+
+    text = SocDashboard._format_summary_records("evidence_group", groups)
+    assert "open_cases=1" in text
+
+
+def test_view_detection_rule_evidence_selects_group_then_event() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_rows_by_id = {}
+    alert = type(
+        "Alert",
+        (),
+        {
+            "model_dump": lambda self, mode="json": {
+                "alert_id": "alert-1",
+                "title": "Packet and network evidence for 8.8.8.8",
+                "status": "open",
+                "severity": "critical",
+                "correlation_rule": "packet_network_remote_overlap",
+                "source_event_ids": ["evt-1", "evt-2"],
+            }
+        },
+    )()
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_detection_rules": lambda self: [
+                type("Rule", (), {"model_dump": lambda self, mode="json": {"rule_id": "packet_network_remote_overlap", "enabled": True, "title": "Rule"}})()
+            ],
+            "query_alerts": lambda self, correlation_rule=None, limit=50: [alert],
+        },
+    )()
+    selections: list[tuple[str, list[dict[str, Any]]]] = []
+    selected: list[dict[str, Any]] = []
+
+    def _select(kind: str, rows: list[dict[str, Any]], title: str) -> dict[str, Any]:
+        selections.append((kind, rows))
+        return rows[0]
+
+    dashboard._select_summary_record = _select
+    dashboard._resolve_source_events = lambda alert_payload: [
+        {"event_id": "evt-1", "event_type": "packet.monitor.finding", "severity": "high", "title": "Packet finding", "details": {"details": {"remote_ip": "8.8.8.8"}}},
+        {"event_id": "evt-2", "event_type": "network.monitor.finding", "severity": "critical", "title": "Network finding", "details": {"details": {"remote_ip": "8.8.8.8"}}},
+    ]
+    dashboard._pivot_from_event = lambda payload: selected.append(payload)
+    dashboard._show_info_dialog = lambda title, body: (_ for _ in ()).throw(AssertionError("should not show dialog"))
+
+    dashboard.view_detection_rule_evidence()
+
+    assert selections[1][0] == "evidence_group"
+    assert selections[1][1][0]["group_key"] == "8.8.8.8"
+    assert selections[2][0] == "event"
+    assert selected == [{"event_id": "evt-1", "event_type": "packet.monitor.finding", "severity": "high", "title": "Packet finding", "details": {"details": {"remote_ip": "8.8.8.8"}}}]
+
+
+def test_view_detection_rule_evidence_prefers_detail_route_before_event_select() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_rows_by_id = {}
+    detail_calls: list[tuple[str, str]] = []
+    selected: list[dict[str, Any]] = []
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_detection_rules": lambda self: [
+                type("Rule", (), {"model_dump": lambda self, mode="json": {"rule_id": "endpoint_timeline_execution_chain", "enabled": True, "title": "Rule"}})()
+            ],
+            "list_detection_rule_evidence_groups": lambda self, rule_id: [
+                {"group_key": "device-1", "event_count": 1, "severity": "high", "title": "device-1"}
+            ],
+            "get_detection_rule_evidence_group": lambda self, rule_id, group_key: detail_calls.append((rule_id, group_key))
+            or {
+                "group_key": group_key,
+                "events": [
+                    {
+                        "event_id": "evt-1",
+                        "event_type": "endpoint.telemetry.process",
+                        "severity": "high",
+                        "title": "Endpoint process telemetry: powershell.exe",
+                        "details": {"device_id": "device-1", "process_guid": "proc-guid-1", "process_name": "powershell.exe"},
+                    }
+                ],
+                "open_case_ids": [],
+                "open_case_count": 0,
+            },
+        },
+    )()
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._select_summary_record_or_show_info = lambda kind, rows, title, **kwargs: rows[0]
+    dashboard._choose_rule_group_pivot = lambda **kwargs: "grouped"
+    dashboard._pivot_from_event = lambda payload: selected.append(payload)
+    dashboard._show_info_dialog = lambda title, body: (_ for _ in ()).throw(AssertionError("should not show dialog"))
+
+    dashboard.view_detection_rule_evidence()
+
+    assert detail_calls == [("endpoint_timeline_execution_chain", "device-1")]
+    assert selected[0]["event_id"] == "evt-1"
+
+
+def test_view_detection_rule_evidence_opens_existing_case_from_group_guard() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_rows_by_id = {"case-9": {"case_id": "case-9", "title": "Existing investigation", "status": "open"}}
+    alert = type(
+        "Alert",
+        (),
+        {
+            "model_dump": lambda self, mode="json": {
+                "alert_id": "alert-1",
+                "title": "Packet and network evidence for 8.8.8.8",
+                "status": "open",
+                "severity": "critical",
+                "correlation_rule": "packet_network_remote_overlap",
+                "source_event_ids": ["evt-1", "evt-2"],
+            }
+        },
+    )()
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_detection_rules": lambda self: [
+                type("Rule", (), {"model_dump": lambda self, mode="json": {"rule_id": "packet_network_remote_overlap", "enabled": True, "title": "Rule"}})()
+            ],
+            "query_alerts": lambda self, correlation_rule=None, limit=50: [alert],
+            "list_cases": lambda self: [
+                type("Case", (), {"model_dump": lambda self, mode="json": {"case_id": "case-9", "status": "open", "source_event_ids": ["evt-1", "evt-2"], "title": "Existing investigation"}})()
+            ],
+        },
+    )()
+    selections: list[tuple[str, list[dict[str, Any]]]] = []
+    opened: list[dict[str, Any]] = []
+
+    def _select(kind: str, rows: list[dict[str, Any]], title: str) -> dict[str, Any]:
+        selections.append((kind, rows))
+        return rows[0]
+
+    dashboard._select_summary_record = _select
+    dashboard._resolve_source_events = lambda alert_payload: [
+        {"event_id": "evt-1", "event_type": "packet.monitor.finding", "severity": "high", "title": "Packet finding", "details": {"details": {"remote_ip": "8.8.8.8"}}},
+        {"event_id": "evt-2", "event_type": "network.monitor.finding", "severity": "critical", "title": "Network finding", "details": {"details": {"remote_ip": "8.8.8.8"}}},
+    ]
+    dashboard._pivot_from_case = lambda payload: opened.append(payload)
+    dashboard._show_info_dialog = lambda title, body: (_ for _ in ()).throw(AssertionError("should not show dialog"))
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(
+            Any,
+            type("MessageBox", (), {"askyesnocancel": staticmethod(lambda *args, **kwargs: True)})(),
+        )
+        dashboard.view_detection_rule_evidence()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert selections[1][0] == "evidence_group"
+    assert opened == [{"case_id": "case-9", "title": "Existing investigation", "status": "open"}]
+
+
+def test_view_detection_rule_evidence_can_open_endpoint_timeline_for_endpoint_group() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_rows_by_id = {}
+    alert = type(
+        "Alert",
+        (),
+        {
+            "model_dump": lambda self, mode="json": {
+                "alert_id": "alert-1",
+                "title": "Endpoint timeline execution chain",
+                "status": "open",
+                "severity": "critical",
+                "correlation_rule": "endpoint_timeline_execution_chain",
+                "source_event_ids": ["evt-1", "evt-2"],
+            }
+        },
+    )()
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_detection_rules": lambda self: [
+                type("Rule", (), {"model_dump": lambda self, mode="json": {"rule_id": "endpoint_timeline_execution_chain", "enabled": True, "title": "Rule"}})()
+            ],
+            "query_alerts": lambda self, correlation_rule=None, limit=50: [alert],
+        },
+    )()
+    selections: list[tuple[str, list[dict[str, Any]]]] = []
+    selected_events: list[dict[str, Any]] = []
+
+    def _select(kind: str, rows: list[dict[str, Any]], title: str) -> dict[str, Any]:
+        selections.append((kind, rows))
+        return rows[0]
+
+    dashboard._select_summary_record = _select
+    dashboard._resolve_source_events = lambda alert_payload: [
+        {
+            "event_id": "evt-1",
+            "event_type": "endpoint.telemetry.process",
+            "severity": "high",
+            "title": "Endpoint process telemetry: powershell.exe",
+            "details": {
+                "device_id": "device-1",
+                "process_guid": "proc-guid-1",
+                "process_name": "powershell.exe",
+            },
+        },
+        {
+            "event_id": "evt-2",
+            "event_type": "endpoint.telemetry.file",
+            "severity": "critical",
+            "title": "Endpoint file telemetry: payload.dll",
+            "details": {
+                "device_id": "device-1",
+                "process_guid": "proc-guid-1",
+                "filename": "payload.dll",
+            },
+        },
+    ]
+    dashboard._choose_rule_group_pivot = lambda **kwargs: "timeline"
+    dashboard._collect_endpoint_timeline = lambda limit=100, **filters: [
+        {
+            "event_id": "evt-3",
+            "event_type": "endpoint.telemetry.connection",
+            "recorded_at": "2026-03-31T00:12:00+00:00",
+            "title": "Endpoint connection telemetry: powershell.exe",
+            "details": {
+                "device_id": "device-1",
+                "process_guid": "proc-guid-1",
+                "remote_ip": "8.8.8.8",
+            },
+        }
+    ]
+    dashboard._select_summary_record_or_show_info = lambda kind, rows, title, **kwargs: rows[0]
+    dashboard._pivot_from_event = lambda payload: selected_events.append(payload)
+    dashboard._show_info_dialog = lambda title, body: (_ for _ in ()).throw(AssertionError("should not show dialog"))
+
+    dashboard.view_detection_rule_evidence()
+
+    assert selections[0][0] == "detection_rule"
+    assert selected_events == [
+        {
+            "event_id": "evt-3",
+            "event_type": "endpoint.telemetry.connection",
+            "recorded_at": "2026-03-31T00:12:00+00:00",
+            "title": "Endpoint connection telemetry: powershell.exe",
+            "details": {
+                "device_id": "device-1",
+                "process_guid": "proc-guid-1",
+                "remote_ip": "8.8.8.8",
+            },
+        }
+    ]
+
+
+def test_view_detection_rule_evidence_can_promote_endpoint_timeline_group_to_case() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    created_payloads: list[Any] = []
+    dashboard.case_rows_by_id = {}
+    alert = type(
+        "Alert",
+        (),
+        {
+            "model_dump": lambda self, mode="json": {
+                "alert_id": "alert-1",
+                "title": "Endpoint timeline execution chain",
+                "status": "open",
+                "severity": "critical",
+                "correlation_rule": "endpoint_timeline_execution_chain",
+                "source_event_ids": ["evt-1", "evt-2"],
+            }
+        },
+    )()
+
+    class Manager:
+        def list_detection_rules(self) -> list[Any]:
+            return [type("Rule", (), {"model_dump": lambda self, mode="json": {"rule_id": "endpoint_timeline_execution_chain", "enabled": True, "title": "Rule"}})()]
+
+        def query_alerts(self, correlation_rule=None, limit=50) -> list[Any]:
+            return [alert]
+
+        def create_case_from_detection_rule_evidence_group(self, rule_id: str, payload: Any) -> Any:
+            assert rule_id == "endpoint_timeline_execution_chain"
+            created_payloads.append(payload)
+            return type("Case", (), {"case_id": "case-rule-2"})()
+
+        def create_case_from_endpoint_timeline(self, payload: Any) -> Any:
+            raise AssertionError("should prefer detection-rule evidence group route")
+
+    dashboard.manager = Manager()
+    dashboard.case_tree = type("Tree", (), {"selection_set": lambda self, value: setattr(self, "selected", value)})()
+    dashboard._resolve_source_events = lambda alert_payload: [
+        {
+            "event_id": "evt-1",
+            "event_type": "endpoint.telemetry.process",
+            "severity": "high",
+            "title": "Endpoint process telemetry: powershell.exe",
+            "details": {
+                "device_id": "device-1",
+                "process_guid": "proc-guid-1",
+                "process_name": "powershell.exe",
+            },
+        },
+        {
+            "event_id": "evt-2",
+            "event_type": "endpoint.telemetry.file",
+            "severity": "critical",
+            "title": "Endpoint file telemetry: payload.dll",
+            "details": {
+                "device_id": "device-1",
+                "process_guid": "proc-guid-1",
+                "filename": "payload.dll",
+            },
+        },
+    ]
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._handle_existing_case_guard = lambda **kwargs: False
+    dashboard._choose_rule_group_pivot = lambda **kwargs: "case"
+    dashboard._current_analyst_identity = lambda: "tier2"
+    dashboard.refresh = lambda: None
+    dashboard._refresh_case_detail = lambda: None
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        dashboard.view_detection_rule_evidence()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert created_payloads
+    payload = created_payloads[0]
+    assert payload.group_key == "payload.dll"
+    assert payload.assignee == "tier2"
+
+
+def test_format_summary_records_supports_tracker_blocks() -> None:
+    text = SocDashboard._format_summary_records(
+        "tracker_block",
+        [
+            {
+                "event_id": "evt-1",
+                "event_type": "privacy.tracker_block",
+                "severity": "medium",
+                "title": "Tracker request blocked",
+            }
+        ],
+    )
+
+    assert "Tracker_Block records (1):" in text
+    assert "- evt-1: privacy.tracker_block | medium | Tracker request blocked" in text
+
+
+def test_show_tracker_feed_details_includes_sources_and_failures() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dialogs: list[tuple[str, str]] = []
+    dashboard._latest_dashboard = {
+        "tracker_feed_status": {
+            "cache_path": "C:/cache/tracker.json",
+            "domain_count": 123,
+            "updated_at": "2026-03-30T00:00:00+00:00",
+            "last_refresh_attempted_at": "2026-03-30T00:05:00+00:00",
+            "last_refresh_result": "failed",
+            "last_error": "network error",
+            "is_stale": True,
+            "age_hours": 12.5,
+            "verify_tls": True,
+            "active_feed_urls": ["https://example.com/feed.txt"],
+            "sources": [{"url": "https://example.com/feed.txt", "domain_count": 123}],
+            "failures": [{"url": "https://bad.example/feed.txt", "error": "timeout"}],
+        }
+    }
+    dashboard.tracker_intel = type("TrackerIntel", (), {"feed_status": lambda self: {}})()
+    dashboard._show_info_dialog = lambda title, body: dialogs.append((title, body))
+
+    dashboard.show_tracker_feed_details()
+
+    assert dialogs
+    title, body = dialogs[-1]
+    assert title == "Tracker Feed Details"
+    assert "Domain Count: 123" in body
+    assert "- https://example.com/feed.txt" in body
+    assert "- https://bad.example/feed.txt: timeout" in body
+
+
+def test_view_recent_tracker_blocks_pivots_selected_event() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    event = type(
+        "Event",
+        (),
+        {"event_type": "privacy.tracker_block", "model_dump": lambda self, mode="json": {"event_id": "evt-1", "event_type": "privacy.tracker_block"}},
+    )()
+    dashboard.manager = type("Manager", (), {"list_events": lambda self, limit=200: [event]})()
+    selected: list[dict[str, Any]] = []
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._pivot_from_event = lambda payload: selected.append(payload)
+    dashboard._show_info_dialog = lambda title, body: (_ for _ in ()).throw(AssertionError("should not show dialog"))
+
+    dashboard.view_recent_tracker_blocks()
+
+    assert selected == [{"event_id": "evt-1", "event_type": "privacy.tracker_block"}]
+
+
+def test_format_correlation_detail_includes_rule_and_linked_case() -> None:
+    text = SocDashboard._format_correlation_detail(
+        {
+            "alert_id": "alert-1",
+            "title": "Repeated tracker activity",
+            "status": "open",
+            "severity": "high",
+            "category": "correlation",
+            "correlation_rule": "tracker_burst",
+            "linked_case_id": "case-9",
+            "assignee": "tier1",
+            "source_event_ids": ["evt-1", "evt-2"],
+            "summary": "Tracker burst detected.",
+        }
+    )
+
+    assert "Correlation Alert: alert-1" in text
+    assert "Correlation Rule: tracker_burst" in text
+    assert "Linked Case: case-9" in text
+    assert "Source Events: 2" in text
+
+
+def test_format_recent_event_detail_includes_monitor_evidence() -> None:
+    text = SocDashboard._format_recent_event_detail(
+        {
+            "event_id": "evt-1",
+            "event_type": "network.suspicious_ip_detected",
+            "severity": "high",
+            "created_at": "2026-03-30T01:00:00+00:00",
+            "title": "Suspicious inbound IP",
+            "summary": "Repeated inbound hits on a sensitive port.",
+            "details": {
+                "abnormal_reason": "repeated sensitive-port hits",
+                "evidence": {
+                    "retention_mode": "compact",
+                    "sample_count": 1,
+                    "sample_connections": [
+                        {"remote_ip": "203.0.113.7", "local_port": 443, "state": "ESTABLISHED"},
+                    ],
+                },
+            },
+        }
+    )
+
+    assert "Event: evt-1" in text
+    assert "Type: network.suspicious_ip_detected" in text
+    assert "Repeated inbound hits on a sensitive port." in text
+    assert "Compact Evidence:" in text
+    assert "repeated sensitive-port hits" in text
+
+
+def test_refresh_activity_detail_appends_selected_activity() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    captured: list[str] = []
+    dashboard._latest_dashboard = {"assignee_workload": [], "aging_buckets": {}}
+    dashboard._set_ops_detail_text = lambda text: captured.append(text)
+
+    dashboard._refresh_activity_detail("Selected correlation details")
+
+    assert captured
+    assert "Selected Activity:" in captured[-1]
+    assert "Selected correlation details" in captured[-1]
+
+
+def test_refresh_correlation_detail_uses_selected_row_and_clears_event_selection() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    captured: list[str | None] = []
+    dashboard.correlation_tree = type("Tree", (), {"selection": lambda self: ("alert-1",)})()
+    dashboard.event_tree = type(
+        "Tree",
+        (),
+        {
+            "selection": lambda self: ("evt-1",),
+            "selection_remove": lambda self, value: setattr(self, "removed", value),
+        },
+    )()
+    dashboard.correlation_rows_by_id = {
+        "alert-1": {
+            "alert_id": "alert-1",
+            "title": "Repeated tracker activity",
+            "status": "open",
+            "severity": "high",
+            "category": "correlation",
+            "correlation_rule": "tracker_burst",
+            "linked_case_id": "case-9",
+            "assignee": "tier1",
+            "source_event_ids": ["evt-1"],
+            "summary": "Tracker burst detected.",
+        }
+    }
+    dashboard._refresh_activity_detail = lambda text: captured.append(text)
+
+    dashboard._refresh_correlation_detail()
+
+    assert captured
+    assert captured[-1] is not None
+    assert "Correlation Alert: alert-1" in cast(str, captured[-1])
+    assert getattr(dashboard.event_tree, "removed") == ("evt-1",)
+
+
+def test_refresh_recent_event_detail_uses_selected_row_and_clears_correlation_selection() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    captured: list[str | None] = []
+    dashboard.event_tree = type("Tree", (), {"selection": lambda self: ("evt-1",)})()
+    dashboard.correlation_tree = type(
+        "Tree",
+        (),
+        {
+            "selection": lambda self: ("alert-1",),
+            "selection_remove": lambda self, value: setattr(self, "removed", value),
+        },
+    )()
+    dashboard.event_rows_by_id = {
+        "evt-1": {
+            "event_id": "evt-1",
+            "event_type": "network.suspicious_ip_detected",
+            "severity": "high",
+            "created_at": "2026-03-30T01:00:00+00:00",
+            "title": "Suspicious inbound IP",
+            "summary": "Repeated inbound hits on a sensitive port.",
+            "details": {},
+        }
+    }
+    dashboard._refresh_activity_detail = lambda text: captured.append(text)
+
+    dashboard._refresh_recent_event_detail()
+
+    assert captured
+    assert captured[-1] is not None
+    assert "Event: evt-1" in cast(str, captured[-1])
+    assert getattr(dashboard.correlation_tree, "removed") == ("alert-1",)
+
+
+def test_open_selected_correlation_action_routes_to_selected_alert() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.correlation_tree = type("Tree", (), {"selection": lambda self: ("alert-1",)})()
+    called: list[str] = []
+    dashboard._open_selected_correlation = lambda: called.append("open")
+    dashboard._show_info_dialog = lambda title, body: (_ for _ in ()).throw(AssertionError("should not show dialog"))
+
+    dashboard.open_selected_correlation_action()
+
+    assert called == ["open"]
+
+
+def test_open_selected_recent_event_action_shows_dialog_without_selection() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.event_tree = type("Tree", (), {"selection": lambda self: ()})()
+    dialogs: list[tuple[str, str]] = []
+    dashboard._show_info_dialog = lambda title, body: dialogs.append((title, body))
+
+    dashboard.open_selected_recent_event_action()
+
+    assert dialogs == [("Recent Events", "Select an event row to open its event workflow.")]
+
+
+def test_clear_activity_focus_clears_both_selections_and_resets_detail() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.correlation_tree = type(
+        "Tree",
+        (),
+        {
+            "selection": lambda self: ("alert-1",),
+            "selection_remove": lambda self, value: setattr(self, "removed", value),
+        },
+    )()
+    dashboard.event_tree = type(
+        "Tree",
+        (),
+        {
+            "selection": lambda self: ("evt-1",),
+            "selection_remove": lambda self, value: setattr(self, "removed", value),
+        },
+    )()
+    captured: list[str | None] = []
+    dashboard._refresh_activity_detail = lambda text: captured.append(text)
+
+    dashboard.clear_activity_focus()
+
+    assert getattr(dashboard.correlation_tree, "removed") == ("alert-1",)
+    assert getattr(dashboard.event_tree, "removed") == ("evt-1",)
+    assert captured == [None]
+
+
+def test_select_tree_row_at_pointer_selects_and_focuses_row() -> None:
+    tree = type(
+        "Tree",
+        (),
+        {
+            "identify_row": lambda self, y: "row-7" if y == 12 else "",
+            "selection_set": lambda self, value: setattr(self, "selected", value),
+            "focus": lambda self, value: setattr(self, "focused", value),
+        },
+    )()
+    event = type("Event", (), {"y": 12})()
+
+    row_id = SocDashboard._select_tree_row_at_pointer(tree, event)
+
+    assert row_id == "row-7"
+    assert getattr(tree, "selected") == "row-7"
+    assert getattr(tree, "focused") == "row-7"
+
+
+def test_select_tree_row_at_pointer_returns_none_when_no_row() -> None:
+    tree = type(
+        "Tree",
+        (),
+        {
+            "identify_row": lambda self, y: "",
+            "selection_set": lambda self, value: setattr(self, "selected", value),
+        },
+    )()
+    event = type("Event", (), {"y": 99})()
+
+    row_id = SocDashboard._select_tree_row_at_pointer(tree, event)
+
+    assert row_id is None
+    assert not hasattr(tree, "selected")
+
+
+def test_show_alert_context_menu_selects_clicked_row_and_uses_alert_actions() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.root = object()
+    dashboard.alert_tree = type(
+        "Tree",
+        (),
+        {
+            "identify_row": lambda self, y: "alert-7",
+            "selection_set": lambda self, value: setattr(self, "selected", value),
+            "focus": lambda self, value: setattr(self, "focused", value),
+        },
+    )()
+    event = type("Event", (), {"y": 12, "x_root": 100, "y_root": 200})()
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+
+    calls: list[str] = []
+    original_tk = soc_dashboard_module.tk
+    try:
+        class FakeMenu:
+            def __init__(self, root, tearoff=0):
+                calls.append("menu")
+            def add_command(self, label, command):
+                calls.append(label)
+            def add_separator(self):
+                calls.append("separator")
+            def tk_popup(self, x, y):
+                calls.append(f"popup:{x}:{y}")
+
+        soc_dashboard_module.tk = cast(Any, type("TkModule", (), {"Menu": FakeMenu})())
+        dashboard._show_alert_context_menu(event)
+    finally:
+        soc_dashboard_module.tk = original_tk
+
+    assert getattr(dashboard.alert_tree, "selected") == "alert-7"
+    assert "Assign Alert" in calls
+    assert "View Source Events" in calls
+    assert "popup:100:200" in calls
+
+
+def test_show_case_context_menu_selects_clicked_row_and_uses_case_actions() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.root = object()
+    dashboard.case_tree = type(
+        "Tree",
+        (),
+        {
+            "identify_row": lambda self, y: "case-4",
+            "selection_set": lambda self, value: setattr(self, "selected", value),
+            "focus": lambda self, value: setattr(self, "focused", value),
+        },
+    )()
+    event = type("Event", (), {"y": 18, "x_root": 120, "y_root": 240})()
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+
+    calls: list[str] = []
+    original_tk = soc_dashboard_module.tk
+    try:
+        class FakeMenu:
+            def __init__(self, root, tearoff=0):
+                calls.append("menu")
+            def add_command(self, label, command):
+                calls.append(label)
+            def add_separator(self):
+                calls.append("separator")
+            def tk_popup(self, x, y):
+                calls.append(f"popup:{x}:{y}")
+
+        soc_dashboard_module.tk = cast(Any, type("TkModule", (), {"Menu": FakeMenu})())
+        dashboard._show_case_context_menu(event)
+    finally:
+        soc_dashboard_module.tk = original_tk
+
+    assert getattr(dashboard.case_tree, "selected") == "case-4"
+    assert "Assign Case" in calls
+    assert "View Linked Activity" in calls
+    assert "popup:120:240" in calls
+
+
+def test_view_host_related_activity_pivots_from_selected_event() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.host_tree = type("Tree", (), {"selection": lambda self: ("firewall-disabled",)})()
+    dashboard.host_rows_by_key = {
+        "firewall-disabled": {
+            "key": "firewall-disabled",
+            "title": "Windows firewall profile disabled",
+            "severity": "critical",
+            "summary": "One or more firewall profiles are disabled.",
+        }
+    }
+    dashboard.event_rows_by_id = {
+        "evt-1": {
+            "event_id": "evt-1",
+            "event_type": "host.monitor.finding",
+            "severity": "critical",
+            "title": "Windows firewall profile disabled",
+            "summary": "One or more firewall profiles are disabled.",
+            "details": {"key": "firewall-disabled"},
+        }
+    }
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    pivoted_events: list[dict[str, Any]] = []
+    dashboard._pivot_from_event = lambda payload: pivoted_events.append(payload)
+
+    dashboard.view_host_related_activity()
+
+    assert pivoted_events
+    assert pivoted_events[0]["event_id"] == "evt-1"
+
+
+def test_show_host_context_menu_selects_clicked_row_and_uses_host_actions() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.root = object()
+    dashboard.host_tree = type(
+        "Tree",
+        (),
+        {
+            "identify_row": lambda self, y: "firewall-disabled",
+            "selection_set": lambda self, value: setattr(self, "selected", value),
+            "focus": lambda self, value: setattr(self, "focused", value),
+        },
+    )()
+    event = type("Event", (), {"y": 14, "x_root": 130, "y_root": 260})()
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+
+    calls: list[str] = []
+    original_tk = soc_dashboard_module.tk
+    try:
+        class FakeMenu:
+            def __init__(self, root, tearoff=0):
+                calls.append("menu")
+            def add_command(self, label, command):
+                calls.append(label)
+            def tk_popup(self, x, y):
+                calls.append(f"popup:{x}:{y}")
+
+        soc_dashboard_module.tk = cast(Any, type("TkModule", (), {"Menu": FakeMenu})())
+        dashboard._show_host_context_menu(event)
+    finally:
+        soc_dashboard_module.tk = original_tk
+
+    assert getattr(dashboard.host_tree, "selected") == "firewall-disabled"
+    assert "View Related Activity" in calls
+    assert "Refresh Host Detail" in calls
+    assert "popup:130:260" in calls
+
+
+def test_open_linked_case_from_alert_detail_pivots_to_case() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.alert_tree = type("Tree", (), {"selection": lambda self: ("alert-1",)})()
+    dashboard.alert_rows_by_id = {
+        "alert-1": {
+            "alert_id": "alert-1",
+            "linked_case_id": "case-2",
+        }
+    }
+    dashboard.case_rows_by_id = {
+        "case-2": {
+            "case_id": "case-2",
+            "title": "Investigate linked case",
+        }
+    }
+    pivoted_cases: list[dict[str, Any]] = []
+    dashboard._pivot_from_case = lambda payload: pivoted_cases.append(payload)
+
+    dashboard.open_linked_case_from_alert_detail()
+
+    assert pivoted_cases
+    assert pivoted_cases[0]["case_id"] == "case-2"
+
+
+def test_copy_selected_case_detail_uses_clipboard_helper() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_tree = type("Tree", (), {"selection": lambda self: ("case-5",)})()
+    dashboard.case_rows_by_id = {
+        "case-5": {
+            "case_id": "case-5",
+            "title": "Case five",
+            "status": "open",
+            "severity": "high",
+            "summary": "Summary",
+            "observables": [],
+            "notes": [],
+        }
+    }
+    copied: list[tuple[str, str, str]] = []
+    dashboard._copy_text_to_clipboard = lambda text, title, empty_message: copied.append((text, title, empty_message))
+
+    dashboard.copy_selected_case_detail()
+
+    assert copied
+    assert "Case: case-5" in copied[0][0]
+    assert copied[0][1] == "Copy Case Detail"
+
+
+def test_copy_selected_host_detail_uses_clipboard_helper() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.host_tree = type("Tree", (), {"selection": lambda self: ("firewall-disabled",)})()
+    dashboard.host_rows_by_key = {
+        "firewall-disabled": {
+            "key": "firewall-disabled",
+            "title": "Windows firewall profile disabled",
+            "severity": "critical",
+            "resolved": False,
+            "summary": "One or more firewall profiles are disabled.",
+            "details": {},
+            "snapshot": {},
+        }
+    }
+    copied: list[tuple[str, str, str]] = []
+    dashboard._copy_text_to_clipboard = lambda text, title, empty_message: copied.append((text, title, empty_message))
+
+    dashboard.copy_selected_host_detail()
+
+    assert copied
+    assert "Finding: firewall-disabled" in copied[0][0]
+    assert copied[0][1] == "Copy Host Detail"
+
+
+def test_save_selected_alert_detail_writes_report() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.alert_tree = type("Tree", (), {"selection": lambda self: ("alert-1",)})()
+    dashboard.alert_rows_by_id = {
+        "alert-1": {
+            "alert_id": "alert-1",
+            "title": "Alert one",
+            "status": "open",
+            "severity": "high",
+            "category": "test",
+            "summary": "Summary",
+            "source_event_ids": [],
+        }
+    }
+    written: list[tuple[str, str]] = []
+
+    def fake_write(prefix: str, content: str) -> Path:
+        written.append((prefix, content))
+        return Path("out.txt")
+
+    dashboard._write_dashboard_export = fake_write
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        dashboard.save_selected_alert_detail()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert written
+    assert written[0][0] == "alert-alert-1"
+    assert "Alert: alert-1" in written[0][1]
+
+
+def test_export_current_dashboard_view_writes_current_state() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.queue_preset_var = type("Var", (), {"get": lambda self: "handoff"})()
+    dashboard._latest_dashboard = {
+        "view_state": {
+            "operational_reason_filter": "stuck action",
+            "endpoint_timeline_cluster_mode": "remote_ip",
+            "endpoint_timeline_cluster_key": "timeline-11",
+            "endpoint_timeline_cluster_action": "case",
+            "endpoint_lineage_cluster_key": "lineage-11",
+            "endpoint_lineage_cluster_action": "details",
+            "hunt_cluster_mode": "device_id",
+            "hunt_cluster_value": "device-11",
+            "hunt_cluster_key": "cluster-11",
+            "hunt_cluster_action": "details",
+        },
+        "summary": {
+            "open_alerts": 1,
+            "open_cases": 1,
+            "recent_events": [{"event_id": "evt-1", "event_type": "host.monitor.finding", "severity": "high", "title": "Event one"}],
+        },
+        "triage": {"recent_correlations": [{"alert_id": "alert-2", "status": "open", "severity": "high", "title": "Correlation"}]},
+        "assignee_workload": [],
+        "aging_buckets": {},
+        "top_event_types": {},
+        "workload": {},
+    }
+    dashboard._alert_rows_for_view = lambda dashboard_payload: [
+        type("Alert", (), {"model_dump": lambda self, mode="json": {"alert_id": "alert-1", "status": "open", "severity": "high", "title": "Alert one"}})()
+    ]
+    dashboard._case_rows_for_view = lambda dashboard_payload: [
+        type("Case", (), {"model_dump": lambda self, mode="json": {"case_id": "case-1", "status": "open", "severity": "high", "title": "Case one"}})()
+    ]
+    dashboard.summary_label_vars = {
+        "hunt_clusters": type("Var", (), {"get": lambda self: "Hunt Clusters [device_id]"})(),
+        "endpoint_timeline_clusters": type("Var", (), {"get": lambda self: "Timeline Clusters [remote_ip]"})(),
+        "endpoint_lineage_clusters": type("Var", (), {"get": lambda self: "Endpoint Lineage"})(),
+    }
+    written: list[tuple[str, str]] = []
+
+    def fake_write(prefix: str, content: str) -> Path:
+        written.append((prefix, content))
+        return Path("out.txt")
+
+    dashboard._write_dashboard_export = fake_write
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        dashboard.export_current_dashboard_view()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert written
+    assert written[0][0] == "dashboard-handoff"
+    assert "Security Gateway Dashboard Export" in written[0][1]
+    assert "View State:" in written[0][1]
+    assert "- saved operational filter: stuck action" in written[0][1]
+    assert "- saved hunt filter: device_id=device-11" in written[0][1]
+    assert "- saved hunt cluster: cluster-11" in written[0][1]
+    assert "- saved hunt action: details" in written[0][1]
+    assert "- hunt summary label: Hunt Clusters [device_id]" in written[0][1]
+    assert "- saved endpoint timeline mode: remote_ip" in written[0][1]
+    assert "- saved endpoint timeline cluster: timeline-11" in written[0][1]
+    assert "- endpoint timeline summary label: Timeline Clusters [remote_ip]" in written[0][1]
+    assert "- saved endpoint timeline action: case" in written[0][1]
+    assert "- saved endpoint lineage cluster: lineage-11" in written[0][1]
+    assert "- saved endpoint lineage action: details" in written[0][1]
+    assert "Alert records" in written[0][1]
+    assert "Case records" in written[0][1]
 
 
 def test_format_summary_records_limits_output() -> None:
@@ -81,13 +4954,79 @@ def test_open_summary_drilldown_routes_to_expected_handler() -> None:
     dashboard._show_all_cases_summary_drilldown = lambda: called.append("cases")
     dashboard._show_open_cases_summary_drilldown = lambda: called.append("open_cases")
     dashboard._show_host_findings_summary_drilldown = lambda: called.append("host_findings")
+    dashboard._show_toolchain_updates_summary_drilldown = lambda: called.append("toolchain_updates")
+    dashboard._show_toolchain_security_summary_drilldown = lambda: called.append("toolchain_security")
+    dashboard._show_packet_sessions_summary_drilldown = lambda: called.append("packet_sessions")
+    dashboard._show_network_evidence_summary_drilldown = lambda: called.append("network_evidence")
+    dashboard._show_identity_correlations_summary_drilldown = lambda: called.append("identity_correlations")
+    dashboard._show_network_dns_summary_drilldown = lambda: called.append("network_dns")
+    dashboard._show_network_http_summary_drilldown = lambda: called.append("network_http")
+    dashboard._show_network_tls_summary_drilldown = lambda: called.append("network_tls")
+    dashboard._show_network_certificates_summary_drilldown = lambda: called.append("network_certificates")
+    dashboard._show_network_proxy_summary_drilldown = lambda: called.append("network_proxy")
+    dashboard._show_network_auth_summary_drilldown = lambda: called.append("network_auth")
+    dashboard._show_network_vpn_summary_drilldown = lambda: called.append("network_vpn")
+    dashboard._show_network_dhcp_summary_drilldown = lambda: called.append("network_dhcp")
+    dashboard._show_network_directory_auth_summary_drilldown = lambda: called.append("network_directory_auth")
+    dashboard._show_network_radius_summary_drilldown = lambda: called.append("network_radius")
+    dashboard._show_network_nac_summary_drilldown = lambda: called.append("network_nac")
+    dashboard._show_hunt_clusters_summary_drilldown = lambda: called.append("hunt_clusters")
+    dashboard._show_endpoint_timeline_clusters_summary_drilldown = lambda: called.append("endpoint_timeline_clusters")
+    dashboard._show_endpoint_lineage_clusters_summary_drilldown = lambda: called.append("endpoint_lineage_clusters")
+    dashboard._show_operational_alerts_summary_drilldown = lambda: called.append("operational_alerts")
+    dashboard._show_operational_cases_summary_drilldown = lambda: called.append("operational_cases")
     dashboard._show_stale_alerts_summary_drilldown = lambda: called.append("stale_alerts")
     dashboard._show_stale_cases_summary_drilldown = lambda: called.append("stale_cases")
 
     dashboard.open_summary_drilldown("events_total")
+    dashboard.open_summary_drilldown("toolchain_updates")
+    dashboard.open_summary_drilldown("toolchain_security")
+    dashboard.open_summary_drilldown("packet_sessions")
+    dashboard.open_summary_drilldown("network_evidence")
+    dashboard.open_summary_drilldown("identity_correlations")
+    dashboard.open_summary_drilldown("network_dns")
+    dashboard.open_summary_drilldown("network_http")
+    dashboard.open_summary_drilldown("network_tls")
+    dashboard.open_summary_drilldown("network_certificates")
+    dashboard.open_summary_drilldown("network_proxy")
+    dashboard.open_summary_drilldown("network_auth")
+    dashboard.open_summary_drilldown("network_vpn")
+    dashboard.open_summary_drilldown("network_dhcp")
+    dashboard.open_summary_drilldown("network_directory_auth")
+    dashboard.open_summary_drilldown("network_radius")
+    dashboard.open_summary_drilldown("network_nac")
+    dashboard.open_summary_drilldown("hunt_clusters")
+    dashboard.open_summary_drilldown("endpoint_timeline_clusters")
+    dashboard.open_summary_drilldown("endpoint_lineage_clusters")
+    dashboard.open_summary_drilldown("operational_alerts")
+    dashboard.open_summary_drilldown("operational_cases")
     dashboard.open_summary_drilldown("stale_active_cases")
 
-    assert called == ["events", "stale_cases"]
+    assert called == [
+        "events",
+        "toolchain_updates",
+        "toolchain_security",
+        "packet_sessions",
+        "network_evidence",
+        "identity_correlations",
+        "network_dns",
+        "network_http",
+        "network_tls",
+        "network_certificates",
+        "network_proxy",
+        "network_auth",
+        "network_vpn",
+        "network_dhcp",
+        "network_directory_auth",
+        "network_radius",
+        "network_nac",
+        "hunt_clusters",
+        "endpoint_timeline_clusters",
+        "endpoint_lineage_clusters",
+        "operational_alerts",
+        "operational_cases",
+        "stale_cases",
+    ]
 
 
 def test_show_open_alerts_summary_drilldown_navigates_to_alert_queue() -> None:
@@ -149,6 +5088,562 @@ def test_show_stale_cases_summary_drilldown_navigates_to_handoff_cases() -> None
     assert dashboard.queue_preset_var.get() == "handoff"
     assert refresh_calls == ["refresh"]
     assert getattr(dashboard.case_tree, "selected") == "case-1"
+
+
+def test_show_operational_alerts_summary_drilldown_navigates_to_operational_alerts() -> None:
+    class Var:
+        def __init__(self, value: str):
+            self.value = value
+
+        def get(self) -> str:
+            return self.value
+
+        def set(self, value: str) -> None:
+            self.value = value
+
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.queue_preset_var = Var("tier1-triage")
+    dashboard.alert_severity_var = Var("high")
+    dashboard.alert_link_state_var = Var("unlinked")
+    dashboard.alert_sort_var = Var("severity_desc")
+    dashboard.case_status_var = Var("all")
+    dashboard.case_sort_var = Var("updated_desc")
+    dashboard.operational_reason_filter = None
+    dashboard._latest_dashboard = {
+        "operational_status": {
+            "reason_counts": {"stuck action": 2, "action failed": 1},
+        }
+    }
+    dashboard.alert_tree = type("Tree", (), {"focus_set": lambda self: None, "get_children": lambda self: ("alert-op",), "selection_set": lambda self, value: setattr(self, "selected", value)})()
+    refresh_calls: list[str] = []
+    dashboard.refresh = lambda: refresh_calls.append("refresh")
+    dashboard._choose_operational_summary_reason = lambda focus_target: "stuck action"
+
+    dashboard._show_operational_alerts_summary_drilldown()
+
+    assert dashboard.queue_preset_var.get() == "operational"
+    assert dashboard.operational_reason_filter == "stuck action"
+    assert refresh_calls == ["refresh"]
+    assert getattr(dashboard.alert_tree, "selected") == "alert-op"
+
+
+def test_show_operational_cases_summary_drilldown_navigates_to_operational_cases() -> None:
+    class Var:
+        def __init__(self, value: str):
+            self.value = value
+
+        def get(self) -> str:
+            return self.value
+
+        def set(self, value: str) -> None:
+            self.value = value
+
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.queue_preset_var = Var("tier1-triage")
+    dashboard.alert_severity_var = Var("all")
+    dashboard.alert_link_state_var = Var("all")
+    dashboard.alert_sort_var = Var("updated_desc")
+    dashboard.case_status_var = Var("all")
+    dashboard.case_sort_var = Var("updated_desc")
+    dashboard.operational_reason_filter = None
+    dashboard._latest_dashboard = {
+        "operational_status": {
+            "reason_counts": {"stuck action": 2, "action failed": 1},
+        }
+    }
+    dashboard.case_tree = type("Tree", (), {"focus_set": lambda self: None, "get_children": lambda self: ("case-op",), "selection_set": lambda self, value: setattr(self, "selected", value)})()
+    refresh_calls: list[str] = []
+    dashboard.refresh = lambda: refresh_calls.append("refresh")
+    dashboard._choose_operational_summary_reason = lambda focus_target: "action failed"
+
+    dashboard._show_operational_cases_summary_drilldown()
+
+    assert dashboard.queue_preset_var.get() == "operational"
+    assert dashboard.operational_reason_filter == "action failed"
+    assert refresh_calls == ["refresh"]
+    assert getattr(dashboard.case_tree, "selected") == "case-op"
+
+
+def test_show_hunt_clusters_summary_drilldown_routes_to_hunt_cluster_view() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    calls: list[str] = []
+    dashboard.view_hunt_telemetry_clusters = lambda: calls.append("view")
+
+    dashboard._show_hunt_clusters_summary_drilldown()
+
+    assert calls == ["view"]
+
+
+def test_show_endpoint_timeline_clusters_summary_drilldown_routes_to_timeline_cluster_view() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    calls: list[str] = []
+    dashboard.view_endpoint_timeline_clusters = lambda: calls.append("view")
+
+    dashboard._show_endpoint_timeline_clusters_summary_drilldown()
+
+    assert calls == ["view"]
+
+
+def test_show_endpoint_lineage_clusters_summary_drilldown_routes_to_lineage_cluster_view() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    calls: list[str] = []
+    dashboard.view_endpoint_lineage_clusters = lambda: calls.append("view")
+
+    dashboard._show_endpoint_lineage_clusters_summary_drilldown()
+
+    assert calls == ["view"]
+
+
+def test_active_hunt_telemetry_cluster_filters_use_dashboard_controls() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.hunt_cluster_mode_var = type("Var", (), {"get": lambda self: "process_guid"})()
+    dashboard.hunt_cluster_value_var = type("Var", (), {"get": lambda self: "proc-guid-1"})()
+
+    cluster_by, filters = dashboard._active_hunt_telemetry_cluster_filters()
+
+    assert cluster_by == "process_guid"
+    assert filters == {"process_guid": "proc-guid-1"}
+
+
+def test_clear_hunt_cluster_filter_resets_dashboard_controls() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+
+    class Var:
+        def __init__(self, value: str):
+            self.value = value
+
+        def get(self) -> str:
+            return self.value
+
+        def set(self, value: str) -> None:
+            self.value = value
+
+    dashboard.hunt_cluster_mode_var = Var("device_id")
+    dashboard.hunt_cluster_value_var = Var("device-11")
+    refresh_calls: list[str] = []
+    dashboard.refresh = lambda: refresh_calls.append("refresh")
+
+    dashboard.clear_hunt_cluster_filter()
+
+    assert dashboard.hunt_cluster_mode_var.get() == "remote_ip"
+    assert dashboard.hunt_cluster_value_var.get() == ""
+    assert refresh_calls == ["refresh"]
+
+
+def test_clear_endpoint_timeline_cluster_mode_resets_dashboard_controls() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+
+    class Var:
+        def __init__(self, value: str):
+            self.value = value
+
+        def get(self) -> str:
+            return self.value
+
+        def set(self, value: str) -> None:
+            self.value = value
+
+    dashboard.endpoint_timeline_cluster_mode_var = Var("remote_ip")
+    refresh_calls: list[str] = []
+    dashboard.refresh = lambda: refresh_calls.append("refresh")
+    dashboard._latest_dashboard = {"view_state": {}}
+
+    dashboard.clear_endpoint_timeline_cluster_mode()
+
+    assert dashboard.endpoint_timeline_cluster_mode_var.get() == "process"
+    assert dashboard.saved_endpoint_timeline_cluster_mode == "process"
+    assert dashboard.saved_endpoint_timeline_cluster_key is None
+    assert dashboard.saved_endpoint_timeline_cluster_action == "events"
+    assert refresh_calls == ["refresh"]
+
+
+def test_refresh_restores_saved_hunt_cluster_filter_from_view_state() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+
+    class Var:
+        def __init__(self, value: str):
+            self.value = value
+
+        def get(self) -> str:
+            return self.value
+
+        def set(self, value: str) -> None:
+            self.value = value
+
+    dashboard.hunt_cluster_mode_var = Var("remote_ip")
+    dashboard.hunt_cluster_value_var = Var("")
+    dashboard.saved_hunt_cluster_mode = None
+    dashboard.saved_hunt_cluster_value = None
+    dashboard.endpoint_lineage_cluster_mode_var = Var("device_id")
+    dashboard.endpoint_lineage_cluster_value_var = Var("")
+    dashboard.saved_endpoint_lineage_cluster_mode = None
+    dashboard.saved_endpoint_lineage_cluster_value = None
+    dashboard.saved_endpoint_timeline_cluster_mode = None
+    dashboard.saved_endpoint_timeline_cluster_key = None
+    dashboard.saved_endpoint_timeline_cluster_action = None
+    dashboard.saved_endpoint_lineage_cluster_key = None
+    dashboard.saved_endpoint_lineage_cluster_action = None
+    dashboard.saved_operational_reason_filter = None
+    dashboard.operational_reason_filter = None
+    dashboard.queue_preset_var = type("Var", (), {"get": lambda self: "tier1-triage"})()
+    dashboard.tracker_intel = type("Tracker", (), {"feed_status": lambda self: {}})()
+    dashboard.network_monitor = type("Network", (), {"list_recent_observations": lambda self, limit=100: []})()
+    dashboard._collect_packet_sessions = lambda: []
+    dashboard._collect_hunt_telemetry_clusters = lambda cluster_by="remote_ip", limit=100, **filters: []
+    dashboard._alert_rows_for_view = lambda payload: []
+    dashboard._case_rows_for_view = lambda payload: []
+    dashboard._populate_tree = lambda *args, **kwargs: None
+    dashboard._refresh_alert_detail = lambda: None
+    dashboard._refresh_case_detail = lambda: None
+    dashboard._refresh_host_detail = lambda: None
+    dashboard._refresh_correlation_detail = lambda: None
+    dashboard._refresh_recent_event_detail = lambda: None
+    dashboard._refresh_workload_assignee_options = lambda payload: None
+    dashboard._set_ops_detail_text = lambda text: None
+    dashboard._load_host_monitor_state = lambda: {"active_findings": [], "snapshot": {}, "last_checked_at": None}
+    dashboard._format_status_line = staticmethod(lambda dashboard, host_findings_count=0: "status")
+    dashboard._operational_cases = lambda: []
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "dashboard": lambda self: {
+                "summary": {
+                    "events_total": 0,
+                    "alerts_total": 0,
+                    "open_alerts": 0,
+                    "cases_total": 0,
+                    "open_cases": 0,
+                    "recent_events": [],
+                },
+                "triage": {"recent_correlations": [], "stale_active_cases": []},
+                "view_state": {
+                    "operational_reason_filter": None,
+                    "hunt_cluster_mode": "process_guid",
+                    "hunt_cluster_value": "proc-guid-1",
+                    "hunt_cluster_key": "cluster-22",
+                    "hunt_cluster_action": "details",
+                    "endpoint_timeline_cluster_mode": "remote_ip",
+                    "endpoint_timeline_cluster_key": "timeline-22",
+                    "endpoint_timeline_cluster_action": "existing_case",
+                    "endpoint_lineage_cluster_mode": "device_id",
+                    "endpoint_lineage_cluster_value": "device-77",
+                    "endpoint_lineage_cluster_key": "lineage-22",
+                    "endpoint_lineage_cluster_action": "case",
+                },
+                "summary_labels": {
+                    "hunt_clusters": "Hunt Clusters [device_id]",
+                    "endpoint_timeline_clusters": "Timeline Clusters [process]",
+                    "endpoint_lineage_clusters": "Endpoint Lineage [device_id=device-77]",
+                    "operational_alerts": "Operational Alerts [action failed]",
+                    "operational_cases": "Operational Cases [action failed]",
+                },
+                "workload": {},
+                "platform": {"service_health": {}, "topology": {}},
+                "assignee_workload": [],
+                "aging_buckets": {},
+                "top_event_types": {},
+            },
+            "list_alerts": lambda self: [],
+            "list_events": lambda self, limit=500: [],
+        },
+    )()
+    dashboard.summary_vars = {
+        key: Var("0")
+        for key in (
+            "events_total",
+            "alerts_total",
+            "open_alerts",
+            "cases_total",
+            "open_cases",
+            "host_findings",
+            "hunt_clusters",
+            "endpoint_lineage_clusters",
+            "operational_alerts",
+            "operational_cases",
+            "stale_assigned_alerts",
+            "stale_active_cases",
+        )
+    }
+    dashboard.summary_label_vars = {
+        "hunt_clusters": Var("Hunt Clusters"),
+        "endpoint_timeline_clusters": Var("Timeline Clusters"),
+        "endpoint_lineage_clusters": Var("Endpoint Lineage"),
+        "operational_alerts": Var("Operational Alerts"),
+        "operational_cases": Var("Operational Cases"),
+    }
+    dashboard.alert_tree = object()
+    dashboard.case_tree = object()
+    dashboard.host_tree = object()
+    dashboard.correlation_tree = object()
+    dashboard.event_tree = object()
+    dashboard.status_var = Var("")
+
+    dashboard.refresh()
+
+    assert dashboard.saved_hunt_cluster_mode == "process_guid"
+    assert dashboard.saved_hunt_cluster_value == "proc-guid-1"
+    assert dashboard.saved_hunt_cluster_key == "cluster-22"
+    assert dashboard.saved_hunt_cluster_action == "details"
+    assert dashboard.saved_endpoint_timeline_cluster_mode == "remote_ip"
+    assert dashboard.saved_endpoint_timeline_cluster_key == "timeline-22"
+    assert dashboard.saved_endpoint_timeline_cluster_action == "existing_case"
+    assert dashboard.saved_endpoint_lineage_cluster_mode == "device_id"
+    assert dashboard.saved_endpoint_lineage_cluster_value == "device-77"
+    assert dashboard.saved_endpoint_lineage_cluster_key == "lineage-22"
+    assert dashboard.saved_endpoint_lineage_cluster_action == "case"
+    assert dashboard.hunt_cluster_mode_var.get() == "process_guid"
+    assert dashboard.hunt_cluster_value_var.get() == "proc-guid-1"
+    assert dashboard.endpoint_lineage_cluster_mode_var.get() == "device_id"
+    assert dashboard.endpoint_lineage_cluster_value_var.get() == "device-77"
+    assert dashboard.summary_label_vars["hunt_clusters"].get() == "Hunt Clusters [device_id]"
+    assert dashboard.summary_label_vars["endpoint_timeline_clusters"].get() == "Timeline Clusters [process]"
+    assert dashboard.summary_label_vars["endpoint_lineage_clusters"].get() == "Endpoint Lineage [device_id=device-77]"
+    assert dashboard.summary_label_vars["operational_alerts"].get() == "Operational Alerts [action failed]"
+    assert dashboard.summary_label_vars["operational_cases"].get() == "Operational Cases [action failed]"
+
+
+def test_operational_alert_rows_respect_reason_filter() -> None:
+    dashboard = SocDashboard.__new__(SocDashboard)
+    dashboard.queue_preset_var = type("Var", (), {"get": lambda self: "operational"})()
+    dashboard.operational_reason_filter = "stuck action"
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_alerts": lambda self: [
+                SimpleNamespace(
+                    category="operational",
+                    alert_id="alert-stuck",
+                    title="Remote node action stuck: sensor-a",
+                    correlation_key="remote-node:action-stuck:sensor-a",
+                    model_copy=lambda update: SimpleNamespace(
+                        **{
+                            "category": "operational",
+                            "alert_id": "alert-stuck",
+                            "title": "Remote node action stuck: sensor-a",
+                            "correlation_key": "remote-node:action-stuck:sensor-a",
+                            **update,
+                        }
+                    ),
+                ),
+                SimpleNamespace(
+                    category="operational",
+                    alert_id="alert-failed",
+                    title="Remote node action failed: sensor-b",
+                    correlation_key="remote-node:action-failed:sensor-b",
+                    model_copy=lambda update: SimpleNamespace(
+                        **{
+                            "category": "operational",
+                            "alert_id": "alert-failed",
+                            "title": "Remote node action failed: sensor-b",
+                            "correlation_key": "remote-node:action-failed:sensor-b",
+                            **update,
+                        }
+                    ),
+                ),
+            ],
+            "query_alerts": lambda self, **kwargs: [],
+        },
+    )()
+
+    rows = dashboard._alert_rows_for_view({"triage": {}})
+
+    assert [row.alert_id for row in rows] == ["alert-stuck"]
+
+
+def test_operational_case_rows_respect_reason_filter() -> None:
+    dashboard = SocDashboard.__new__(SocDashboard)
+    dashboard.queue_preset_var = type("Var", (), {"get": lambda self: "operational"})()
+    dashboard.operational_reason_filter = "action failed"
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_alerts": lambda self: [
+                SimpleNamespace(
+                    category="operational",
+                    alert_id="alert-stuck",
+                    title="Remote node action stuck: sensor-a",
+                    correlation_key="remote-node:action-stuck:sensor-a",
+                ),
+                SimpleNamespace(
+                    category="operational",
+                    alert_id="alert-failed",
+                    title="Remote node action failed: sensor-b",
+                    correlation_key="remote-node:action-failed:sensor-b",
+                ),
+            ],
+            "list_cases": lambda self: [
+                SimpleNamespace(
+                    case_id="case-stuck",
+                    linked_alert_ids=["alert-stuck"],
+                    title="Investigate sensor-a",
+                    model_copy=lambda update: SimpleNamespace(
+                        **{
+                            "case_id": "case-stuck",
+                            "linked_alert_ids": ["alert-stuck"],
+                            "title": "Investigate sensor-a",
+                            **update,
+                        }
+                    ),
+                ),
+                SimpleNamespace(
+                    case_id="case-failed",
+                    linked_alert_ids=["alert-failed"],
+                    title="Investigate sensor-b",
+                    model_copy=lambda update: SimpleNamespace(
+                        **{
+                            "case_id": "case-failed",
+                            "linked_alert_ids": ["alert-failed"],
+                            "title": "Investigate sensor-b",
+                            **update,
+                        }
+                    ),
+                ),
+            ],
+            "query_cases": lambda self, **kwargs: [],
+        },
+    )()
+
+    rows = dashboard._case_rows_for_view({"triage": {}})
+
+    assert [row.case_id for row in rows] == ["case-failed"]
+
+
+def test_clear_operational_reason_filter_resets_filter_and_refreshes() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.operational_reason_filter = "stuck action"
+    refresh_calls: list[str] = []
+    dashboard.refresh = lambda: refresh_calls.append("refresh")
+
+    dashboard.clear_operational_reason_filter()
+
+    assert dashboard.operational_reason_filter is None
+    assert refresh_calls == ["refresh"]
+
+
+def test_set_operational_reason_filter_uses_manager_view_state_update_when_available() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "update_dashboard_view_state": lambda self, payload: {
+                "operational_reason_filter": payload.operational_reason_filter,
+                "hunt_cluster_mode": payload.hunt_cluster_mode,
+                "hunt_cluster_value": payload.hunt_cluster_value,
+                "endpoint_timeline_cluster_mode": payload.endpoint_timeline_cluster_mode,
+                "endpoint_timeline_cluster_key": payload.endpoint_timeline_cluster_key,
+                "endpoint_timeline_cluster_action": payload.endpoint_timeline_cluster_action,
+            }
+        },
+    )()
+    dashboard._latest_dashboard = {"view_state": {}}
+
+    dashboard._set_operational_reason_filter("retry pressure")
+
+    assert dashboard.operational_reason_filter == "retry pressure"
+    assert dashboard.saved_operational_reason_filter == "retry pressure"
+    assert dashboard._latest_dashboard["view_state"]["operational_reason_filter"] == "retry pressure"
+
+
+def test_set_hunt_telemetry_cluster_filter_uses_manager_view_state_update_when_available() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+
+    class Var:
+        def __init__(self, value: str):
+            self.value = value
+
+        def get(self) -> str:
+            return self.value
+
+        def set(self, value: str) -> None:
+            self.value = value
+
+    dashboard.hunt_cluster_mode_var = Var("remote_ip")
+    dashboard.hunt_cluster_value_var = Var("")
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "update_dashboard_view_state": lambda self, payload: {
+                "operational_reason_filter": payload.operational_reason_filter,
+                "hunt_cluster_mode": payload.hunt_cluster_mode,
+                "hunt_cluster_value": payload.hunt_cluster_value,
+                "hunt_cluster_key": payload.hunt_cluster_key,
+                "hunt_cluster_action": payload.hunt_cluster_action,
+                "endpoint_timeline_cluster_mode": payload.endpoint_timeline_cluster_mode,
+                "endpoint_timeline_cluster_key": payload.endpoint_timeline_cluster_key,
+                "endpoint_timeline_cluster_action": payload.endpoint_timeline_cluster_action,
+            }
+        },
+    )()
+    dashboard._latest_dashboard = {"view_state": {}}
+
+    dashboard._set_hunt_telemetry_cluster_filter("device_id", "device-11")
+
+    assert dashboard.saved_hunt_cluster_mode == "device_id"
+    assert dashboard.saved_hunt_cluster_value == "device-11"
+    assert dashboard.hunt_cluster_mode_var.get() == "device_id"
+    assert dashboard.hunt_cluster_value_var.get() == "device-11"
+    assert dashboard._latest_dashboard["view_state"]["hunt_cluster_mode"] == "device_id"
+    assert dashboard._latest_dashboard["view_state"]["hunt_cluster_value"] == "device-11"
+
+
+def test_set_hunt_telemetry_cluster_selection_uses_manager_view_state_update_when_available() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "update_dashboard_view_state": lambda self, payload: {
+                "operational_reason_filter": payload.operational_reason_filter,
+                "hunt_cluster_mode": payload.hunt_cluster_mode,
+                "hunt_cluster_value": payload.hunt_cluster_value,
+                "hunt_cluster_key": payload.hunt_cluster_key,
+                "hunt_cluster_action": payload.hunt_cluster_action,
+            }
+        },
+    )()
+    dashboard._latest_dashboard = {"view_state": {}}
+
+    dashboard._set_hunt_telemetry_cluster_selection("cluster-55", "case")
+
+    assert dashboard.saved_hunt_cluster_key == "cluster-55"
+    assert dashboard.saved_hunt_cluster_action == "case"
+    assert dashboard._latest_dashboard["view_state"]["hunt_cluster_key"] == "cluster-55"
+    assert dashboard._latest_dashboard["view_state"]["hunt_cluster_action"] == "case"
+
+
+def test_set_endpoint_timeline_cluster_selection_uses_manager_view_state_update_when_available() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "update_dashboard_view_state": lambda self, payload: {
+                "operational_reason_filter": payload.operational_reason_filter,
+                "hunt_cluster_mode": payload.hunt_cluster_mode,
+                "hunt_cluster_value": payload.hunt_cluster_value,
+                "hunt_cluster_key": payload.hunt_cluster_key,
+                "hunt_cluster_action": payload.hunt_cluster_action,
+                "endpoint_timeline_cluster_mode": payload.endpoint_timeline_cluster_mode,
+                "endpoint_timeline_cluster_key": payload.endpoint_timeline_cluster_key,
+                "endpoint_timeline_cluster_action": payload.endpoint_timeline_cluster_action,
+            }
+        },
+    )()
+    dashboard._latest_dashboard = {"view_state": {}}
+
+    dashboard._set_endpoint_timeline_cluster_selection("remote_ip", "timeline-55", "existing_case")
+
+    assert dashboard.saved_endpoint_timeline_cluster_mode == "remote_ip"
+    assert dashboard.saved_endpoint_timeline_cluster_key == "timeline-55"
+    assert dashboard.saved_endpoint_timeline_cluster_action == "existing_case"
+    assert dashboard._latest_dashboard["view_state"]["endpoint_timeline_cluster_mode"] == "remote_ip"
+    assert dashboard._latest_dashboard["view_state"]["endpoint_timeline_cluster_key"] == "timeline-55"
+    assert dashboard._latest_dashboard["view_state"]["endpoint_timeline_cluster_action"] == "existing_case"
 
 
 def test_stale_id_helpers_read_latest_dashboard_triage() -> None:
@@ -575,6 +6070,18 @@ def test_preset_values_for_handoff() -> None:
     }
 
 
+def test_preset_values_for_operational() -> None:
+    preset = SocDashboard._preset_values("operational")
+
+    assert preset == {
+        "alert_severity": "all",
+        "alert_link_state": "all",
+        "alert_sort": "updated_desc",
+        "case_status": "all",
+        "case_sort": "updated_desc",
+    }
+
+
 def test_apply_queue_preset_updates_filter_variables_and_refreshes() -> None:
     class Var:
         def __init__(self, value: str):
@@ -593,6 +6100,8 @@ def test_apply_queue_preset_updates_filter_variables_and_refreshes() -> None:
     dashboard.alert_sort_var = Var("severity_desc")
     dashboard.case_status_var = Var("all")
     dashboard.case_sort_var = Var("updated_desc")
+    dashboard.operational_reason_filter = "stuck action"
+    dashboard.saved_operational_reason_filter = "stuck action"
     refresh_calls: list[str] = []
     dashboard.refresh = lambda: refresh_calls.append("refresh")
 
@@ -603,6 +6112,44 @@ def test_apply_queue_preset_updates_filter_variables_and_refreshes() -> None:
     assert dashboard.alert_sort_var.get() == "severity_desc"
     assert dashboard.case_status_var.get() == "contained"
     assert dashboard.case_sort_var.get() == "updated_desc"
+    assert dashboard.operational_reason_filter is None
+    assert dashboard.saved_operational_reason_filter == "stuck action"
+    assert refresh_calls == ["refresh"]
+
+
+def test_apply_queue_preset_restores_saved_operational_filter_when_returning_to_operational() -> None:
+    class Var:
+        def __init__(self, value: str):
+            self.value = value
+
+        def get(self) -> str:
+            return self.value
+
+        def set(self, value: str) -> None:
+            self.value = value
+
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.queue_preset_var = Var("operational")
+    dashboard.alert_severity_var = Var("high")
+    dashboard.alert_link_state_var = Var("unlinked")
+    dashboard.alert_sort_var = Var("severity_desc")
+    dashboard.case_status_var = Var("contained")
+    dashboard.case_sort_var = Var("updated_asc")
+    dashboard.operational_reason_filter = None
+    dashboard.saved_operational_reason_filter = None
+    dashboard._latest_dashboard = {
+        "view_state": {"operational_reason_filter": "stuck action"},
+    }
+    refresh_calls: list[str] = []
+    dashboard.refresh = lambda: refresh_calls.append("refresh")
+
+    dashboard.apply_queue_preset()
+
+    assert dashboard.operational_reason_filter == "stuck action"
+    assert dashboard.saved_operational_reason_filter == "stuck action"
+    assert dashboard.alert_severity_var.get() == "all"
+    assert dashboard.alert_link_state_var.get() == "all"
+    assert dashboard.case_status_var.get() == "all"
     assert refresh_calls == ["refresh"]
 
 
@@ -770,6 +6317,388 @@ def test_case_rows_for_handoff_use_stale_active_cases() -> None:
 
     assert fetched == ["case-a", "case-b"]
     assert rows == [{"case_id": "case-a"}, {"case_id": "case-b"}]
+
+
+def test_alert_rows_for_operational_use_operational_alerts_only() -> None:
+    dashboard = SocDashboard.__new__(SocDashboard)
+    dashboard.queue_preset_var = type("Var", (), {"get": lambda self: "operational"})()
+    operational_alert = SimpleNamespace(
+        category="operational",
+        alert_id="alert-op",
+        title="Remote node action stuck: sensor-a",
+        correlation_key="remote-node:action-stuck:sensor-a",
+    )
+    operational_alert.model_copy = lambda update: SimpleNamespace(  # type: ignore[attr-defined]
+        **{**operational_alert.__dict__, **update}
+    )
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_alerts": lambda self: [
+                operational_alert,
+                type("Alert", (), {"category": "correlation", "alert_id": "alert-corr"})(),
+            ],
+            "query_alerts": lambda self, **kwargs: [],
+        },
+    )()
+
+    rows = dashboard._alert_rows_for_view({"triage": {}})
+
+    assert [row.alert_id for row in rows] == ["alert-op"]
+    assert rows[0].title == "[stuck action] Remote node action stuck: sensor-a"
+
+
+def test_case_rows_for_operational_use_cases_linked_to_operational_alerts() -> None:
+    dashboard = SocDashboard.__new__(SocDashboard)
+    dashboard.queue_preset_var = type("Var", (), {"get": lambda self: "operational"})()
+    operational_case = SimpleNamespace(
+        case_id="case-op",
+        linked_alert_ids=["alert-op"],
+        title="Investigate remote node sensor-a",
+    )
+    operational_case.model_copy = lambda update: SimpleNamespace(  # type: ignore[attr-defined]
+        **{**operational_case.__dict__, **update}
+    )
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_alerts": lambda self: [
+                type(
+                    "Alert",
+                    (),
+                    {
+                        "category": "operational",
+                        "alert_id": "alert-op",
+                        "correlation_key": "remote-node:action-failed:sensor-a",
+                    },
+                )(),
+                type("Alert", (), {"category": "correlation", "alert_id": "alert-corr"})(),
+            ],
+            "list_cases": lambda self: [
+                operational_case,
+                type("Case", (), {"case_id": "case-other", "linked_alert_ids": ["alert-corr"]})(),
+            ],
+            "query_cases": lambda self, **kwargs: [],
+        },
+    )()
+
+    rows = dashboard._case_rows_for_view({"triage": {}})
+
+    assert [row.case_id for row in rows] == ["case-op"]
+    assert rows[0].title == "[action failed] Investigate remote node sensor-a"
+
+
+def test_view_operational_alerts_pivots_selected_alert() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    alert = {
+        "alert_id": "alert-op",
+        "title": "[stuck action] Remote node action stuck: sensor-a",
+        "category": "operational",
+        "correlation_key": "remote-node:action-stuck:sensor-a",
+    }
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_alerts": lambda self: [
+                type(
+                    "Alert",
+                    (),
+                    {
+                        "category": "operational",
+                        "title": "Remote node action stuck: sensor-a",
+                        "correlation_key": "remote-node:action-stuck:sensor-a",
+                        "model_dump": lambda self, mode="json": {
+                            "alert_id": "alert-op",
+                            "title": "Remote node action stuck: sensor-a",
+                            "category": "operational",
+                            "correlation_key": "remote-node:action-stuck:sensor-a",
+                        },
+                    },
+                )(),
+                type("Alert", (), {"category": "correlation", "model_dump": lambda self, mode="json": {"alert_id": "alert-corr"}})(),
+            ]
+        },
+    )()
+    selected: list[dict[str, Any]] = []
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._pivot_from_alert = lambda payload: selected.append(payload)
+    dashboard._show_info_dialog = lambda title, body: (_ for _ in ()).throw(AssertionError("should not show dialog"))
+
+    dashboard.view_operational_alerts()
+
+    assert selected == [alert]
+
+
+def test_view_operational_cases_pivots_selected_case() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    case = {
+        "case_id": "case-op",
+        "title": "[action failed] Remote node action stuck: sensor-a",
+        "linked_alert_ids": ["alert-op"],
+    }
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_alerts": lambda self: [
+                type(
+                    "Alert",
+                    (),
+                    {"category": "operational", "alert_id": "alert-op", "correlation_key": "remote-node:action-failed:sensor-a"},
+                )(),
+            ],
+            "list_cases": lambda self: [
+                type(
+                    "Case",
+                    (),
+                    {
+                        "title": "Remote node action stuck: sensor-a",
+                        "linked_alert_ids": ["alert-op"],
+                        "model_dump": lambda self, mode="json": {
+                            "case_id": "case-op",
+                            "title": "Remote node action stuck: sensor-a",
+                            "linked_alert_ids": ["alert-op"],
+                        },
+                    },
+                )(),
+            ],
+        },
+    )()
+    selected: list[dict[str, Any]] = []
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._pivot_from_case = lambda payload: selected.append(payload)
+    dashboard._show_info_dialog = lambda title, body: (_ for _ in ()).throw(AssertionError("should not show dialog"))
+
+    dashboard.view_operational_cases()
+
+    assert selected == [case]
+
+
+def test_acknowledge_selected_operational_alert_updates_alert() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.alert_tree = type("Tree", (), {"selection": lambda self: ("alert-op",)})()
+    dashboard.alert_rows_by_id = {
+        "alert-op": {
+            "alert_id": "alert-op",
+            "category": "operational",
+            "status": "open",
+        }
+    }
+    dashboard._current_analyst_identity = lambda: "tier2"
+    refreshed: list[bool] = []
+    dashboard.refresh = lambda: refreshed.append(True)
+    payloads: list[tuple[str, Any]] = []
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {"update_alert": lambda self, alert_id, payload: payloads.append((alert_id, payload))},
+    )()
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        dashboard.acknowledge_selected_operational_alert()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert payloads
+    assert payloads[0][0] == "alert-op"
+    assert payloads[0][1].status is SocAlertStatus.acknowledged
+    assert payloads[0][1].acted_by == "tier2"
+    assert refreshed == [True]
+
+
+def test_promote_selected_operational_alert_creates_case_when_unlinked() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.alert_tree = type("Tree", (), {"selection": lambda self: ("alert-op",)})()
+    dashboard.alert_rows_by_id = {
+        "alert-op": {
+            "alert_id": "alert-op",
+            "category": "operational",
+            "title": "Remote node action stuck: sensor-a",
+        }
+    }
+    dashboard.case_tree = type("Tree", (), {"selection_set": lambda self, value: setattr(self, "selected", value)})()
+    dashboard._current_analyst_identity = lambda: "tier2"
+    dashboard._refresh_case_detail = lambda: None
+    refreshed: list[bool] = []
+    dashboard.refresh = lambda: refreshed.append(True)
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "get_alert": lambda self, alert_id: type(
+                "Alert",
+                (),
+                {"title": "Remote node action stuck: sensor-a", "summary": "summary", "severity": SocSeverity.high, "assignee": None},
+            )(),
+            "promote_alert_to_case": lambda self, alert_id, payload: (
+                type("AlertRecord", (), {"alert_id": alert_id})(),
+                type("CaseRecord", (), {"case_id": "case-op"})(),
+            ),
+        },
+    )()
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        dashboard.promote_selected_operational_alert()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert refreshed == [True]
+    assert getattr(dashboard.case_tree, "selected") == "case-op"
+
+
+def test_open_selected_operational_case_pivots_to_linked_case() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.alert_tree = type("Tree", (), {"selection": lambda self: ("alert-op",)})()
+    dashboard.alert_rows_by_id = {
+        "alert-op": {
+            "alert_id": "alert-op",
+            "category": "operational",
+            "linked_case_id": "case-op",
+        }
+    }
+    dashboard.case_rows_by_id = {
+        "case-op": {"case_id": "case-op", "title": "Operational investigation"}
+    }
+    selected: list[dict[str, Any]] = []
+    dashboard._pivot_from_case = lambda payload: selected.append(payload)
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        dashboard.open_selected_operational_case()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert selected == [{"case_id": "case-op", "title": "Operational investigation"}]
+
+
+def test_mark_selected_operational_case_investigating_updates_case() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_tree = type("Tree", (), {"selection": lambda self: ("case-op",)})()
+    dashboard.case_rows_by_id = {
+        "case-op": {"case_id": "case-op", "linked_alert_ids": ["alert-op"]}
+    }
+    dashboard.all_alert_rows_by_id = {
+        "alert-op": {"alert_id": "alert-op", "category": "operational"}
+    }
+    refreshed: list[bool] = []
+    dashboard.refresh = lambda: refreshed.append(True)
+    payloads: list[tuple[str, Any]] = []
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {"update_case": lambda self, case_id, payload: payloads.append((case_id, payload))},
+    )()
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        dashboard.mark_selected_operational_case_investigating()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert payloads
+    assert payloads[0][0] == "case-op"
+    assert payloads[0][1].status is SocCaseStatus.investigating
+    assert refreshed == [True]
+
+
+def test_close_selected_operational_case_updates_case() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_tree = type("Tree", (), {"selection": lambda self: ("case-op",)})()
+    dashboard.case_rows_by_id = {
+        "case-op": {"case_id": "case-op", "linked_alert_ids": ["alert-op"]}
+    }
+    dashboard.all_alert_rows_by_id = {
+        "alert-op": {"alert_id": "alert-op", "category": "operational"}
+    }
+    refreshed: list[bool] = []
+    dashboard.refresh = lambda: refreshed.append(True)
+    payloads: list[tuple[str, Any]] = []
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {"update_case": lambda self, case_id, payload: payloads.append((case_id, payload))},
+    )()
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        dashboard.close_selected_operational_case()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert payloads
+    assert payloads[0][0] == "case-op"
+    assert payloads[0][1].status is SocCaseStatus.closed
+    assert refreshed == [True]
+
+
+def test_clear_operational_case_pressure_acknowledges_linked_operational_alerts() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_tree = type("Tree", (), {"selection": lambda self: ("case-op",)})()
+    dashboard.case_rows_by_id = {
+        "case-op": {"case_id": "case-op", "linked_alert_ids": ["alert-op", "alert-other"]}
+    }
+    dashboard.all_alert_rows_by_id = {
+        "alert-op": {"alert_id": "alert-op", "category": "operational"},
+        "alert-other": {"alert_id": "alert-other", "category": "correlation"},
+    }
+    dashboard._current_analyst_identity = lambda: "tier2"
+    refreshed: list[bool] = []
+    dashboard.refresh = lambda: refreshed.append(True)
+    payloads: list[tuple[str, Any]] = []
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {"update_alert": lambda self, alert_id, payload: payloads.append((alert_id, payload))},
+    )()
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        dashboard.clear_operational_case_pressure()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert payloads
+    assert [item[0] for item in payloads] == ["alert-op"]
+    assert payloads[0][1].status is SocAlertStatus.acknowledged
+    assert payloads[0][1].acted_by == "tier2"
+    assert refreshed == [True]
+
+
+def test_view_operational_case_alerts_pivots_selected_alert() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_tree = type("Tree", (), {"selection": lambda self: ("case-op",)})()
+    dashboard.case_rows_by_id = {
+        "case-op": {"case_id": "case-op", "linked_alert_ids": ["alert-op", "alert-other"]}
+    }
+    dashboard.all_alert_rows_by_id = {
+        "alert-op": {"alert_id": "alert-op", "category": "operational", "title": "Operational alert"},
+        "alert-other": {"alert_id": "alert-other", "category": "correlation", "title": "Other alert"},
+    }
+    selected: list[dict[str, Any]] = []
+    dashboard._select_summary_record = lambda kind, rows, title: rows[0]
+    dashboard._pivot_from_alert = lambda payload: selected.append(payload)
+    dashboard._show_info_dialog = lambda title, body: (_ for _ in ()).throw(AssertionError("should not show dialog"))
+
+    dashboard.view_operational_case_alerts()
+
+    assert selected == [{"alert_id": "alert-op", "category": "operational", "title": "Operational alert"}]
 
 
 def test_case_status_parser_understands_investigating() -> None:
@@ -1088,21 +7017,1219 @@ def test_view_alert_source_events_pivots_from_selected_event() -> None:
     assert selected_events[0]["event_id"] == "evt-1"
 
 
+def test_endpoint_timeline_filters_from_alert_use_linked_case_observables() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+
+    filters = dashboard._endpoint_timeline_filters_from_alert(
+        {"alert_id": "alert-1"},
+        source_events=[
+            {
+                "event_id": "evt-1",
+                "event_type": "endpoint.telemetry.connection",
+                "details": {
+                    "process_name": "powershell.exe",
+                    "remote_ip": "203.0.113.9",
+                },
+            }
+        ],
+        linked_case={
+            "case_id": "case-1",
+            "observables": ["device:device-9", "process_guid:proc-guid-9"],
+        },
+    )
+
+    assert filters == {
+        "device_id": "device-9",
+        "process_guid": "proc-guid-9",
+        "process_name": "powershell.exe",
+        "remote_ip": "203.0.113.9",
+    }
+
+
+def test_pivot_from_alert_routes_selected_timeline_event_into_event_pivot() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_rows_by_id = {
+        "case-1": {
+            "case_id": "case-1",
+            "observables": ["device:device-1", "process_guid:proc-guid-1"],
+        }
+    }
+    dashboard._resolve_source_events = lambda payload: [
+        {
+            "event_id": "evt-1",
+            "event_type": "endpoint.telemetry.process",
+            "details": {
+                "device_id": "device-1",
+                "process_guid": "proc-guid-1",
+                "process_name": "powershell.exe",
+            },
+        }
+    ]
+    dashboard._choose_alert_pivot = (
+        lambda alert_payload, source_events, linked_case, timeline_available=False: "timeline"
+    )
+    collected_filters: list[dict[str, Any]] = []
+    dashboard._collect_endpoint_timeline = lambda limit=100, **filters: collected_filters.append(filters) or [
+        {
+            "event_id": "evt-2",
+            "event_type": "endpoint.telemetry.connection",
+            "recorded_at": "2026-03-31T00:02:00+00:00",
+            "title": "Endpoint connection telemetry: powershell.exe",
+        }
+    ]
+    dashboard._select_summary_record_or_show_info = lambda kind, rows, title, **kwargs: rows[0]
+    pivoted_events: list[dict[str, Any]] = []
+    dashboard._pivot_from_event = lambda payload: pivoted_events.append(payload)
+
+    dashboard._pivot_from_alert(
+        {
+            "alert_id": "alert-1",
+            "title": "Endpoint suspicious process",
+            "linked_case_id": "case-1",
+        }
+    )
+
+    assert collected_filters == [{"device_id": "device-1", "process_guid": "proc-guid-1", "process_name": "powershell.exe"}]
+    assert pivoted_events == [
+        {
+            "event_id": "evt-2",
+            "event_type": "endpoint.telemetry.connection",
+            "recorded_at": "2026-03-31T00:02:00+00:00",
+            "title": "Endpoint connection telemetry: powershell.exe",
+        }
+    ]
+
+
 def test_view_case_linked_activity_routes_selected_alert_into_alert_pivot() -> None:
     dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
     dashboard.case_tree = type("Tree", (), {"selection": lambda self: ("case-1",)})()
     dashboard.case_rows_by_id = {"case-1": {"case_id": "case-1", "title": "Case one"}}
     dashboard._resolve_linked_alerts = lambda payload: [{"alert_id": "alert-7", "status": "open", "severity": "high", "title": "Alert seven", "category": "test", "summary": "Summary", "source_event_ids": []}]
     dashboard._resolve_case_source_events = lambda payload: [{"event_id": "evt-7", "event_type": "x", "severity": "high", "title": "Event seven"}]
-    dashboard._choose_case_activity_pivot = lambda case_payload, linked_alerts, source_events: "alerts"
+    dashboard._choose_case_activity_pivot = (
+        lambda case_payload, linked_alerts, source_events, timeline_available=False, grouped_rule_alerts=(), grouped_rule_evidence=(): "alerts"
+    )
     dashboard._select_summary_record = lambda kind, rows, title: rows[0]
     pivoted_alerts: list[dict[str, Any]] = []
     dashboard._pivot_from_alert = lambda payload: pivoted_alerts.append(payload)
+    dashboard._endpoint_timeline_filters_from_case = lambda case_payload, source_events: {}
 
     dashboard.view_case_linked_activity()
 
     assert pivoted_alerts
     assert pivoted_alerts[0]["alert_id"] == "alert-7"
+
+
+def test_resolve_case_rule_alert_groups_prefers_manager_route() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_case_rule_alert_groups": lambda self, case_id: [
+                {
+                    "group_key": "device-1:proc-guid-1",
+                    "title": "device-1:proc-guid-1",
+                    "alerts": [{"alert_id": "alert-9"}],
+                    "open_case_ids": [],
+                    "open_case_count": 0,
+                }
+            ]
+        },
+    )()
+    dashboard._group_case_rule_alerts = lambda linked_alerts: (_ for _ in ()).throw(
+        AssertionError("should prefer manager case rule alert groups")
+    )
+
+    groups = dashboard._resolve_case_rule_alert_groups({"case_id": "case-1"}, [])
+
+    assert groups[0]["group_key"] == "device-1:proc-guid-1"
+
+
+def test_resolve_case_rule_alert_group_detail_prefers_manager_route() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "get_case_rule_alert_group": lambda self, case_id, group_key: {
+                "group_key": group_key,
+                "alerts": [{"alert_id": "alert-9"}],
+                "open_case_ids": [],
+                "open_case_count": 0,
+            }
+        },
+    )()
+
+    payload = dashboard._resolve_case_rule_alert_group_detail(
+        {"case_id": "case-1"},
+        {"group_key": "device-1:proc-guid-1", "alerts": []},
+    )
+
+    assert payload["alerts"][0]["alert_id"] == "alert-9"
+
+
+def test_resolve_case_rule_evidence_groups_prefers_manager_route() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_case_rule_evidence_groups": lambda self, case_id: [
+                {
+                    "group_key": "device-1",
+                    "title": "device-1",
+                    "events": [{"event_id": "evt-9"}],
+                    "open_case_ids": [],
+                    "open_case_count": 0,
+                }
+            ]
+        },
+    )()
+    dashboard._group_case_rule_evidence = lambda source_events: (_ for _ in ()).throw(
+        AssertionError("should prefer manager case rule evidence groups")
+    )
+
+    groups = dashboard._resolve_case_rule_evidence_groups({"case_id": "case-1"}, [])
+
+    assert groups[0]["group_key"] == "device-1"
+
+
+def test_resolve_case_rule_evidence_group_detail_prefers_manager_route() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "get_case_rule_evidence_group": lambda self, case_id, group_key: {
+                "group_key": group_key,
+                "events": [{"event_id": "evt-9"}],
+                "open_case_ids": [],
+                "open_case_count": 0,
+            }
+        },
+    )()
+
+    payload = dashboard._resolve_case_rule_evidence_group_detail(
+        {"case_id": "case-1"},
+        {"group_key": "device-1", "events": []},
+    )
+
+    assert payload["events"][0]["event_id"] == "evt-9"
+
+
+def test_resolve_case_endpoint_timeline_cluster_detail_prefers_manager_route() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "get_case_endpoint_timeline_cluster": lambda self, case_id, cluster_by, cluster_key: {
+                "cluster_key": cluster_key,
+                "cluster_by": cluster_by,
+                "label": "device-1 / powershell.exe",
+                "event_count": 3,
+                "open_case_ids": [],
+                "open_case_count": 0,
+            }
+        },
+    )()
+
+    payload = dashboard._resolve_case_endpoint_timeline_cluster_detail(
+        {"case_id": "case-1"},
+        {"cluster_key": "device-1:proc-guid-1", "cluster_by": "process", "event_count": 1},
+    )
+
+    assert payload["event_count"] == 3
+    assert payload["title"] == "device-1 / powershell.exe"
+
+
+def test_endpoint_timeline_filters_from_case_use_case_observables_and_endpoint_events() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+
+    filters = dashboard._endpoint_timeline_filters_from_case(
+        {
+            "case_id": "case-22",
+            "observables": [
+                "device:device-22",
+                "process_guid:proc-guid-22",
+                "198.51.100.22",
+            ],
+        },
+        source_events=[
+            {
+                "event_id": "evt-22",
+                "event_type": "endpoint.telemetry.connection",
+                "details": {
+                    "process_name": "powershell.exe",
+                    "sha256": "abc123",
+                    "signer_name": "Unknown",
+                },
+            }
+        ],
+    )
+
+    assert filters == {
+        "device_id": "device-22",
+        "process_guid": "proc-guid-22",
+        "remote_ip": "198.51.100.22",
+        "process_name": "powershell.exe",
+        "signer_name": "Unknown",
+        "sha256": "abc123",
+    }
+
+
+def test_view_case_linked_activity_routes_selected_timeline_event_into_event_pivot() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_tree = type("Tree", (), {"selection": lambda self: ("case-1",)})()
+    dashboard.case_rows_by_id = {
+        "case-1": {
+            "case_id": "case-1",
+            "title": "Case one",
+            "observables": ["device:device-1", "process_guid:proc-guid-1"],
+        }
+    }
+    dashboard._resolve_linked_alerts = lambda payload: []
+    dashboard._resolve_case_source_events = lambda payload: [
+        {
+            "event_id": "evt-1",
+            "event_type": "endpoint.telemetry.process",
+            "details": {
+                "device_id": "device-1",
+                "process_guid": "proc-guid-1",
+                "process_name": "powershell.exe",
+            },
+        }
+    ]
+    dashboard._choose_case_activity_pivot = (
+        lambda case_payload, linked_alerts, source_events, timeline_available=False, grouped_rule_alerts=(), grouped_rule_evidence=(): "timeline"
+    )
+    collected_filters: list[dict[str, Any]] = []
+    dashboard._collect_endpoint_timeline = lambda limit=100, **filters: collected_filters.append(filters) or [
+        {
+            "event_id": "evt-2",
+            "event_type": "endpoint.telemetry.connection",
+            "recorded_at": "2026-03-31T00:01:00+00:00",
+            "title": "Endpoint connection telemetry: powershell.exe",
+        }
+    ]
+    dashboard._select_summary_record_or_show_info = lambda kind, rows, title, **kwargs: rows[0]
+    pivoted_events: list[dict[str, Any]] = []
+    dashboard._pivot_from_event = lambda payload: pivoted_events.append(payload)
+
+    dashboard.view_case_linked_activity()
+
+    assert collected_filters == [{"device_id": "device-1", "process_guid": "proc-guid-1", "process_name": "powershell.exe"}]
+    assert pivoted_events == [
+        {
+            "event_id": "evt-2",
+            "event_type": "endpoint.telemetry.connection",
+            "recorded_at": "2026-03-31T00:01:00+00:00",
+            "title": "Endpoint connection telemetry: powershell.exe",
+        }
+    ]
+
+
+def test_view_case_linked_activity_prefers_case_timeline_clusters_when_manager_provides_them() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_tree = type("Tree", (), {"selection": lambda self: ("case-1",)})()
+    dashboard.case_rows_by_id = {
+        "case-1": {
+            "case_id": "case-1",
+            "title": "Case one",
+            "observables": ["device:device-1", "process_guid:proc-guid-1"],
+        }
+    }
+    dashboard.manager = type(
+        "Manager",
+        (),
+            {
+                "list_case_endpoint_timeline_clusters": lambda self, case_id, cluster_by="process", limit=100: {
+                    "clusters": [
+                    {
+                        "cluster_key": "device-1:proc-guid-1",
+                        "label": "device-1 / proc-guid-1",
+                        "cluster_by": "process",
+                        "event_count": 1,
+                        "device_ids": ["device-1"],
+                        "process_guids": ["proc-guid-1"],
+                        "open_case_ids": [],
+                        "open_case_count": 0,
+                        }
+                    ]
+                },
+                "list_case_endpoint_lineage_clusters": lambda self, case_id, limit=100: {
+                    "clusters": []
+                },
+                "list_endpoint_timeline": lambda self, **filters: [
+                    {
+                    "event_id": "evt-2",
+                    "event_type": "endpoint.telemetry.connection",
+                    "recorded_at": "2026-03-31T00:01:00+00:00",
+                    "title": "Endpoint connection telemetry: powershell.exe",
+                }
+            ],
+        },
+    )()
+    dashboard._resolve_linked_alerts = lambda payload: []
+    dashboard._resolve_case_source_events = lambda payload: []
+    dashboard._endpoint_timeline_filters_from_case = lambda case_payload, source_events: (_ for _ in ()).throw(
+        AssertionError("should use case timeline cluster route before local filter reconstruction")
+    )
+    dashboard._choose_case_activity_pivot = (
+        lambda case_payload, linked_alerts, source_events, timeline_available=False, grouped_rule_alerts=(), grouped_rule_evidence=(): "timeline"
+    )
+    selections: list[tuple[str, list[dict[str, Any]]]] = []
+
+    def _select(kind: str, rows: list[dict[str, Any]], title: str, **kwargs: Any) -> dict[str, Any]:
+        selections.append((kind, rows))
+        return rows[0]
+
+    dashboard._select_summary_record_or_show_info = _select
+    pivoted_events: list[dict[str, Any]] = []
+    dashboard._pivot_from_event = lambda payload: pivoted_events.append(payload)
+
+    dashboard.view_case_linked_activity()
+
+    assert selections[0][0] == "endpoint_timeline_cluster"
+    assert selections[1][0] == "endpoint_timeline"
+    assert pivoted_events[0]["event_id"] == "evt-2"
+
+
+def test_view_case_linked_activity_uses_case_timeline_route_for_selected_cluster_events() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_tree = type("Tree", (), {"selection": lambda self: ("case-1",)})()
+    dashboard.case_rows_by_id = {
+        "case-1": {
+            "case_id": "case-1",
+            "title": "Case one",
+            "observables": ["device:device-1", "process_guid:proc-guid-1"],
+        }
+    }
+    calls: list[tuple[str, dict[str, Any]]] = []
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_case_endpoint_timeline_clusters": lambda self, case_id, cluster_by="process", limit=100: {
+                "clusters": [
+                    {
+                        "cluster_key": "device-1:proc-guid-1",
+                        "label": "device-1 / proc-guid-1",
+                        "cluster_by": "process",
+                        "event_count": 1,
+                        "device_ids": ["device-1"],
+                        "process_guids": ["proc-guid-1"],
+                        "open_case_ids": [],
+                        "open_case_count": 0,
+                    }
+                ]
+            },
+            "list_case_endpoint_timeline": lambda self, case_id, limit=100, **filters: calls.append((case_id, {"limit": limit, **filters})) or {
+                "events": [
+                    {
+                        "event_id": "evt-2",
+                        "event_type": "endpoint.telemetry.connection",
+                        "recorded_at": "2026-03-31T00:01:00+00:00",
+                        "title": "Endpoint connection telemetry: powershell.exe",
+                    }
+                ]
+            },
+        },
+    )()
+    dashboard._resolve_linked_alerts = lambda payload: []
+    dashboard._resolve_case_source_events = lambda payload: []
+    dashboard._choose_case_activity_pivot = (
+        lambda case_payload, linked_alerts, source_events, timeline_available=False, grouped_rule_alerts=(), grouped_rule_evidence=(): "timeline"
+    )
+    dashboard._select_summary_record_or_show_info = lambda kind, rows, title, **kwargs: rows[0]
+    dashboard._collect_endpoint_timeline = lambda limit=100, **filters: (_ for _ in ()).throw(
+        AssertionError("should use case timeline route instead of generic timeline collection")
+    )
+    pivoted_events: list[dict[str, Any]] = []
+    dashboard._pivot_from_event = lambda payload: pivoted_events.append(payload)
+
+    dashboard.view_case_linked_activity()
+
+    assert calls == [("case-1", {"limit": 1, "device_id": "device-1", "process_guid": "proc-guid-1"})]
+    assert pivoted_events[0]["event_id"] == "evt-2"
+
+
+def test_view_case_linked_activity_routes_case_timeline_cluster_into_case_via_manager_route() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    created: list[tuple[str, Any]] = []
+    dashboard.case_tree = type("Tree", (), {"selection": lambda self: ("case-1",), "selection_set": lambda self, value: setattr(self, "selected", value)})()
+    dashboard.case_rows_by_id = {
+        "case-1": {
+            "case_id": "case-1",
+            "title": "Case one",
+            "observables": ["device:device-1", "process_guid:proc-guid-1"],
+        }
+    }
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_case_endpoint_timeline_clusters": lambda self, case_id, cluster_by="process", limit=100: {
+                "clusters": [
+                    {
+                        "cluster_key": "device-1:proc-guid-1",
+                        "label": "device-1 / proc-guid-1",
+                        "cluster_by": "process",
+                        "event_count": 2,
+                        "device_ids": ["device-1"],
+                        "process_guids": ["proc-guid-1"],
+                        "open_case_ids": [],
+                        "open_case_count": 0,
+                    }
+                ]
+            },
+            "create_case_from_case_endpoint_timeline_cluster": lambda self, case_id, payload: created.append((case_id, payload)) or type("Case", (), {"case_id": "case-2"})(),
+        },
+    )()
+    dashboard._resolve_linked_alerts = lambda payload: []
+    dashboard._resolve_case_source_events = lambda payload: []
+    dashboard._choose_case_activity_pivot = (
+        lambda case_payload, linked_alerts, source_events, timeline_available=False, grouped_rule_alerts=(), grouped_rule_evidence=(): "timeline"
+    )
+    dashboard._select_summary_record_or_show_info = lambda kind, rows, title, **kwargs: rows[0]
+    dashboard._choose_action_dialog = lambda **kwargs: "case"
+    dashboard._handle_existing_case_choice = lambda **kwargs: False
+    dashboard._current_analyst_identity = lambda: "tier2"
+    dashboard.refresh = lambda: None
+    dashboard._refresh_case_detail = lambda: None
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        dashboard.view_case_linked_activity()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert created
+    case_id, payload = created[0]
+    assert case_id == "case-1"
+    assert payload.cluster_by == "process"
+    assert payload.cluster_key == "device-1:proc-guid-1"
+    assert payload.assignee == "tier2"
+
+
+def test_view_case_linked_activity_prefers_case_timeline_cluster_detail_route() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    detail_calls: list[tuple[str, str, str]] = []
+    timeline_calls: list[tuple[str, dict[str, Any]]] = []
+    dashboard.case_tree = type("Tree", (), {"selection": lambda self: ("case-1",)})()
+    dashboard.case_rows_by_id = {
+        "case-1": {
+            "case_id": "case-1",
+            "title": "Case one",
+            "observables": ["device:device-1", "process_guid:proc-guid-1"],
+        }
+    }
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_case_endpoint_timeline_clusters": lambda self, case_id, cluster_by="process", limit=100: {
+                "clusters": [
+                    {
+                        "cluster_key": "device-1:proc-guid-1",
+                        "label": "device-1 / proc-guid-1",
+                        "cluster_by": "process",
+                        "event_count": 1,
+                        "device_ids": ["device-1"],
+                        "process_guids": ["proc-guid-1"],
+                        "open_case_ids": [],
+                        "open_case_count": 0,
+                    }
+                ]
+            },
+            "get_case_endpoint_timeline_cluster": lambda self, case_id, cluster_by, cluster_key: detail_calls.append(
+                (case_id, cluster_by, cluster_key)
+            )
+            or {
+                "cluster_key": cluster_key,
+                "label": "device-1 / proc-guid-1",
+                "cluster_by": cluster_by,
+                "event_count": 3,
+                "device_ids": ["device-1"],
+                "process_guids": ["proc-guid-1"],
+                "open_case_ids": [],
+                "open_case_count": 0,
+            },
+            "list_case_endpoint_timeline": lambda self, case_id, **filters: timeline_calls.append((case_id, filters))
+            or {
+                "events": [
+                    {
+                        "event_id": "evt-2",
+                        "event_type": "endpoint.telemetry.connection",
+                        "recorded_at": "2026-03-31T00:15:00+00:00",
+                        "title": "Endpoint connection telemetry: powershell.exe",
+                    }
+                ]
+            },
+        },
+    )()
+    dashboard._resolve_linked_alerts = lambda payload: []
+    dashboard._resolve_case_source_events = lambda payload: []
+    dashboard._choose_case_activity_pivot = (
+        lambda case_payload, linked_alerts, source_events, timeline_available=False, grouped_rule_alerts=(), grouped_rule_evidence=(): "timeline"
+    )
+    dashboard._select_summary_record_or_show_info = lambda kind, rows, title, **kwargs: rows[0]
+    dashboard._choose_action_dialog = lambda **kwargs: "timeline"
+    pivoted_events: list[dict[str, Any]] = []
+    dashboard._pivot_from_event = lambda payload: pivoted_events.append(payload)
+
+    dashboard.view_case_linked_activity()
+
+    assert detail_calls == [("case-1", "process", "device-1:proc-guid-1")]
+    assert timeline_calls == [("case-1", {"limit": 3, "device_id": "device-1", "process_guid": "proc-guid-1"})]
+    assert pivoted_events[0]["event_id"] == "evt-2"
+
+
+def test_view_case_linked_activity_case_timeline_cluster_opens_existing_case_before_create() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_tree = type("Tree", (), {"selection": lambda self: ("case-1",)})()
+    dashboard.case_rows_by_id = {"case-1": {"case_id": "case-1", "title": "Case one"}}
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_case_endpoint_timeline_clusters": lambda self, case_id, cluster_by="process", limit=100: {
+                "clusters": [
+                    {
+                        "cluster_key": "device-1:proc-guid-1",
+                        "label": "device-1 / proc-guid-1",
+                        "cluster_by": "process",
+                        "event_count": 2,
+                        "device_ids": ["device-1"],
+                        "process_guids": ["proc-guid-1"],
+                        "open_case_ids": ["case-9"],
+                        "open_case_count": 1,
+                    }
+                ]
+            },
+            "create_case_from_case_endpoint_timeline_cluster": lambda self, case_id, payload: (_ for _ in ()).throw(
+                AssertionError("should not create when existing-case guard opens first")
+            ),
+        },
+    )()
+    dashboard._resolve_linked_alerts = lambda payload: []
+    dashboard._resolve_case_source_events = lambda payload: []
+    dashboard._choose_case_activity_pivot = (
+        lambda case_payload, linked_alerts, source_events, timeline_available=False, grouped_rule_alerts=(), grouped_rule_evidence=(): "timeline"
+    )
+    dashboard._select_summary_record_or_show_info = lambda kind, rows, title, **kwargs: rows[0]
+    dashboard._choose_action_dialog = lambda **kwargs: "case"
+    handled: list[dict[str, Any]] = []
+    dashboard._handle_existing_case_choice = lambda **kwargs: handled.append(kwargs) or True
+
+    dashboard.view_case_linked_activity()
+
+    assert handled
+    assert handled[0]["open_case_ids"] == ["case-9"]
+
+
+def test_view_case_linked_activity_routes_case_lineage_cluster_into_event_pivot() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_tree = type("Tree", (), {"selection": lambda self: ("case-1",)})()
+    dashboard.case_rows_by_id = {
+        "case-1": {
+            "case_id": "case-1",
+            "title": "Case one",
+            "observables": ["device:device-1", "process_guid:proc-guid-1"],
+        }
+    }
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_case_endpoint_lineage_clusters": lambda self, case_id, limit=100: {
+                "clusters": [
+                    {
+                        "cluster_key": "device-1:proc-guid-1",
+                        "label": "device-1 / powershell.exe",
+                        "event_count": 1,
+                        "severity": "high",
+                        "open_case_ids": [],
+                        "open_case_count": 0,
+                    }
+                ]
+            },
+            "get_case_endpoint_lineage_cluster": lambda self, case_id, cluster_key: {
+                "cluster_key": cluster_key,
+                "label": "device-1 / powershell.exe",
+                "event_count": 1,
+                "severity": "high",
+                "open_case_ids": [],
+                "open_case_count": 0,
+                "events": [
+                    {
+                        "event_id": "evt-lineage-1",
+                        "event_type": "endpoint.telemetry.file",
+                        "title": "Endpoint file telemetry: payload.dll",
+                    }
+                ],
+            },
+        },
+    )()
+    dashboard._resolve_linked_alerts = lambda payload: []
+    dashboard._resolve_case_source_events = lambda payload: []
+    dashboard._choose_case_activity_pivot = (
+        lambda case_payload, linked_alerts, source_events, timeline_available=False, grouped_rule_alerts=(), grouped_rule_evidence=(), endpoint_lineage_available=False: "lineage"
+    )
+    dashboard._select_summary_record_or_show_info = lambda kind, rows, title, **kwargs: rows[0]
+    dashboard._choose_endpoint_lineage_cluster_action = lambda payload: "events"
+    pivoted_events: list[dict[str, Any]] = []
+    dashboard._pivot_from_event = lambda payload: pivoted_events.append(payload)
+
+    dashboard.view_case_linked_activity()
+
+    assert pivoted_events == [
+        {
+            "event_id": "evt-lineage-1",
+            "event_type": "endpoint.telemetry.file",
+            "title": "Endpoint file telemetry: payload.dll",
+        }
+    ]
+
+
+def test_view_case_linked_activity_routes_case_lineage_cluster_into_case_via_manager_route() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    created: list[tuple[str, Any]] = []
+    dashboard.case_tree = type("Tree", (), {"selection": lambda self: ("case-1",), "selection_set": lambda self, value: setattr(self, "selected", value)})()
+    dashboard.case_rows_by_id = {
+        "case-1": {
+            "case_id": "case-1",
+            "title": "Case one",
+            "observables": ["device:device-1", "process_guid:proc-guid-1"],
+        }
+    }
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_case_endpoint_lineage_clusters": lambda self, case_id, limit=100: {
+                "clusters": [
+                    {
+                        "cluster_key": "device-1:proc-guid-1",
+                        "label": "device-1 / powershell.exe",
+                        "event_count": 2,
+                        "severity": "critical",
+                        "device_ids": ["device-1"],
+                        "process_guids": ["proc-guid-1"],
+                        "remote_ips": ["8.8.8.8"],
+                        "open_case_ids": [],
+                        "open_case_count": 0,
+                    }
+                ]
+            },
+            "get_case_endpoint_lineage_cluster": lambda self, case_id, cluster_key: {
+                "cluster_key": cluster_key,
+                "label": "device-1 / powershell.exe",
+                "event_count": 2,
+                "severity": "critical",
+                "device_ids": ["device-1"],
+                "process_guids": ["proc-guid-1"],
+                "remote_ips": ["8.8.8.8"],
+                "open_case_ids": [],
+                "open_case_count": 0,
+            },
+            "create_case_from_case_endpoint_lineage_cluster": lambda self, case_id, payload: created.append((case_id, payload))
+            or type("Case", (), {"case_id": "case-lineage-2"})(),
+        },
+    )()
+    dashboard._resolve_linked_alerts = lambda payload: []
+    dashboard._resolve_case_source_events = lambda payload: []
+    dashboard._choose_case_activity_pivot = (
+        lambda case_payload, linked_alerts, source_events, timeline_available=False, grouped_rule_alerts=(), grouped_rule_evidence=(), endpoint_lineage_available=False: "lineage"
+    )
+    dashboard._select_summary_record_or_show_info = lambda kind, rows, title, **kwargs: rows[0]
+    dashboard._choose_endpoint_lineage_cluster_action = lambda payload: "case"
+    dashboard._handle_existing_case_choice = lambda **kwargs: False
+    dashboard._current_analyst_identity = lambda: "tier2"
+    dashboard.refresh = lambda: None
+    dashboard._refresh_case_detail = lambda: None
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        dashboard.view_case_linked_activity()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert created
+    case_id, payload = created[0]
+    assert case_id == "case-1"
+    assert payload.cluster_key == "device-1:proc-guid-1"
+    assert payload.assignee == "tier2"
+
+
+def test_view_case_linked_activity_prefers_case_hunt_clusters_when_selected() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_tree = type("Tree", (), {"selection": lambda self: ("case-1",)})()
+    dashboard.case_rows_by_id = {
+        "case-1": {
+            "case_id": "case-1",
+            "title": "Case one",
+            "observables": ["device:device-1", "process_guid:proc-guid-1", "remote_ip:203.0.113.118"],
+        }
+    }
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_case_hunt_telemetry_clusters": lambda self, case_id, cluster_by="remote_ip", limit=100: {
+                "clusters": [
+                    {
+                        "cluster_key": "203.0.113.118",
+                        "label": "203.0.113.118",
+                        "cluster_by": cluster_by,
+                        "event_count": 2,
+                        "severity": "high",
+                        "open_case_ids": [],
+                        "open_case_count": 0,
+                    }
+                ]
+            },
+            "get_case_hunt_telemetry_cluster": lambda self, case_id, cluster_by, cluster_key: {
+                "cluster_key": cluster_key,
+                "label": "203.0.113.118",
+                "cluster_by": cluster_by,
+                "event_count": 2,
+                "severity": "high",
+                "open_case_ids": [],
+                "open_case_count": 0,
+                "events": [
+                    {
+                        "event_id": "evt-2",
+                        "event_type": "endpoint.telemetry.connection",
+                        "recorded_at": "2026-03-31T00:01:00+00:00",
+                        "title": "Endpoint connection telemetry: powershell.exe",
+                    }
+                ],
+            },
+        },
+    )()
+    dashboard._resolve_linked_alerts = lambda payload: []
+    dashboard._resolve_case_source_events = lambda payload: []
+    dashboard._choose_case_activity_pivot = (
+        lambda case_payload, linked_alerts, source_events, timeline_available=False, grouped_rule_alerts=(), grouped_rule_evidence=(): "hunt"
+    )
+    dashboard._choose_hunt_telemetry_cluster_mode = lambda: "remote_ip"
+    selections: list[tuple[str, list[dict[str, Any]]]] = []
+
+    def _select(kind: str, rows: list[dict[str, Any]], title: str, **kwargs: Any) -> dict[str, Any]:
+        selections.append((kind, rows))
+        return rows[0]
+
+    dashboard._select_summary_record_or_show_info = _select
+    dashboard._choose_action_dialog = lambda **kwargs: "events"
+    pivoted_events: list[dict[str, Any]] = []
+    dashboard._pivot_from_event = lambda payload: pivoted_events.append(payload)
+
+    dashboard.view_case_linked_activity()
+
+    assert selections[0][0] == "hunt_telemetry_cluster"
+    assert selections[1][0] == "event"
+    assert pivoted_events[0]["event_id"] == "evt-2"
+
+
+def test_view_case_linked_activity_routes_case_hunt_cluster_into_case_via_manager_route() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    created: list[tuple[str, Any]] = []
+    dashboard.case_tree = type("Tree", (), {"selection": lambda self: ("case-1",), "selection_set": lambda self, value: setattr(self, "selected", value)})()
+    dashboard.case_rows_by_id = {
+        "case-1": {
+            "case_id": "case-1",
+            "title": "Case one",
+            "observables": ["device:device-1", "process_guid:proc-guid-1", "remote_ip:203.0.113.118"],
+        }
+    }
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_case_hunt_telemetry_clusters": lambda self, case_id, cluster_by="remote_ip", limit=100: {
+                "clusters": [
+                    {
+                        "cluster_key": "203.0.113.118",
+                        "label": "203.0.113.118",
+                        "cluster_by": cluster_by,
+                        "event_count": 3,
+                        "severity": "critical",
+                        "open_case_ids": [],
+                        "open_case_count": 0,
+                    }
+                ]
+            },
+            "create_case_from_case_hunt_telemetry_cluster": lambda self, case_id, payload: created.append((case_id, payload))
+            or type("Case", (), {"case_id": "case-2"})(),
+        },
+    )()
+    dashboard._resolve_linked_alerts = lambda payload: []
+    dashboard._resolve_case_source_events = lambda payload: []
+    dashboard._choose_case_activity_pivot = (
+        lambda case_payload, linked_alerts, source_events, timeline_available=False, grouped_rule_alerts=(), grouped_rule_evidence=(): "hunt"
+    )
+    dashboard._choose_hunt_telemetry_cluster_mode = lambda: "remote_ip"
+    dashboard._select_summary_record_or_show_info = lambda kind, rows, title, **kwargs: rows[0]
+    dashboard._choose_action_dialog = lambda **kwargs: "case"
+    dashboard._handle_existing_case_choice = lambda **kwargs: False
+    dashboard._current_analyst_identity = lambda: "tier2"
+    dashboard.refresh = lambda: None
+    dashboard._refresh_case_detail = lambda: None
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        dashboard.view_case_linked_activity()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert created
+    case_id, payload = created[0]
+    assert case_id == "case-1"
+    assert payload.cluster_by == "remote_ip"
+    assert payload.cluster_key == "203.0.113.118"
+    assert payload.assignee == "tier2"
+
+
+def test_view_case_linked_activity_routes_rule_alert_group_into_alert_pivot() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_tree = type("Tree", (), {"selection": lambda self: ("case-1",)})()
+    dashboard.case_rows_by_id = {"case-1": {"case_id": "case-1", "title": "Case one"}}
+    dashboard._resolve_linked_alerts = lambda payload: [
+        {
+            "alert_id": "alert-7",
+            "status": "open",
+            "severity": "high",
+            "title": "Alert seven",
+            "category": "test",
+            "summary": "Summary",
+            "source_event_ids": [],
+            "correlation_rule": "endpoint_timeline_execution_chain",
+            "correlation_key": "device-1:proc-guid-1",
+        }
+    ]
+    dashboard._resolve_case_source_events = lambda payload: []
+    dashboard._endpoint_timeline_filters_from_case = (
+        lambda case_payload, source_events: {"device_id": "device-1", "process_guid": "proc-guid-1", "process_name": "powershell.exe"}
+    )
+    dashboard._resolve_source_events = lambda alert_payload: [
+        {
+            "event_id": "evt-1",
+            "event_type": "endpoint.telemetry.process",
+            "details": {
+                "device_id": "device-1",
+                "process_guid": "proc-guid-1",
+                "process_name": "powershell.exe",
+            },
+        }
+    ]
+    dashboard._choose_case_activity_pivot = (
+        lambda case_payload, linked_alerts, source_events, timeline_available=False, grouped_rule_alerts=(), grouped_rule_evidence=(): "rule_alerts"
+    )
+    selections: list[tuple[str, list[dict[str, Any]]]] = []
+
+    def _select(kind: str, rows: list[dict[str, Any]], title: str) -> dict[str, Any]:
+        selections.append((kind, rows))
+        return rows[0]
+
+    dashboard._select_summary_record_or_show_info = lambda kind, rows, title, **kwargs: _select(kind, rows, title)
+    pivoted_alerts: list[dict[str, Any]] = []
+    dashboard._pivot_from_alert = lambda payload: pivoted_alerts.append(payload)
+
+    dashboard.view_case_linked_activity()
+
+    assert selections[0][0] == "alert_group"
+    assert selections[1][0] == "alert"
+    assert pivoted_alerts[0]["alert_id"] == "alert-7"
+
+
+def test_view_case_linked_activity_routes_rule_alert_group_into_timeline_event_pivot() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_tree = type("Tree", (), {"selection": lambda self: ("case-1",)})()
+    dashboard.case_rows_by_id = {
+        "case-1": {
+            "case_id": "case-1",
+            "title": "Case one",
+            "observables": ["device:device-1", "process_guid:proc-guid-1"],
+        }
+    }
+    dashboard._resolve_linked_alerts = lambda payload: [
+        {
+            "alert_id": "alert-7",
+            "status": "open",
+            "severity": "high",
+            "title": "Alert seven",
+            "category": "test",
+            "summary": "Summary",
+            "source_event_ids": ["evt-1"],
+            "correlation_rule": "endpoint_timeline_execution_chain",
+            "correlation_key": "device-1:proc-guid-1",
+        }
+    ]
+    dashboard._resolve_case_source_events = lambda payload: []
+    dashboard._endpoint_timeline_filters_from_case = (
+        lambda case_payload, source_events: {"device_id": "device-1", "process_guid": "proc-guid-1", "process_name": "powershell.exe"}
+    )
+    dashboard._resolve_source_events = lambda alert_payload: [
+        {
+            "event_id": "evt-1",
+            "event_type": "endpoint.telemetry.process",
+            "details": {
+                "device_id": "device-1",
+                "process_guid": "proc-guid-1",
+                "process_name": "powershell.exe",
+            },
+        }
+    ]
+    dashboard._choose_case_activity_pivot = (
+        lambda case_payload, linked_alerts, source_events, timeline_available=False, grouped_rule_alerts=(), grouped_rule_evidence=(): "rule_alerts"
+    )
+    selections: list[tuple[str, list[dict[str, Any]]]] = []
+
+    def _select(kind: str, rows: list[dict[str, Any]], title: str) -> dict[str, Any]:
+        selections.append((kind, rows))
+        return rows[0]
+
+    dashboard._select_summary_record_or_show_info = lambda kind, rows, title, **kwargs: _select(kind, rows, title)
+    dashboard._choose_rule_group_pivot = lambda **kwargs: "timeline"
+    dashboard._collect_endpoint_timeline = lambda limit=100, **filters: [
+        {
+            "event_id": "evt-2",
+            "event_type": "endpoint.telemetry.connection",
+            "recorded_at": "2026-03-31T00:15:00+00:00",
+            "title": "Endpoint connection telemetry: powershell.exe",
+            "details": {"device_id": "device-1", "process_guid": "proc-guid-1"},
+        }
+    ]
+    pivoted_events: list[dict[str, Any]] = []
+    dashboard._pivot_from_event = lambda payload: pivoted_events.append(payload)
+
+    dashboard.view_case_linked_activity()
+
+    assert selections[0][0] == "alert_group"
+    assert pivoted_events[0]["event_id"] == "evt-2"
+
+
+def test_view_case_linked_activity_routes_rule_evidence_group_into_event_pivot() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    dashboard.case_tree = type("Tree", (), {"selection": lambda self: ("case-1",)})()
+    dashboard.case_rows_by_id = {"case-1": {"case_id": "case-1", "title": "Case one"}}
+    dashboard._resolve_linked_alerts = lambda payload: []
+    dashboard._resolve_case_source_events = lambda payload: [
+        {
+            "event_id": "evt-7",
+            "event_type": "endpoint.telemetry.process",
+            "severity": "high",
+            "title": "Event seven",
+            "details": {"device_id": "device-1", "process_guid": "proc-guid-1"},
+        }
+    ]
+    dashboard._endpoint_timeline_filters_from_case = lambda case_payload, source_events: {}
+    dashboard._choose_case_activity_pivot = (
+        lambda case_payload, linked_alerts, source_events, timeline_available=False, grouped_rule_alerts=(), grouped_rule_evidence=(): "rule_evidence"
+    )
+    selections: list[tuple[str, list[dict[str, Any]]]] = []
+
+    def _select(kind: str, rows: list[dict[str, Any]], title: str) -> dict[str, Any]:
+        selections.append((kind, rows))
+        return rows[0]
+
+    dashboard._select_summary_record_or_show_info = lambda kind, rows, title, **kwargs: _select(kind, rows, title)
+    pivoted_events: list[dict[str, Any]] = []
+    dashboard._pivot_from_event = lambda payload: pivoted_events.append(payload)
+
+    dashboard.view_case_linked_activity()
+
+    assert selections[0][0] == "evidence_group"
+    assert selections[1][0] == "event"
+    assert pivoted_events[0]["event_id"] == "evt-7"
+
+
+def test_view_case_linked_activity_routes_rule_evidence_group_into_timeline_case() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    created_payloads: list[Any] = []
+    dashboard.case_tree = type("Tree", (), {"selection": lambda self: ("case-1",)})()
+    dashboard.case_tree.selection_set = lambda value: setattr(dashboard.case_tree, "selected", value)
+    dashboard.case_rows_by_id = {"case-1": {"case_id": "case-1", "title": "Case one"}}
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "create_case_from_endpoint_timeline": lambda self, payload: created_payloads.append(payload) or type("Case", (), {"case_id": "case-2"})()
+        },
+    )()
+    dashboard._resolve_linked_alerts = lambda payload: []
+    dashboard._resolve_case_source_events = lambda payload: [
+        {
+            "event_id": "evt-7",
+            "event_type": "endpoint.telemetry.process",
+            "severity": "high",
+            "title": "Event seven",
+            "details": {"device_id": "device-1", "process_guid": "proc-guid-1", "process_name": "powershell.exe"},
+        }
+    ]
+    dashboard._endpoint_timeline_filters_from_case = (
+        lambda case_payload, source_events: {"device_id": "device-1", "process_guid": "proc-guid-1", "process_name": "powershell.exe"}
+    )
+    dashboard._choose_case_activity_pivot = (
+        lambda case_payload, linked_alerts, source_events, timeline_available=False, grouped_rule_alerts=(), grouped_rule_evidence=(): "rule_evidence"
+    )
+    dashboard._select_summary_record_or_show_info = lambda kind, rows, title, **kwargs: rows[0]
+    dashboard._choose_rule_group_pivot = lambda **kwargs: "case"
+    dashboard._handle_existing_case_choice = lambda **kwargs: False
+    dashboard._current_analyst_identity = lambda: "tier2"
+    dashboard.refresh = lambda: None
+    dashboard._refresh_case_detail = lambda: None
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        dashboard.view_case_linked_activity()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert created_payloads
+    payload = created_payloads[0]
+    assert payload.device_id == "device-1"
+    assert payload.process_guid == "proc-guid-1"
+    assert payload.assignee == "tier2"
+
+
+def test_view_case_linked_activity_routes_rule_alert_group_into_case_via_manager_route() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    created: list[tuple[str, Any]] = []
+    dashboard.case_tree = type("Tree", (), {"selection": lambda self: ("case-1",)})()
+    dashboard.case_tree.selection_set = lambda value: setattr(dashboard.case_tree, "selected", value)
+    dashboard.case_rows_by_id = {"case-1": {"case_id": "case-1", "title": "Case one"}}
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_case_rule_alert_groups": lambda self, case_id: [
+                {
+                    "group_key": "device-1:proc-guid-1",
+                    "title": "Endpoint execution chain",
+                    "alerts": [
+                        {
+                            "alert_id": "alert-1",
+                            "severity": "high",
+                            "source_event_ids": ["evt-1"],
+                        }
+                    ],
+                    "open_case_ids": [],
+                }
+            ],
+            "create_case_from_case_rule_alert_group": lambda self, case_id, payload: created.append((case_id, payload))
+            or type("Case", (), {"case_id": "case-2"})(),
+        },
+    )()
+    dashboard._resolve_linked_alerts = lambda payload: []
+    dashboard._resolve_case_source_events = lambda payload: []
+    dashboard._collect_rule_source_events = lambda alerts: [
+        {
+            "event_id": "evt-1",
+            "event_type": "endpoint.telemetry.process",
+            "severity": "high",
+            "details": {
+                "device_id": "device-1",
+                "process_guid": "proc-guid-1",
+                "process_name": "powershell.exe",
+            },
+        }
+    ]
+    dashboard._choose_case_activity_pivot = (
+        lambda case_payload, linked_alerts, source_events, timeline_available=False, grouped_rule_alerts=(), grouped_rule_evidence=(): "rule_alerts"
+    )
+    dashboard._select_summary_record_or_show_info = lambda kind, rows, title, **kwargs: rows[0]
+    dashboard._choose_rule_group_pivot = lambda **kwargs: "case"
+    dashboard._handle_existing_case_choice = lambda **kwargs: False
+    dashboard._current_analyst_identity = lambda: "tier2"
+    dashboard.refresh = lambda: None
+    dashboard._refresh_case_detail = lambda: None
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        dashboard.view_case_linked_activity()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert created
+    case_id, payload = created[0]
+    assert case_id == "case-1"
+    assert payload.group_key == "device-1:proc-guid-1"
+    assert payload.assignee == "tier2"
+
+
+def test_view_case_linked_activity_routes_rule_evidence_group_into_case_via_manager_route() -> None:
+    dashboard = cast(Any, SocDashboard.__new__(SocDashboard))
+    created: list[tuple[str, Any]] = []
+    dashboard.case_tree = type("Tree", (), {"selection": lambda self: ("case-1",)})()
+    dashboard.case_tree.selection_set = lambda value: setattr(dashboard.case_tree, "selected", value)
+    dashboard.case_rows_by_id = {"case-1": {"case_id": "case-1", "title": "Case one"}}
+    dashboard.manager = type(
+        "Manager",
+        (),
+        {
+            "list_case_rule_evidence_groups": lambda self, case_id: [
+                {
+                    "group_key": "device-1",
+                    "title": "Endpoint evidence chain",
+                    "events": [
+                        {
+                            "event_id": "evt-7",
+                            "event_type": "endpoint.telemetry.process",
+                            "severity": "high",
+                            "details": {
+                                "device_id": "device-1",
+                                "process_guid": "proc-guid-1",
+                                "process_name": "powershell.exe",
+                            },
+                        }
+                    ],
+                    "open_case_ids": [],
+                }
+            ],
+            "create_case_from_case_rule_evidence_group": lambda self, case_id, payload: created.append((case_id, payload))
+            or type("Case", (), {"case_id": "case-2"})(),
+        },
+    )()
+    dashboard._resolve_linked_alerts = lambda payload: []
+    dashboard._resolve_case_source_events = lambda payload: []
+    dashboard._choose_case_activity_pivot = (
+        lambda case_payload, linked_alerts, source_events, timeline_available=False, grouped_rule_alerts=(), grouped_rule_evidence=(): "rule_evidence"
+    )
+    dashboard._select_summary_record_or_show_info = lambda kind, rows, title, **kwargs: rows[0]
+    dashboard._choose_rule_group_pivot = lambda **kwargs: "case"
+    dashboard._handle_existing_case_choice = lambda **kwargs: False
+    dashboard._current_analyst_identity = lambda: "tier2"
+    dashboard.refresh = lambda: None
+    dashboard._refresh_case_detail = lambda: None
+
+    import security_gateway.soc_dashboard as soc_dashboard_module
+
+    original_messagebox = soc_dashboard_module.messagebox
+    try:
+        soc_dashboard_module.messagebox = cast(Any, None)
+        dashboard.view_case_linked_activity()
+    finally:
+        soc_dashboard_module.messagebox = original_messagebox
+
+    assert created
+    case_id, payload = created[0]
+    assert case_id == "case-1"
+    assert payload.group_key == "device-1"
+    assert payload.assignee == "tier2"
 
 
 def test_format_case_linked_activity_includes_alerts_and_events() -> None:
@@ -1141,6 +8268,25 @@ def test_format_case_linked_activity_handles_empty_state() -> None:
     assert "Linked Alerts:" in text
     assert "Source Events:" in text
     assert text.count("- none") == 2
+
+
+def test_format_case_linked_activity_includes_endpoint_timeline_when_provided() -> None:
+    text = SocDashboard._format_case_linked_activity(
+        {"case_id": "case-789", "title": "Timeline case"},
+        [],
+        [],
+        endpoint_timeline=[
+            {
+                "event_id": "evt-55",
+                "event_type": "endpoint.telemetry.connection",
+                "recorded_at": "2026-03-31T00:05:00+00:00",
+                "title": "Endpoint connection telemetry: powershell.exe",
+            }
+        ],
+    )
+
+    assert "Endpoint Timeline:" in text
+    assert "- evt-55: endpoint.telemetry.connection | 2026-03-31T00:05:00+00:00 | Endpoint connection telemetry: powershell.exe" in text
 
 
 def test_format_case_detail_handles_empty_lists() -> None:

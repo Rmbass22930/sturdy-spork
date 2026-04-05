@@ -9,18 +9,34 @@ from datetime import UTC, datetime, timedelta
 from ipaddress import ip_address
 from pathlib import Path
 from threading import Lock
-from typing import cast
+from typing import Any, Callable, Mapping, Sequence, cast
 from uuid import uuid4
 
 from .alerts import AlertEvent, AlertLevel, AlertManager
 from .audit import AuditLogger
 from .config import settings
+from .detection_engine import DetectionEngine
 from .models import (
     SocAlertRecord,
     SocAlertPromoteCaseRequest,
     SocAlertStatus,
+    SocCaseTelemetryClusterCaseRequest,
+    SocCaseEndpointLineageClusterCaseRequest,
+    SocCaseRuleGroupCaseRequest,
+    SocDashboardViewStateUpdate,
+    SocCaseEndpointTimelineClusterCaseRequest,
+    SocDetectionRuleRecord,
+    SocDetectionRuleUpdate,
     SocAlertUpdate,
     SocCaseCreate,
+    SocEndpointLineageClusterCaseRequest,
+    SocEndpointQueryCaseRequest,
+    SocEndpointTimelineCaseRequest,
+    SocNetworkEvidenceCaseRequest,
+    SocPacketCaptureCaseRequest,
+    SocPacketSessionCaseRequest,
+    SocRemoteNodeCaseRequest,
+    SocTelemetryClusterCaseRequest,
     SocCaseRecord,
     SocCaseStatus,
     SocCaseUpdate,
@@ -28,6 +44,9 @@ from .models import (
     SocEventRecord,
     SocSeverity,
 )
+from toolchain_resources.runtime import get_toolchain_runtime
+from .platform import build_platform_profile
+from .soc_store import SecurityOperationsStore
 
 
 def _utc_now() -> datetime:
@@ -40,24 +59,149 @@ def _severity_to_alert_level(severity: SocSeverity) -> AlertLevel:
     return AlertLevel.info
 
 
+def _alert_level_to_severity(level: AlertLevel) -> SocSeverity:
+    if level is AlertLevel.critical:
+        return SocSeverity.critical
+    if level is AlertLevel.warning:
+        return SocSeverity.high
+    return SocSeverity.medium
+
+
 class SecurityOperationsManager:
+    _TELEMETRY_RETENTION_HOURS = {
+        "network.telemetry.connection": "soc_network_telemetry_retention_hours",
+        "network.telemetry.flow": "soc_network_telemetry_retention_hours",
+        "packet.telemetry.session": "soc_packet_telemetry_retention_hours",
+    }
+    _HUNT_TELEMETRY_EVENT_TYPES = (
+        "endpoint.telemetry.process",
+        "endpoint.telemetry.file",
+        "endpoint.telemetry.connection",
+        "network.telemetry.connection",
+        "network.telemetry.flow",
+        "packet.telemetry.session",
+    )
+
     def __init__(
         self,
         *,
-        event_log_path: str | Path,
-        alert_store_path: str | Path,
-        case_store_path: str | Path,
+        event_log_path: str | Path | None = None,
+        alert_store_path: str | Path | None = None,
+        case_store_path: str | Path | None = None,
         audit_logger: AuditLogger,
         alert_manager: AlertManager,
+        store: SecurityOperationsStore | None = None,
+        detection_engine: DetectionEngine | None = None,
+        platform_profile_builder: Callable[[], dict[str, object]] | None = None,
     ) -> None:
-        self._event_log_path = Path(event_log_path)
-        self._alert_store_path = Path(alert_store_path)
-        self._case_store_path = Path(case_store_path)
+        if store is None:
+            if event_log_path is None or alert_store_path is None or case_store_path is None:
+                raise ValueError("event_log_path, alert_store_path, and case_store_path are required when store is not provided")
+            store = SecurityOperationsStore.from_paths(
+                event_log_path=event_log_path,
+                event_index_backend=settings.soc_event_index_backend,
+                event_index_path=settings.soc_event_index_path,
+                alert_store_path=alert_store_path,
+                case_store_path=case_store_path,
+            )
+        self._store = store
+        self._event_log_path = self._store.event_store.path
+        self._alert_store_path = self._store.alert_store.path
+        self._case_store_path = self._store.case_store.path
         self._audit = audit_logger
         self._alerts = alert_manager
+        self._detection_engine = detection_engine or DetectionEngine(settings.soc_detection_catalog_path)
+        self._platform_profile_builder = platform_profile_builder or build_platform_profile
         self._lock = Lock()
-        for path in (self._event_log_path, self._alert_store_path, self._case_store_path):
-            path.parent.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _read_dashboard_view_state() -> dict[str, object]:
+        path = Path(settings.soc_dashboard_view_state_path)
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        operational_reason_filter = str(payload.get("operational_reason_filter") or "").strip() or None
+        hunt_cluster_mode = str(payload.get("hunt_cluster_mode") or "").strip()
+        if hunt_cluster_mode not in {"remote_ip", "device_id", "process_guid"}:
+            hunt_cluster_mode = "remote_ip"
+        hunt_cluster_value = str(payload.get("hunt_cluster_value") or "").strip() or None
+        hunt_cluster_key = str(payload.get("hunt_cluster_key") or "").strip() or None
+        hunt_cluster_action = str(payload.get("hunt_cluster_action") or "").strip()
+        if hunt_cluster_action not in {"events", "existing_case", "case", "details"}:
+            hunt_cluster_action = "events"
+        endpoint_timeline_cluster_mode = str(payload.get("endpoint_timeline_cluster_mode") or "").strip()
+        if endpoint_timeline_cluster_mode not in {"process", "remote_ip"}:
+            endpoint_timeline_cluster_mode = "process"
+        endpoint_timeline_cluster_key = str(payload.get("endpoint_timeline_cluster_key") or "").strip() or None
+        endpoint_timeline_cluster_action = str(payload.get("endpoint_timeline_cluster_action") or "").strip()
+        if endpoint_timeline_cluster_action not in {"events", "existing_case", "case", "details"}:
+            endpoint_timeline_cluster_action = "events"
+        endpoint_lineage_cluster_mode = str(payload.get("endpoint_lineage_cluster_mode") or "").strip()
+        if endpoint_lineage_cluster_mode not in {"device_id", "process_guid", "remote_ip", "filename"}:
+            endpoint_lineage_cluster_mode = "device_id"
+        endpoint_lineage_cluster_value = str(payload.get("endpoint_lineage_cluster_value") or "").strip() or None
+        endpoint_lineage_cluster_key = str(payload.get("endpoint_lineage_cluster_key") or "").strip() or None
+        endpoint_lineage_cluster_action = str(payload.get("endpoint_lineage_cluster_action") or "").strip()
+        if endpoint_lineage_cluster_action not in {"events", "existing_case", "case", "details"}:
+            endpoint_lineage_cluster_action = "events"
+        return {
+            "operational_reason_filter": operational_reason_filter,
+            "hunt_cluster_mode": hunt_cluster_mode,
+            "hunt_cluster_value": hunt_cluster_value,
+            "hunt_cluster_key": hunt_cluster_key,
+            "hunt_cluster_action": hunt_cluster_action,
+            "endpoint_timeline_cluster_mode": endpoint_timeline_cluster_mode,
+            "endpoint_timeline_cluster_key": endpoint_timeline_cluster_key,
+            "endpoint_timeline_cluster_action": endpoint_timeline_cluster_action,
+            "endpoint_lineage_cluster_mode": endpoint_lineage_cluster_mode,
+            "endpoint_lineage_cluster_value": endpoint_lineage_cluster_value,
+            "endpoint_lineage_cluster_key": endpoint_lineage_cluster_key,
+            "endpoint_lineage_cluster_action": endpoint_lineage_cluster_action,
+        }
+
+    @staticmethod
+    def _write_dashboard_view_state(payload: Mapping[str, object]) -> dict[str, object]:
+        path = Path(settings.soc_dashboard_view_state_path)
+        hunt_cluster_mode = str(payload.get("hunt_cluster_mode") or "").strip()
+        if hunt_cluster_mode not in {"remote_ip", "device_id", "process_guid"}:
+            hunt_cluster_mode = "remote_ip"
+        hunt_cluster_action = str(payload.get("hunt_cluster_action") or "").strip()
+        if hunt_cluster_action not in {"events", "existing_case", "case", "details"}:
+            hunt_cluster_action = "events"
+        endpoint_timeline_cluster_mode = str(payload.get("endpoint_timeline_cluster_mode") or "").strip()
+        if endpoint_timeline_cluster_mode not in {"process", "remote_ip"}:
+            endpoint_timeline_cluster_mode = "process"
+        endpoint_timeline_cluster_action = str(payload.get("endpoint_timeline_cluster_action") or "").strip()
+        if endpoint_timeline_cluster_action not in {"events", "existing_case", "case", "details"}:
+            endpoint_timeline_cluster_action = "events"
+        endpoint_lineage_cluster_mode = str(payload.get("endpoint_lineage_cluster_mode") or "").strip()
+        if endpoint_lineage_cluster_mode not in {"device_id", "process_guid", "remote_ip", "filename"}:
+            endpoint_lineage_cluster_mode = "device_id"
+        endpoint_lineage_cluster_action = str(payload.get("endpoint_lineage_cluster_action") or "").strip()
+        if endpoint_lineage_cluster_action not in {"events", "existing_case", "case", "details"}:
+            endpoint_lineage_cluster_action = "events"
+        normalized: dict[str, object] = {
+            "operational_reason_filter": str(payload.get("operational_reason_filter") or "").strip() or None,
+            "hunt_cluster_mode": hunt_cluster_mode,
+            "hunt_cluster_value": str(payload.get("hunt_cluster_value") or "").strip() or None,
+            "hunt_cluster_key": str(payload.get("hunt_cluster_key") or "").strip() or None,
+            "hunt_cluster_action": hunt_cluster_action,
+            "endpoint_timeline_cluster_mode": endpoint_timeline_cluster_mode,
+            "endpoint_timeline_cluster_key": str(payload.get("endpoint_timeline_cluster_key") or "").strip() or None,
+            "endpoint_timeline_cluster_action": endpoint_timeline_cluster_action,
+            "endpoint_lineage_cluster_mode": endpoint_lineage_cluster_mode,
+            "endpoint_lineage_cluster_value": str(payload.get("endpoint_lineage_cluster_value") or "").strip() or None,
+            "endpoint_lineage_cluster_key": str(payload.get("endpoint_lineage_cluster_key") or "").strip() or None,
+            "endpoint_lineage_cluster_action": endpoint_lineage_cluster_action,
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(normalized, indent=2, sort_keys=True), encoding="utf-8")
+        return normalized
 
     def ingest_event(self, payload: SocEventIngest) -> "SocIngestResult":
         created_at = _utc_now()
@@ -78,6 +222,7 @@ class SecurityOperationsManager:
                 alerts.append(alert_record)
                 self._write_records(self._alert_store_path, alerts)
             self._append_event(event)
+            self._prune_telemetry_events_locked()
             self._apply_correlation_rules(event)
 
         self._audit.log(
@@ -109,26 +254,120 @@ class SecurityOperationsManager:
     ) -> list[SocEventRecord]:
         if limit < 1:
             raise ValueError("limit must be positive")
-        if not self._event_log_path.exists():
-            return []
-        events: list[SocEventRecord] = []
-        for raw in self._event_log_path.read_text(encoding="utf-8").splitlines():
-            if not raw.strip():
-                continue
-            try:
-                event = SocEventRecord.model_validate_json(raw)
-            except Exception:
-                continue
-            if severity is not None and event.severity is not severity:
-                continue
-            if event_type is not None and event.event_type != event_type:
-                continue
-            events.append(event)
-        events.sort(key=lambda item: item.created_at, reverse=True)
+        return self._store.event_index_store.query(
+            severity=severity.value if severity is not None else None,
+            event_type=event_type,
+            sort="created_desc",
+            limit=limit,
+            event_store=self._store.event_store,
+        )
+
+    def query_events(
+        self,
+        *,
+        severity: SocSeverity | None = None,
+        event_type: str | None = None,
+        source: str | None = None,
+        tag: str | None = None,
+        text: str | None = None,
+        remote_ip: str | None = None,
+        hostname: str | None = None,
+        filename: str | None = None,
+        artifact_path: str | None = None,
+        session_key: str | None = None,
+        device_id: str | None = None,
+        process_name: str | None = None,
+        process_guid: str | None = None,
+        signer_name: str | None = None,
+        sha256: str | None = None,
+        flow_id: str | None = None,
+        service_name: str | None = None,
+        application_protocol: str | None = None,
+        local_ip: str | None = None,
+        local_port: str | None = None,
+        remote_port: str | None = None,
+        protocol: str | None = None,
+        state: str | None = None,
+        close_reason: str | None = None,
+        reject_code: str | None = None,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+        linked_alert_state: str | None = None,
+        sort: str = "created_desc",
+        limit: int = 100,
+    ) -> list[SocEventRecord]:
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        events = self._store.event_index_store.query(
+            severity=severity.value if severity is not None else None,
+            event_type=event_type,
+            source=source.strip() if source is not None else None,
+            tag=tag.strip() if tag is not None else None,
+            text=text,
+            remote_ip=remote_ip.strip() if remote_ip is not None else None,
+            hostname=hostname.strip() if hostname is not None else None,
+            filename=filename.strip() if filename is not None else None,
+            artifact_path=artifact_path.strip() if artifact_path is not None else None,
+            session_key=session_key.strip() if session_key is not None else None,
+            device_id=device_id.strip() if device_id is not None else None,
+            process_name=process_name.strip() if process_name is not None else None,
+            process_guid=process_guid.strip() if process_guid is not None else None,
+            signer_name=signer_name.strip() if signer_name is not None else None,
+            sha256=sha256.strip() if sha256 is not None else None,
+            flow_id=flow_id.strip() if flow_id is not None else None,
+            service_name=service_name.strip() if service_name is not None else None,
+            application_protocol=application_protocol.strip() if application_protocol is not None else None,
+            local_ip=local_ip.strip() if local_ip is not None else None,
+            local_port=local_port.strip() if local_port is not None else None,
+            remote_port=remote_port.strip() if remote_port is not None else None,
+            protocol=protocol.strip() if protocol is not None else None,
+            state=state.strip() if state is not None else None,
+            close_reason=close_reason.strip() if close_reason is not None else None,
+            reject_code=reject_code.strip() if reject_code is not None else None,
+            start_at=start_at,
+            end_at=end_at,
+            linked_alert_state=linked_alert_state,
+            sort=sort,
+            limit=max(limit * 2, limit),
+            event_store=self._store.event_store,
+        )
+        self._sort_events(events, sort)
         return events[:limit]
 
+    def event_index_status(self) -> dict[str, object]:
+        storage = self._store.stats()
+        return {
+            "backend": storage.event_index_backend,
+            "indexed_event_count": storage.event_indexed_count,
+            "event_count": storage.event_count,
+            "token_count": storage.event_index_token_count,
+            "dimension_counts": storage.event_index_dimension_counts,
+            "index_path": storage.event_index_path,
+            "event_log_path": storage.event_log_path,
+            "indexed_at": storage.event_index_indexed_at,
+            "stale": not storage.event_index_current,
+        }
+
+    def rebuild_event_index(self) -> dict[str, object]:
+        with self._lock:
+            events = self._store.event_store.list()
+            self._store.event_index_store.rebuild(events, event_store=self._store.event_store)
+        payload = self.event_index_status()
+        payload["rebuilt"] = True
+        payload["rebuilt_at"] = _utc_now().isoformat()
+        return payload
+
+    def get_event(self, event_id: str) -> SocEventRecord:
+        event = self._store.event_index_store.get(event_id, event_store=self._store.event_store)
+        if event is not None:
+            return event
+        for candidate in self._store.event_store.list():
+            if candidate.event_id == event_id:
+                return candidate
+        raise KeyError(f"Event not found: {event_id}")
+
     def list_alerts(self, *, status: SocAlertStatus | None = None) -> list[SocAlertRecord]:
-        alerts = self._read_records(self._alert_store_path, SocAlertRecord)
+        alerts = self._store.alert_store.read()
         if status is not None:
             alerts = [item for item in alerts if item.status is status]
         alerts.sort(key=lambda item: item.updated_at, reverse=True)
@@ -140,11 +379,12 @@ class SecurityOperationsManager:
         status: SocAlertStatus | None = None,
         severity: SocSeverity | None = None,
         assignee: str | None = None,
+        correlation_rule: str | None = None,
         linked_case_state: str | None = None,
         sort: str = "updated_desc",
         limit: int = 100,
     ) -> list[SocAlertRecord]:
-        alerts = self._read_records(self._alert_store_path, SocAlertRecord)
+        alerts = self._store.alert_store.read()
         if status is not None:
             alerts = [item for item in alerts if item.status is status]
         if severity is not None:
@@ -159,6 +399,13 @@ class SecurityOperationsManager:
                     for item in alerts
                     if item.assignee is not None and item.assignee.casefold() == normalized_assignee
                 ]
+        if correlation_rule is not None:
+            normalized_rule = correlation_rule.strip().casefold()
+            alerts = [
+                item
+                for item in alerts
+                if item.correlation_rule is not None and item.correlation_rule.casefold() == normalized_rule
+            ]
         if linked_case_state == "linked":
             alerts = [item for item in alerts if item.linked_case_id]
         elif linked_case_state == "unlinked":
@@ -174,7 +421,7 @@ class SecurityOperationsManager:
 
     def update_alert(self, alert_id: str, payload: SocAlertUpdate) -> SocAlertRecord:
         with self._lock:
-            alerts = self._read_records(self._alert_store_path, SocAlertRecord)
+            alerts = self._store.alert_store.read()
             for index, existing in enumerate(alerts):
                 if existing.alert_id != alert_id:
                     continue
@@ -196,7 +443,7 @@ class SecurityOperationsManager:
                     }
                 )
                 alerts[index] = updated
-                self._write_records(self._alert_store_path, alerts)
+                self._store.alert_store.write(alerts)
                 self._audit.log(
                     "soc.alert.updated",
                     {
@@ -229,12 +476,12 @@ class SecurityOperationsManager:
             updated_at=created_at,
         )
         with self._lock:
-            alerts = self._read_records(self._alert_store_path, SocAlertRecord)
-            cases = self._read_records(self._case_store_path, SocCaseRecord)
+            alerts = self._store.alert_store.read()
+            cases = self._store.case_store.read()
             cases.append(case)
-            self._write_records(self._case_store_path, cases)
+            self._store.case_store.write(cases)
             self._link_case_alerts(alerts, case, preserve_status=True)
-            self._write_records(self._alert_store_path, alerts)
+            self._store.alert_store.write(alerts)
         self._audit.log(
             "soc.case.created",
             {
@@ -246,13 +493,129 @@ class SecurityOperationsManager:
         )
         return case
 
+    def create_case_from_packet_session(
+        self,
+        session_payload: dict[str, object],
+        payload: SocPacketSessionCaseRequest | None = None,
+    ) -> SocCaseRecord:
+        case_payload = self.build_packet_session_case_payload(session_payload, payload=payload)
+        return self.create_case(case_payload)
+
+    def create_case_from_packet_capture(
+        self,
+        capture_payload: dict[str, object],
+        payload: SocPacketCaptureCaseRequest | None = None,
+    ) -> SocCaseRecord:
+        case_payload = self.build_packet_capture_case_payload(capture_payload, payload=payload)
+        return self.create_case(case_payload)
+
+    def create_case_from_network_evidence(
+        self,
+        evidence_payload: dict[str, object],
+        payload: SocNetworkEvidenceCaseRequest | None = None,
+    ) -> SocCaseRecord:
+        case_payload = self.build_network_evidence_case_payload(evidence_payload, payload=payload)
+        return self.create_case(case_payload)
+
+    def create_case_from_remote_node(
+        self,
+        node_payload: Mapping[str, Any],
+        payload: SocRemoteNodeCaseRequest | None = None,
+    ) -> SocCaseRecord:
+        case_payload = self.build_remote_node_case_payload(node_payload, payload=payload)
+        return self.create_case(case_payload)
+
+    def create_case_from_endpoint_timeline(
+        self,
+        payload: SocEndpointTimelineCaseRequest,
+    ) -> SocCaseRecord:
+        case_payload = self.build_endpoint_timeline_case_payload(payload)
+        return self.create_case(case_payload)
+
+    def create_case_from_endpoint_query(
+        self,
+        payload: SocEndpointQueryCaseRequest,
+    ) -> SocCaseRecord:
+        case_payload = self.build_endpoint_query_case_payload(payload)
+        return self.create_case(case_payload)
+
+    def create_case_from_endpoint_lineage_cluster(
+        self,
+        payload: SocEndpointLineageClusterCaseRequest,
+    ) -> SocCaseRecord:
+        case_payload = self.build_endpoint_lineage_cluster_case_payload(payload)
+        return self.create_case(case_payload)
+
+    def create_case_from_telemetry_cluster(
+        self,
+        payload: SocTelemetryClusterCaseRequest,
+    ) -> SocCaseRecord:
+        case_payload = self.build_telemetry_cluster_case_payload(payload)
+        return self.create_case(case_payload)
+
+    def create_case_from_case_endpoint_timeline_cluster(
+        self,
+        case_id: str,
+        payload: SocCaseEndpointTimelineClusterCaseRequest,
+    ) -> SocCaseRecord:
+        case_payload = self.build_case_endpoint_timeline_cluster_case_payload(case_id, payload)
+        return self.create_case(case_payload)
+
+    def create_case_from_case_endpoint_lineage_cluster(
+        self,
+        case_id: str,
+        payload: SocCaseEndpointLineageClusterCaseRequest,
+    ) -> SocCaseRecord:
+        case_payload = self.build_case_endpoint_lineage_cluster_case_payload(case_id, payload)
+        return self.create_case(case_payload)
+
+    def create_case_from_case_rule_alert_group(
+        self,
+        case_id: str,
+        payload: SocCaseRuleGroupCaseRequest,
+    ) -> SocCaseRecord:
+        case_payload = self.build_case_rule_alert_group_case_payload(case_id, payload)
+        return self.create_case(case_payload)
+
+    def create_case_from_case_rule_evidence_group(
+        self,
+        case_id: str,
+        payload: SocCaseRuleGroupCaseRequest,
+    ) -> SocCaseRecord:
+        case_payload = self.build_case_rule_evidence_group_case_payload(case_id, payload)
+        return self.create_case(case_payload)
+
+    def create_case_from_rule_alert_group(
+        self,
+        rule_id: str,
+        payload: SocCaseRuleGroupCaseRequest,
+    ) -> SocCaseRecord:
+        case_payload = self.build_rule_alert_group_case_payload(rule_id, payload)
+        return self.create_case(case_payload)
+
+    def create_case_from_rule_evidence_group(
+        self,
+        rule_id: str,
+        payload: SocCaseRuleGroupCaseRequest,
+    ) -> SocCaseRecord:
+        case_payload = self.build_rule_evidence_group_case_payload(rule_id, payload)
+        return self.create_case(case_payload)
+
+    def create_case_from_case_hunt_telemetry_cluster(
+        self,
+        case_id: str,
+        payload: SocCaseTelemetryClusterCaseRequest,
+    ) -> SocCaseRecord:
+        case_payload = self.build_case_hunt_telemetry_cluster_case_payload(case_id, payload)
+        return self.create_case(case_payload)
+
     def promote_alert_to_case(
         self,
         alert_id: str,
         payload: SocAlertPromoteCaseRequest,
     ) -> tuple[SocAlertRecord, SocCaseRecord]:
         with self._lock:
-            alerts = self._read_records(self._alert_store_path, SocAlertRecord)
+            alerts = self._store.alert_store.read()
             alert_index = next((index for index, item in enumerate(alerts) if item.alert_id == alert_id), None)
             if alert_index is None:
                 raise KeyError(f"Alert not found: {alert_id}")
@@ -261,7 +624,7 @@ class SecurityOperationsManager:
             if existing_alert.linked_case_id:
                 raise ValueError(f"Alert already linked to case: {existing_alert.linked_case_id}")
 
-            cases = self._read_records(self._case_store_path, SocCaseRecord)
+            cases = self._store.case_store.read()
             if payload.existing_case_id:
                 case_index = next((index for index, item in enumerate(cases) if item.case_id == payload.existing_case_id), None)
                 if case_index is None:
@@ -325,8 +688,8 @@ class SecurityOperationsManager:
                 escalated_by=payload.acted_by,
             )
             updated_alert = alerts[alert_index]
-            self._write_records(self._case_store_path, cases)
-            self._write_records(self._alert_store_path, alerts)
+            self._store.case_store.write(cases)
+            self._store.alert_store.write(alerts)
 
         self._audit.log(
             "soc.alert.promoted",
@@ -341,7 +704,7 @@ class SecurityOperationsManager:
         return updated_alert, case
 
     def list_cases(self, *, status: SocCaseStatus | None = None) -> list[SocCaseRecord]:
-        cases = self._read_records(self._case_store_path, SocCaseRecord)
+        cases = self._store.case_store.read()
         if status is not None:
             cases = [item for item in cases if item.status is status]
         cases.sort(key=lambda item: item.updated_at, reverse=True)
@@ -356,7 +719,7 @@ class SecurityOperationsManager:
         sort: str = "updated_desc",
         limit: int = 100,
     ) -> list[SocCaseRecord]:
-        cases = self._read_records(self._case_store_path, SocCaseRecord)
+        cases = self._store.case_store.read()
         if status is not None:
             cases = [item for item in cases if item.status is status]
         if severity is not None:
@@ -380,9 +743,277 @@ class SecurityOperationsManager:
                 return case
         raise KeyError(f"Case not found: {case_id}")
 
+    def resolve_case_linked_alerts(self, case_id: str) -> list[SocAlertRecord]:
+        case = self.get_case(case_id)
+        if not case.linked_alert_ids:
+            return []
+        alerts_by_id = {alert.alert_id: alert for alert in self.list_alerts()}
+        return [alerts_by_id[alert_id] for alert_id in case.linked_alert_ids if alert_id in alerts_by_id]
+
+    def resolve_case_source_events(self, case_id: str) -> list[SocEventRecord]:
+        case = self.get_case(case_id)
+        if not case.source_event_ids:
+            return []
+        events_by_id = {event.event_id: event for event in self.list_events(limit=1000)}
+        return [events_by_id[event_id] for event_id in case.source_event_ids if event_id in events_by_id]
+
+    def list_case_rule_alert_groups(self, case_id: str) -> list[dict[str, object]]:
+        alerts = [alert for alert in self.resolve_case_linked_alerts(case_id) if alert.correlation_rule]
+        return self._group_alert_records(alerts)
+
+    def list_case_rule_evidence_groups(self, case_id: str) -> list[dict[str, object]]:
+        source_events = [
+            event
+            for event in self.resolve_case_source_events(case_id)
+            if event.event_type.startswith("endpoint.telemetry.")
+        ]
+        return self._group_evidence_records(source_events)
+
+    def list_rule_alert_groups(self, rule_id: str) -> list[dict[str, object]]:
+        alerts = self.query_alerts(correlation_rule=rule_id, limit=250)
+        return self._group_alert_records(alerts)
+
+    def list_rule_evidence_groups(self, rule_id: str) -> list[dict[str, object]]:
+        alerts = self.query_alerts(correlation_rule=rule_id, limit=250)
+        source_events = self._events_for_ids(
+            [
+                event_id
+                for alert in alerts
+                for event_id in alert.source_event_ids
+            ]
+        )
+        return self._group_evidence_records(source_events)
+
+    def list_case_endpoint_timeline_clusters(
+        self,
+        case_id: str,
+        *,
+        cluster_by: str = "process",
+        limit: int = 200,
+    ) -> dict[str, object]:
+        case = self.get_case(case_id)
+        source_events = self.resolve_case_source_events(case_id)
+        filters = self._case_endpoint_timeline_filters(case, source_events, cluster_by=cluster_by)
+        clusters = self.cluster_endpoint_timeline(
+            cluster_by=cluster_by,
+            limit=limit,
+            **cast(dict[str, Any], filters),
+        )
+        return {
+            "clusters": clusters,
+            "filters": {
+                "case_id": case_id,
+                "cluster_by": cluster_by,
+                "limit": limit,
+                **filters,
+            },
+        }
+
+    def list_case_endpoint_lineage_clusters(
+        self,
+        case_id: str,
+        *,
+        limit: int = 200,
+    ) -> dict[str, object]:
+        case = self.get_case(case_id)
+        source_events = self.resolve_case_source_events(case_id)
+        filters = self._case_endpoint_timeline_filters(case, source_events)
+        clusters = self.list_endpoint_lineage_clusters(limit=limit, **cast(dict[str, Any], filters))
+        return {
+            "clusters": clusters,
+            "filters": {
+                "case_id": case_id,
+                "limit": limit,
+                **filters,
+            },
+        }
+
+    def list_case_hunt_telemetry_clusters(
+        self,
+        case_id: str,
+        *,
+        cluster_by: str = "remote_ip",
+        limit: int = 200,
+    ) -> dict[str, object]:
+        case = self.get_case(case_id)
+        source_events = self.resolve_case_source_events(case_id)
+        filters = self._case_hunt_telemetry_filters(case, source_events, cluster_by=cluster_by)
+        clusters = self.list_hunt_telemetry_clusters(cluster_by=cluster_by, limit=limit, **cast(dict[str, Any], filters))
+        return {
+            "clusters": clusters,
+            "filters": {
+                "case_id": case_id,
+                "cluster_by": cluster_by,
+                "limit": limit,
+                **filters,
+            },
+        }
+
+    def resolve_endpoint_timeline_cluster(
+        self,
+        *,
+        cluster_by: str,
+        cluster_key: str,
+        limit: int = 500,
+        device_id: str | None = None,
+        process_name: str | None = None,
+        process_guid: str | None = None,
+        remote_ip: str | None = None,
+        signer_name: str | None = None,
+        sha256: str | None = None,
+    ) -> dict[str, object]:
+        clusters = self.cluster_endpoint_timeline(
+            cluster_by=cluster_by,
+            limit=limit,
+            device_id=device_id,
+            process_name=process_name,
+            process_guid=process_guid,
+            remote_ip=remote_ip,
+            signer_name=signer_name,
+            sha256=sha256,
+        )
+        for cluster in clusters:
+            if str(cluster.get("cluster_key") or "") == cluster_key:
+                return cluster
+        raise KeyError(f"Endpoint timeline cluster not found: {cluster_key}")
+
+    def list_case_endpoint_timeline(
+        self,
+        case_id: str,
+        *,
+        limit: int = 200,
+        device_id: str | None = None,
+        process_name: str | None = None,
+        process_guid: str | None = None,
+        remote_ip: str | None = None,
+        signer_name: str | None = None,
+        sha256: str | None = None,
+    ) -> dict[str, object]:
+        case = self.get_case(case_id)
+        source_events = self.resolve_case_source_events(case_id)
+        filters = self._case_endpoint_timeline_filters(case, source_events)
+        overrides = {
+            "device_id": device_id,
+            "process_name": process_name,
+            "process_guid": process_guid,
+            "remote_ip": remote_ip,
+            "signer_name": signer_name,
+            "sha256": sha256,
+        }
+        for key, value in overrides.items():
+            if value:
+                filters[key] = value
+        events = [
+            item.model_dump(mode="json")
+            for item in self.list_endpoint_timeline(limit=limit, **cast(dict[str, Any], filters))
+        ]
+        return {
+            "events": events,
+            "filters": {
+                "case_id": case_id,
+                "limit": limit,
+                **filters,
+            },
+        }
+
+    def resolve_case_endpoint_timeline_cluster(
+        self,
+        case_id: str,
+        *,
+        cluster_by: str,
+        cluster_key: str,
+        limit: int = 500,
+    ) -> dict[str, object]:
+        payload = self.list_case_endpoint_timeline_clusters(case_id, cluster_by=cluster_by, limit=limit)
+        for cluster in cast(list[dict[str, object]], payload.get("clusters") or []):
+            if str(cluster.get("cluster_key") or "") == cluster_key:
+                return cluster
+        raise KeyError(f"Endpoint timeline cluster not found for case {case_id}: {cluster_key}")
+
+    def resolve_case_endpoint_lineage_cluster(
+        self,
+        case_id: str,
+        *,
+        cluster_key: str,
+        limit: int = 500,
+    ) -> dict[str, object]:
+        payload = self.list_case_endpoint_lineage_clusters(case_id, limit=limit)
+        for cluster in cast(list[dict[str, object]], payload.get("clusters") or []):
+            if str(cluster.get("cluster_key") or "") == cluster_key:
+                detail = dict(cluster)
+                detail["events"] = [
+                    item.model_dump(mode="json")
+                    for item in self._events_for_ids(cast(list[str], cluster.get("event_ids") or []))
+                ]
+                return detail
+        raise KeyError(f"Endpoint lineage cluster not found for case {case_id}: {cluster_key}")
+
+    def resolve_case_hunt_telemetry_cluster(
+        self,
+        case_id: str,
+        *,
+        cluster_by: str,
+        cluster_key: str,
+        limit: int = 500,
+    ) -> dict[str, object]:
+        payload = self.list_case_hunt_telemetry_clusters(case_id, cluster_by=cluster_by, limit=limit)
+        for cluster in cast(list[dict[str, object]], payload.get("clusters") or []):
+            if str(cluster.get("cluster_key") or "") == cluster_key:
+                detail = dict(cluster)
+                detail["events"] = [
+                    item.model_dump(mode="json")
+                    for item in self._events_for_ids(cast(list[str], cluster.get("event_ids") or []))
+                ]
+                return detail
+        raise KeyError(f"Hunt telemetry cluster not found for case {case_id}: {cluster_key}")
+
+    def resolve_case_rule_alert_group(
+        self,
+        case_id: str,
+        *,
+        group_key: str,
+    ) -> dict[str, object]:
+        for group in self.list_case_rule_alert_groups(case_id):
+            if str(group.get("group_key") or "") == group_key:
+                return group
+        raise KeyError(f"Rule alert group not found for case {case_id}: {group_key}")
+
+    def resolve_rule_alert_group(
+        self,
+        rule_id: str,
+        *,
+        group_key: str,
+    ) -> dict[str, object]:
+        for group in self.list_rule_alert_groups(rule_id):
+            if str(group.get("group_key") or "") == group_key:
+                return group
+        raise KeyError(f"Rule alert group not found for detection {rule_id}: {group_key}")
+
+    def resolve_case_rule_evidence_group(
+        self,
+        case_id: str,
+        *,
+        group_key: str,
+    ) -> dict[str, object]:
+        for group in self.list_case_rule_evidence_groups(case_id):
+            if str(group.get("group_key") or "") == group_key:
+                return group
+        raise KeyError(f"Rule evidence group not found for case {case_id}: {group_key}")
+
+    def resolve_rule_evidence_group(
+        self,
+        rule_id: str,
+        *,
+        group_key: str,
+    ) -> dict[str, object]:
+        for group in self.list_rule_evidence_groups(rule_id):
+            if str(group.get("group_key") or "") == group_key:
+                return group
+        raise KeyError(f"Rule evidence group not found for detection {rule_id}: {group_key}")
+
     def update_case(self, case_id: str, payload: SocCaseUpdate) -> SocCaseRecord:
         with self._lock:
-            cases = self._read_records(self._case_store_path, SocCaseRecord)
+            cases = self._store.case_store.read()
             for index, existing in enumerate(cases):
                 if existing.case_id != case_id:
                     continue
@@ -402,7 +1033,7 @@ class SecurityOperationsManager:
                     }
                 )
                 cases[index] = updated
-                self._write_records(self._case_store_path, cases)
+                self._store.case_store.write(cases)
                 self._audit.log(
                     "soc.case.updated",
                     {
@@ -419,6 +1050,8 @@ class SecurityOperationsManager:
         events = self.list_events(limit=250)
         alerts = self.list_alerts()
         cases = self.list_cases()
+        storage_stats = self._store.stats()
+        platform = self._platform_profile_builder()
         return {
             "events_total": len(events),
             "alerts_total": len(alerts),
@@ -426,6 +1059,23 @@ class SecurityOperationsManager:
             "cases_total": len(cases),
             "open_cases": sum(1 for item in cases if item.status is not SocCaseStatus.closed),
             "recent_events": [event.model_dump(mode="json") for event in events[:10]],
+            "platform": platform,
+            "storage": {
+                "backend": storage_stats.backend,
+                "event_count": storage_stats.event_count,
+                "alert_count": storage_stats.alert_count,
+                "case_count": storage_stats.case_count,
+                "event_index_backend": storage_stats.event_index_backend,
+                "event_indexed_count": storage_stats.event_indexed_count,
+                "event_index_token_count": storage_stats.event_index_token_count,
+                "event_index_current": storage_stats.event_index_current,
+                "event_index_indexed_at": storage_stats.event_index_indexed_at,
+                "event_index_dimension_counts": storage_stats.event_index_dimension_counts,
+                "event_log_path": storage_stats.event_log_path,
+                "event_index_path": storage_stats.event_index_path,
+                "alert_store_path": storage_stats.alert_store_path,
+                "case_store_path": storage_stats.case_store_path,
+            },
         }
 
     def dashboard(self) -> dict[str, object]:
@@ -433,6 +1083,8 @@ class SecurityOperationsManager:
         alerts = self.list_alerts()
         cases = self.list_cases()
         now = _utc_now()
+        overview = self.overview()
+        platform = cast(dict[str, object], overview["platform"])
         alert_severity = Counter(item.severity.value for item in alerts)
         alert_status = Counter(item.status.value for item in alerts)
         case_status = Counter(item.status.value for item in cases)
@@ -440,9 +1092,116 @@ class SecurityOperationsManager:
         correlation_alerts = [item for item in alerts if item.category == "correlation"]
         stale_cutoff = now - timedelta(hours=settings.soc_stale_after_hours)
         assignee_workload = self._build_assignee_workload(alerts, cases, stale_cutoff=stale_cutoff)
+        view_state = self._read_dashboard_view_state()
+        active_operational_filter = str(view_state.get("operational_reason_filter") or "").strip() or None
+        active_hunt_cluster_mode = str(view_state.get("hunt_cluster_mode") or "remote_ip").strip() or "remote_ip"
+        active_endpoint_timeline_mode = (
+            str(view_state.get("endpoint_timeline_cluster_mode") or "process").strip() or "process"
+        )
+        active_endpoint_lineage_mode = (
+            str(view_state.get("endpoint_lineage_cluster_mode") or "device_id").strip() or "device_id"
+        )
+        active_endpoint_lineage_value = str(view_state.get("endpoint_lineage_cluster_value") or "").strip() or None
+        active_endpoint_lineage_filter = (
+            f"{active_endpoint_lineage_mode}={active_endpoint_lineage_value}"
+            if active_endpoint_lineage_value
+            else None
+        )
+        toolchain_runtime = get_toolchain_runtime()
+        toolchain_updates = toolchain_runtime.updates.list_updates()
+        toolchain_security = toolchain_runtime.security.list_checks()
+        toolchain_languages = toolchain_runtime.languages.list_languages()
+        toolchain_package_managers = toolchain_runtime.package_managers.list_package_managers()
+        toolchain_secret_sources = toolchain_runtime.secret_sources.list_secret_sources()
+        toolchain_secret_resolutions = toolchain_runtime.secret_resolver.list_resolutions()
+        toolchain_provisioning = toolchain_runtime.provisioning.list_actions()
+        toolchain_version_policy = toolchain_runtime.version_policy.evaluate()
+        toolchain_policy_enforcement = toolchain_runtime.policy_enforcement.evaluate()
+        toolchain_policy_gates = toolchain_runtime.policy_gates.evaluate()
+        toolchain_schedules = toolchain_runtime.scheduler.list_schedules()
+        toolchain_scheduler_runtime = toolchain_runtime.scheduler.get_runtime_status()
+        toolchain_update_status = {
+            "count": len(toolchain_updates),
+            "new_count": sum(1 for item in toolchain_updates if item.status == "new"),
+            "seen_count": sum(1 for item in toolchain_updates if item.status == "seen"),
+            "applied_count": sum(1 for item in toolchain_updates if item.status == "applied"),
+            "providers": dict(Counter(item.provider for item in toolchain_updates)),
+            "recent_updates": [item.model_dump(mode="json") for item in toolchain_updates[:5]],
+        }
+        toolchain_security_status = {
+            "count": len(toolchain_security),
+            "ok_count": sum(1 for item in toolchain_security if item.status == "ok"),
+            "warning_count": sum(1 for item in toolchain_security if item.status == "warning"),
+            "error_count": sum(1 for item in toolchain_security if item.status == "error"),
+            "severity_counts": dict(Counter(item.severity for item in toolchain_security)),
+            "recent_checks": [item.model_dump(mode="json") for item in toolchain_security[:5]],
+        }
+        toolchain_runtime_status = {
+            "language_count": len(toolchain_languages),
+            "language_available_count": sum(1 for item in toolchain_languages if item.detected),
+            "package_manager_count": len(toolchain_package_managers),
+            "package_manager_available_count": sum(1 for item in toolchain_package_managers if item.detected),
+            "secret_source_count": len(toolchain_secret_sources),
+            "secret_resolved_count": sum(1 for item in toolchain_secret_resolutions if item.status == "resolved"),
+            "provisioning_pending_count": sum(1 for item in toolchain_provisioning if item.status == "pending"),
+            "policy_noncompliant_count": sum(1 for item in toolchain_version_policy if item.status == "noncompliant"),
+            "policy_unknown_count": sum(1 for item in toolchain_version_policy if item.status == "unknown"),
+            "enforcement_block_count": sum(1 for item in toolchain_policy_enforcement if item.status == "block"),
+            "enforcement_warn_count": sum(1 for item in toolchain_policy_enforcement if item.status == "warn"),
+            "schedule_count": len(toolchain_schedules),
+            "active_schedule_count": sum(1 for item in toolchain_schedules if item.status == "active"),
+            "gate_block_count": sum(1 for item in toolchain_policy_gates if item.status == "block"),
+            "gate_warn_count": sum(1 for item in toolchain_policy_gates if item.status == "warn"),
+            "scheduler_running": toolchain_scheduler_runtime.running,
+            "scheduler_poll_seconds": toolchain_scheduler_runtime.poll_seconds,
+            "scheduler_last_tick_at": toolchain_scheduler_runtime.last_tick_at,
+            "scheduler_last_run_count": toolchain_scheduler_runtime.last_run_count,
+            "recent_schedule_runs": toolchain_runtime.scheduler.list_recent_runs(limit=5),
+            "cache": toolchain_runtime.cache_store.summary(),
+            "recent_enforcement": [item.model_dump(mode="json") for item in toolchain_policy_enforcement[:5]],
+            "recent_gates": [item.model_dump(mode="json") for item in toolchain_policy_gates[:5]],
+        }
 
         return {
-            "summary": self.overview(),
+            "summary": overview,
+            "platform": platform,
+            "storage": cast(dict[str, object], overview["storage"]),
+            "view_state": view_state,
+            "toolchain_updates_status": toolchain_update_status,
+            "toolchain_security_status": toolchain_security_status,
+            "toolchain_runtime_status": toolchain_runtime_status,
+            "summary_labels": {
+                "toolchain_updates": "Toolchain Updates",
+                "toolchain_security": "Toolchain Security",
+                "toolchain_runtime": "Toolchain Runtime",
+                "packet_sessions": "Packet Sessions",
+                "network_evidence": "Network Evidence",
+                "identity_correlations": "Identity Correlations",
+                "network_dns": "DNS",
+                "network_http": "HTTP",
+                "network_tls": "TLS",
+                "network_certificates": "Certificates",
+                "network_proxy": "Proxy",
+                "network_auth": "Auth",
+                "network_vpn": "VPN",
+                "network_dhcp": "DHCP",
+                "network_directory_auth": "Directory Auth",
+                "network_radius": "RADIUS",
+                "network_nac": "NAC",
+                "hunt_clusters": self._format_summary_label("Hunt Clusters", active_hunt_cluster_mode),
+                "endpoint_timeline_clusters": self._format_summary_label(
+                    "Timeline Clusters", active_endpoint_timeline_mode
+                ),
+                "endpoint_lineage_clusters": self._format_summary_label(
+                    "Endpoint Lineage", active_endpoint_lineage_filter
+                ),
+                "operational_alerts": self._format_summary_label(
+                    "Operational Alerts", active_operational_filter
+                ),
+                "operational_cases": self._format_summary_label(
+                    "Operational Cases", active_operational_filter
+                ),
+            },
             "alert_severity": dict(alert_severity),
             "alert_status": dict(alert_status),
             "case_status": dict(case_status),
@@ -501,6 +1260,1704 @@ class SecurityOperationsManager:
             },
         }
 
+    def update_dashboard_view_state(self, payload: SocDashboardViewStateUpdate) -> dict[str, object]:
+        normalized_payload = {
+            "operational_reason_filter": payload.operational_reason_filter,
+            "hunt_cluster_mode": payload.hunt_cluster_mode,
+            "hunt_cluster_value": payload.hunt_cluster_value,
+            "hunt_cluster_key": payload.hunt_cluster_key,
+            "hunt_cluster_action": payload.hunt_cluster_action,
+            "endpoint_timeline_cluster_mode": payload.endpoint_timeline_cluster_mode,
+            "endpoint_timeline_cluster_key": payload.endpoint_timeline_cluster_key,
+            "endpoint_timeline_cluster_action": payload.endpoint_timeline_cluster_action,
+            "endpoint_lineage_cluster_mode": payload.endpoint_lineage_cluster_mode,
+            "endpoint_lineage_cluster_value": payload.endpoint_lineage_cluster_value,
+            "endpoint_lineage_cluster_key": payload.endpoint_lineage_cluster_key,
+            "endpoint_lineage_cluster_action": payload.endpoint_lineage_cluster_action,
+        }
+        with self._lock:
+            return self._write_dashboard_view_state(normalized_payload)
+
+    @staticmethod
+    def _format_summary_label(base_label: str, active_value: str | None) -> str:
+        normalized = str(active_value or "").strip()
+        if not normalized:
+            return base_label
+        return f"{base_label} [{normalized}]"
+
+    @staticmethod
+    def _endpoint_telemetry_matches_advanced_filters(
+        event: SocEventRecord,
+        *,
+        document_type: str | None = None,
+        parent_process_name: str | None = None,
+        reputation: str | None = None,
+        risk_flag: str | None = None,
+        verdict: str | None = None,
+        operation: str | None = None,
+        file_extension: str | None = None,
+    ) -> bool:
+        details = event.details if isinstance(event.details, dict) else {}
+        if document_type and str(details.get("document_type") or "").casefold() != document_type.strip().casefold():
+            return False
+        if parent_process_name and str(details.get("parent_process_name") or "").casefold() != parent_process_name.strip().casefold():
+            return False
+        if reputation and str(details.get("reputation") or "").casefold() != reputation.strip().casefold():
+            return False
+        if verdict and str(details.get("verdict") or "").casefold() != verdict.strip().casefold():
+            return False
+        if operation and str(details.get("operation") or "").casefold() != operation.strip().casefold():
+            return False
+        if file_extension and str(details.get("file_extension") or "").casefold() != file_extension.strip().casefold():
+            return False
+        if risk_flag:
+            flags = details.get("risk_flags")
+            if not isinstance(flags, list):
+                return False
+            normalized_flag = risk_flag.strip().casefold()
+            if normalized_flag not in {str(item).casefold() for item in flags}:
+                return False
+        return True
+
+    def search(
+        self,
+        *,
+        query: str,
+        severity: SocSeverity | None = None,
+        tag: str | None = None,
+        limit: int = 25,
+    ) -> dict[str, object]:
+        normalized_query = query.strip().casefold()
+        if not normalized_query:
+            return {"query": query, "events": [], "alerts": [], "cases": []}
+
+        events = self.query_events(
+            severity=severity,
+            tag=tag,
+            text=normalized_query,
+            limit=limit,
+        )
+        alerts = [
+            item
+            for item in self.list_alerts()
+            if (severity is None or item.severity is severity)
+            and self._alert_matches_text(item, normalized_query)
+        ][:limit]
+        cases = [
+            item
+            for item in self.list_cases()
+            if (severity is None or item.severity is severity)
+            and self._case_matches_text(item, normalized_query)
+        ][:limit]
+        return {
+            "query": query,
+            "events": [item.model_dump(mode="json") for item in events],
+            "alerts": [item.model_dump(mode="json") for item in alerts],
+            "cases": [item.model_dump(mode="json") for item in cases],
+        }
+
+    def hunt(
+        self,
+        *,
+        query: str | None = None,
+        severity: SocSeverity | None = None,
+        tag: str | None = None,
+        source: str | None = None,
+        event_type: str | None = None,
+        remote_ip: str | None = None,
+        hostname: str | None = None,
+        filename: str | None = None,
+        artifact_path: str | None = None,
+        session_key: str | None = None,
+        device_id: str | None = None,
+        process_name: str | None = None,
+        process_guid: str | None = None,
+        signer_name: str | None = None,
+        sha256: str | None = None,
+        flow_id: str | None = None,
+        service_name: str | None = None,
+        application_protocol: str | None = None,
+        local_ip: str | None = None,
+        local_port: str | None = None,
+        remote_port: str | None = None,
+        protocol: str | None = None,
+        state: str | None = None,
+        close_reason: str | None = None,
+        reject_code: str | None = None,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+        facet_limit: int = 5,
+        limit: int = 50,
+    ) -> dict[str, object]:
+        expanded_limit = max(limit, 500)
+        events = self.query_events(
+            severity=severity,
+            event_type=event_type,
+            source=source,
+            tag=tag,
+            text=query,
+            remote_ip=remote_ip,
+            hostname=hostname,
+            filename=filename,
+            artifact_path=artifact_path,
+            session_key=session_key,
+            device_id=device_id,
+            process_name=process_name,
+            process_guid=process_guid,
+            signer_name=signer_name,
+            sha256=sha256,
+            flow_id=flow_id,
+            service_name=service_name,
+            application_protocol=application_protocol,
+            local_ip=local_ip,
+            local_port=local_port,
+            remote_port=remote_port,
+            protocol=protocol,
+            state=state,
+            close_reason=close_reason,
+            reject_code=reject_code,
+            start_at=start_at,
+            end_at=end_at,
+            limit=expanded_limit,
+        )
+        storage = self._store.stats()
+        facets = self._store.event_index_store.facet_counts(
+            severity=severity.value if severity is not None else None,
+            event_type=event_type,
+            source=source.strip() if source is not None else None,
+            tag=tag.strip() if tag is not None else None,
+            text=query,
+            remote_ip=remote_ip.strip() if remote_ip is not None else None,
+            hostname=hostname.strip() if hostname is not None else None,
+            filename=filename.strip() if filename is not None else None,
+            artifact_path=artifact_path.strip() if artifact_path is not None else None,
+            session_key=session_key.strip() if session_key is not None else None,
+            device_id=device_id.strip() if device_id is not None else None,
+            process_name=process_name.strip() if process_name is not None else None,
+            process_guid=process_guid.strip() if process_guid is not None else None,
+            signer_name=signer_name.strip() if signer_name is not None else None,
+            sha256=sha256.strip() if sha256 is not None else None,
+            flow_id=flow_id.strip() if flow_id is not None else None,
+            service_name=service_name.strip() if service_name is not None else None,
+            application_protocol=application_protocol.strip() if application_protocol is not None else None,
+            local_ip=local_ip.strip() if local_ip is not None else None,
+            local_port=local_port.strip() if local_port is not None else None,
+            remote_port=remote_port.strip() if remote_port is not None else None,
+            protocol=protocol.strip() if protocol is not None else None,
+            state=state.strip() if state is not None else None,
+            close_reason=close_reason.strip() if close_reason is not None else None,
+            reject_code=reject_code.strip() if reject_code is not None else None,
+            start_at=start_at,
+            end_at=end_at,
+            limit=facet_limit,
+        )
+        normalized_start_at = self._normalize_query_datetime(start_at)
+        normalized_end_at = self._normalize_query_datetime(end_at)
+        timeline = self._indexed_hunt_timeline(
+            query=query,
+            severity=severity,
+            tag=tag,
+            source=source,
+            event_type=event_type,
+            remote_ip=remote_ip,
+            hostname=hostname,
+            filename=filename,
+            artifact_path=artifact_path,
+            session_key=session_key,
+            device_id=device_id,
+            process_name=process_name,
+            process_guid=process_guid,
+            signer_name=signer_name,
+            sha256=sha256,
+            flow_id=flow_id,
+            service_name=service_name,
+            application_protocol=application_protocol,
+            local_ip=local_ip,
+            local_port=local_port,
+            remote_port=remote_port,
+            protocol=protocol,
+            state=state,
+            close_reason=close_reason,
+            reject_code=reject_code,
+            start_at=normalized_start_at,
+            end_at=normalized_end_at,
+        )
+        return {
+            "query": query or "",
+            "filters": {
+                "severity": severity.value if severity is not None else None,
+                "tag": tag,
+                "source": source,
+                "event_type": event_type,
+                "remote_ip": remote_ip,
+                "hostname": hostname,
+                "filename": filename,
+                "artifact_path": artifact_path,
+                "session_key": session_key,
+                "device_id": device_id,
+                "process_name": process_name,
+                "process_guid": process_guid,
+                "signer_name": signer_name,
+                "sha256": sha256,
+                "flow_id": flow_id,
+                "service_name": service_name,
+                "application_protocol": application_protocol,
+                "local_ip": local_ip,
+                "local_port": local_port,
+                "remote_port": remote_port,
+                "protocol": protocol,
+                "state": state,
+                "close_reason": close_reason,
+                "reject_code": reject_code,
+                "start_at": normalized_start_at.isoformat() if normalized_start_at is not None else None,
+                "end_at": normalized_end_at.isoformat() if normalized_end_at is not None else None,
+                "facet_limit": facet_limit,
+                "limit": limit,
+            },
+            "index": {
+                "backend": storage.event_index_backend,
+                "indexed_event_count": storage.event_indexed_count,
+                "token_count": storage.event_index_token_count,
+                "path": storage.event_index_path,
+                "current": storage.event_index_current,
+                "indexed_at": storage.event_index_indexed_at,
+                "dimension_counts": storage.event_index_dimension_counts,
+                "facet_source": storage.event_index_backend,
+                "timeline_source": storage.event_index_backend,
+            },
+            "match_count": len(events),
+            "facets": facets,
+            "timeline": timeline,
+            "summaries": self._build_hunt_summaries(events),
+            "events": [item.model_dump(mode="json") for item in events[:limit]],
+        }
+
+    @staticmethod
+    def _normalize_query_datetime(value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+
+    def _build_hunt_facets(self, events: Sequence[SocEventRecord], *, limit: int) -> dict[str, list[dict[str, object]]]:
+        bounded_limit = max(limit, 1)
+        event_type_counts = Counter(item.event_type for item in events)
+        source_counts = Counter(item.source for item in events)
+        severity_counts = Counter(item.severity.value for item in events)
+        tag_counts = Counter(tag for item in events for tag in item.tags)
+        document_type_counts = Counter(
+            value
+            for item in events
+            for value in self._collect_hunt_values(item, "document_type")
+        )
+        remote_ip_counts = Counter(
+            value
+            for item in events
+            for value in self._collect_hunt_values(item, "remote_ip")
+        )
+        device_id_counts = Counter(
+            value
+            for item in events
+            for value in self._collect_hunt_values(item, "device_id")
+        )
+        process_name_counts = Counter(
+            value
+            for item in events
+            for value in self._collect_hunt_values(item, "process_name")
+        )
+        flow_id_counts = Counter(
+            value
+            for item in events
+            for value in self._collect_hunt_values(item, "flow_id")
+        )
+        service_name_counts = Counter(
+            value
+            for item in events
+            for value in self._collect_hunt_values(item, "service_name")
+        )
+        application_protocol_counts = Counter(
+            value
+            for item in events
+            for value in self._collect_hunt_values(item, "application_protocol")
+        )
+        local_ip_counts = Counter(
+            value
+            for item in events
+            for value in self._collect_hunt_values(item, "local_ip")
+        )
+        local_port_counts = Counter(
+            value
+            for item in events
+            for value in self._collect_hunt_values(item, "local_port")
+        )
+        remote_port_counts = Counter(
+            value
+            for item in events
+            for value in self._collect_hunt_values(item, "remote_port")
+        )
+        protocol_counts = Counter(
+            value
+            for item in events
+            for value in self._collect_hunt_values(item, "protocol")
+        )
+        state_counts = Counter(
+            value
+            for item in events
+            for value in self._collect_hunt_values(item, "state")
+        )
+        close_reason_counts = Counter(
+            value
+            for item in events
+            for value in self._collect_hunt_values(item, "close_reason")
+        )
+        reject_code_counts = Counter(
+            value
+            for item in events
+            for value in self._collect_hunt_values(item, "reject_code")
+        )
+        return {
+            "event_type": self._facet_bucket_payload(event_type_counts, limit=bounded_limit),
+            "source": self._facet_bucket_payload(source_counts, limit=bounded_limit),
+            "severity": self._facet_bucket_payload(severity_counts, limit=bounded_limit),
+            "tag": self._facet_bucket_payload(tag_counts, limit=bounded_limit),
+            "document_type": self._facet_bucket_payload(document_type_counts, limit=bounded_limit),
+            "remote_ip": self._facet_bucket_payload(remote_ip_counts, limit=bounded_limit),
+            "device_id": self._facet_bucket_payload(device_id_counts, limit=bounded_limit),
+            "process_name": self._facet_bucket_payload(process_name_counts, limit=bounded_limit),
+            "flow_id": self._facet_bucket_payload(flow_id_counts, limit=bounded_limit),
+            "service_name": self._facet_bucket_payload(service_name_counts, limit=bounded_limit),
+            "application_protocol": self._facet_bucket_payload(application_protocol_counts, limit=bounded_limit),
+            "local_ip": self._facet_bucket_payload(local_ip_counts, limit=bounded_limit),
+            "local_port": self._facet_bucket_payload(local_port_counts, limit=bounded_limit),
+            "remote_port": self._facet_bucket_payload(remote_port_counts, limit=bounded_limit),
+            "protocol": self._facet_bucket_payload(protocol_counts, limit=bounded_limit),
+            "state": self._facet_bucket_payload(state_counts, limit=bounded_limit),
+            "close_reason": self._facet_bucket_payload(close_reason_counts, limit=bounded_limit),
+            "reject_code": self._facet_bucket_payload(reject_code_counts, limit=bounded_limit),
+        }
+
+    @staticmethod
+    def _facet_bucket_payload(counter: Counter[str], *, limit: int) -> list[dict[str, object]]:
+        return [
+            {"value": value, "count": count}
+            for value, count in counter.most_common(limit)
+        ]
+
+    @staticmethod
+    def _collect_hunt_values(event: SocEventRecord, field: str) -> list[str]:
+        value = event.details.get(field)
+        if isinstance(value, str) and value:
+            return [value]
+        if isinstance(value, int):
+            return [str(value)]
+        if isinstance(value, list):
+            collected = [
+                str(item)
+                for item in value
+                if isinstance(item, (str, int)) and str(item)
+            ]
+            if collected:
+                return collected
+        fallback = SecurityOperationsManager._event_detail_string(event, field)
+        return [fallback] if fallback else []
+
+    def _build_hunt_timeline(
+        self,
+        events: Sequence[SocEventRecord],
+        *,
+        start_at: datetime | None,
+        end_at: datetime | None,
+    ) -> dict[str, object]:
+        if not events:
+            return {
+                "bucket_unit": "day",
+                "start_at": start_at.isoformat() if start_at is not None else None,
+                "end_at": end_at.isoformat() if end_at is not None else None,
+                "buckets": [],
+            }
+        window_start = start_at or min(item.created_at for item in events)
+        window_end = end_at or max(item.created_at for item in events)
+        bucket_unit = "hour" if (window_end - window_start) <= timedelta(hours=48) else "day"
+        counts: Counter[str] = Counter()
+        for event in events:
+            created_at = event.created_at.astimezone(UTC)
+            if bucket_unit == "hour":
+                bucket = created_at.replace(minute=0, second=0, microsecond=0).isoformat()
+            else:
+                bucket = created_at.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+            counts[bucket] += 1
+        return {
+            "bucket_unit": bucket_unit,
+            "start_at": window_start.isoformat(),
+            "end_at": window_end.isoformat(),
+            "buckets": [
+                {"start_at": bucket, "count": count}
+                for bucket, count in sorted(counts.items())
+            ],
+        }
+
+    def _indexed_hunt_timeline(
+        self,
+        *,
+        query: str | None = None,
+        severity: SocSeverity | None = None,
+        tag: str | None = None,
+        source: str | None = None,
+        event_type: str | None = None,
+        remote_ip: str | None = None,
+        hostname: str | None = None,
+        filename: str | None = None,
+        artifact_path: str | None = None,
+        session_key: str | None = None,
+        device_id: str | None = None,
+        process_name: str | None = None,
+        process_guid: str | None = None,
+        signer_name: str | None = None,
+        sha256: str | None = None,
+        flow_id: str | None = None,
+        service_name: str | None = None,
+        application_protocol: str | None = None,
+        local_ip: str | None = None,
+        local_port: str | None = None,
+        remote_port: str | None = None,
+        protocol: str | None = None,
+        state: str | None = None,
+        close_reason: str | None = None,
+        reject_code: str | None = None,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+    ) -> dict[str, object]:
+        return self._store.event_index_store.timeline_counts(
+            severity=severity.value if severity is not None else None,
+            event_type=event_type,
+            source=source.strip() if source is not None else None,
+            tag=tag.strip() if tag is not None else None,
+            text=query,
+            remote_ip=remote_ip.strip() if remote_ip is not None else None,
+            hostname=hostname.strip() if hostname is not None else None,
+            filename=filename.strip() if filename is not None else None,
+            artifact_path=artifact_path.strip() if artifact_path is not None else None,
+            session_key=session_key.strip() if session_key is not None else None,
+            device_id=device_id.strip() if device_id is not None else None,
+            process_name=process_name.strip() if process_name is not None else None,
+            process_guid=process_guid.strip() if process_guid is not None else None,
+            signer_name=signer_name.strip() if signer_name is not None else None,
+            sha256=sha256.strip() if sha256 is not None else None,
+            flow_id=flow_id.strip() if flow_id is not None else None,
+            service_name=service_name.strip() if service_name is not None else None,
+            application_protocol=application_protocol.strip() if application_protocol is not None else None,
+            local_ip=local_ip.strip() if local_ip is not None else None,
+            local_port=local_port.strip() if local_port is not None else None,
+            remote_port=remote_port.strip() if remote_port is not None else None,
+            protocol=protocol.strip() if protocol is not None else None,
+            state=state.strip() if state is not None else None,
+            close_reason=close_reason.strip() if close_reason is not None else None,
+            reject_code=reject_code.strip() if reject_code is not None else None,
+            start_at=start_at,
+            end_at=end_at,
+        )
+
+    def _build_hunt_summaries(self, events: Sequence[SocEventRecord]) -> dict[str, object]:
+        document_type_counts = Counter(
+            value
+            for item in events
+            for value in self._collect_hunt_values(item, "document_type")
+        )
+        severity_counts = Counter(item.severity.value for item in events)
+        device_id_counts = Counter(
+            value
+            for item in events
+            for value in self._collect_hunt_values(item, "device_id")
+        )
+        process_name_counts = Counter(
+            value
+            for item in events
+            for value in self._collect_hunt_values(item, "process_name")
+        )
+        flow_id_counts = Counter(
+            value
+            for item in events
+            for value in self._collect_hunt_values(item, "flow_id")
+        )
+        service_name_counts = Counter(
+            value
+            for item in events
+            for value in self._collect_hunt_values(item, "service_name")
+        )
+        application_protocol_counts = Counter(
+            value
+            for item in events
+            for value in self._collect_hunt_values(item, "application_protocol")
+        )
+        remote_ip_counts = Counter(
+            value
+            for item in events
+            for value in self._collect_hunt_values(item, "remote_ip")
+        )
+        local_ip_counts = Counter(
+            value
+            for item in events
+            for value in self._collect_hunt_values(item, "local_ip")
+        )
+        local_port_counts = Counter(
+            value
+            for item in events
+            for value in self._collect_hunt_values(item, "local_port")
+        )
+        remote_port_counts = Counter(
+            value
+            for item in events
+            for value in self._collect_hunt_values(item, "remote_port")
+        )
+        protocol_counts = Counter(
+            value
+            for item in events
+            for value in self._collect_hunt_values(item, "protocol")
+        )
+        state_counts = Counter(
+            value
+            for item in events
+            for value in self._collect_hunt_values(item, "state")
+        )
+        close_reason_counts = Counter(
+            value
+            for item in events
+            for value in self._collect_hunt_values(item, "close_reason")
+        )
+        reject_code_counts = Counter(
+            value
+            for item in events
+            for value in self._collect_hunt_values(item, "reject_code")
+        )
+        signer_name_counts = Counter(
+            value
+            for item in events
+            for value in self._collect_hunt_values(item, "signer_name")
+        )
+        filename_counts = Counter(
+            value
+            for item in events
+            for value in self._collect_hunt_values(item, "filename")
+        )
+        return {
+            "document_types": self._facet_bucket_payload(document_type_counts, limit=max(len(document_type_counts), 1)),
+            "severities": self._facet_bucket_payload(severity_counts, limit=max(len(severity_counts), 1)),
+            "device_ids": self._facet_bucket_payload(device_id_counts, limit=max(len(device_id_counts), 1)),
+            "process_names": self._facet_bucket_payload(process_name_counts, limit=max(len(process_name_counts), 1)),
+            "flow_ids": self._facet_bucket_payload(flow_id_counts, limit=max(len(flow_id_counts), 1)),
+            "service_names": self._facet_bucket_payload(service_name_counts, limit=max(len(service_name_counts), 1)),
+            "application_protocols": self._facet_bucket_payload(
+                application_protocol_counts,
+                limit=max(len(application_protocol_counts), 1),
+            ),
+            "remote_ips": self._facet_bucket_payload(remote_ip_counts, limit=max(len(remote_ip_counts), 1)),
+            "local_ips": self._facet_bucket_payload(local_ip_counts, limit=max(len(local_ip_counts), 1)),
+            "local_ports": self._facet_bucket_payload(local_port_counts, limit=max(len(local_port_counts), 1)),
+            "remote_ports": self._facet_bucket_payload(remote_port_counts, limit=max(len(remote_port_counts), 1)),
+            "protocols": self._facet_bucket_payload(protocol_counts, limit=max(len(protocol_counts), 1)),
+            "states": self._facet_bucket_payload(state_counts, limit=max(len(state_counts), 1)),
+            "close_reasons": self._facet_bucket_payload(close_reason_counts, limit=max(len(close_reason_counts), 1)),
+            "reject_codes": self._facet_bucket_payload(reject_code_counts, limit=max(len(reject_code_counts), 1)),
+            "signers": self._facet_bucket_payload(signer_name_counts, limit=max(len(signer_name_counts), 1)),
+            "filenames": self._facet_bucket_payload(filename_counts, limit=max(len(filename_counts), 1)),
+        }
+
+    @staticmethod
+    def _collect_cluster_values(cluster: Mapping[str, object], field: str) -> list[str]:
+        value = cluster.get(field)
+        if isinstance(value, str) and value:
+            return [value]
+        if isinstance(value, list):
+            return [
+                str(item)
+                for item in value
+                if isinstance(item, (str, int)) and str(item)
+            ]
+        return []
+
+    def _build_endpoint_lineage_facets(
+        self,
+        clusters: Sequence[Mapping[str, object]],
+        *,
+        limit: int,
+    ) -> dict[str, list[dict[str, object]]]:
+        bounded_limit = max(limit, 1)
+        severity_counts = Counter(str(item.get("severity") or "") for item in clusters if str(item.get("severity") or ""))
+        lineage_root_counts = Counter(
+            value for item in clusters for value in self._collect_cluster_values(item, "lineage_root")
+        )
+        lineage_process_counts = Counter(
+            value for item in clusters for value in self._collect_cluster_values(item, "lineage_process")
+        )
+        device_id_counts = Counter(
+            value for item in clusters for value in self._collect_cluster_values(item, "device_ids")
+        )
+        process_name_counts = Counter(
+            value for item in clusters for value in self._collect_cluster_values(item, "process_names")
+        )
+        parent_process_name_counts = Counter(
+            value for item in clusters for value in self._collect_cluster_values(item, "parent_process_names")
+        )
+        actor_process_name_counts = Counter(
+            value for item in clusters for value in self._collect_cluster_values(item, "actor_process_names")
+        )
+        filename_counts = Counter(
+            value for item in clusters for value in self._collect_cluster_values(item, "filenames")
+        )
+        remote_ip_counts = Counter(
+            value for item in clusters for value in self._collect_cluster_values(item, "remote_ips")
+        )
+        return {
+            "severity": self._facet_bucket_payload(severity_counts, limit=bounded_limit),
+            "lineage_root": self._facet_bucket_payload(lineage_root_counts, limit=bounded_limit),
+            "lineage_process": self._facet_bucket_payload(lineage_process_counts, limit=bounded_limit),
+            "device_id": self._facet_bucket_payload(device_id_counts, limit=bounded_limit),
+            "process_name": self._facet_bucket_payload(process_name_counts, limit=bounded_limit),
+            "parent_process_name": self._facet_bucket_payload(parent_process_name_counts, limit=bounded_limit),
+            "actor_process_name": self._facet_bucket_payload(actor_process_name_counts, limit=bounded_limit),
+            "filename": self._facet_bucket_payload(filename_counts, limit=bounded_limit),
+            "remote_ip": self._facet_bucket_payload(remote_ip_counts, limit=bounded_limit),
+        }
+
+    def _build_endpoint_lineage_summaries(
+        self,
+        clusters: Sequence[Mapping[str, object]],
+    ) -> dict[str, object]:
+        lineage_root_counts = Counter(
+            value for item in clusters for value in self._collect_cluster_values(item, "lineage_root")
+        )
+        lineage_process_counts = Counter(
+            value for item in clusters for value in self._collect_cluster_values(item, "lineage_process")
+        )
+        device_id_counts = Counter(
+            value for item in clusters for value in self._collect_cluster_values(item, "device_ids")
+        )
+        process_name_counts = Counter(
+            value for item in clusters for value in self._collect_cluster_values(item, "process_names")
+        )
+        parent_process_name_counts = Counter(
+            value for item in clusters for value in self._collect_cluster_values(item, "parent_process_names")
+        )
+        actor_process_name_counts = Counter(
+            value for item in clusters for value in self._collect_cluster_values(item, "actor_process_names")
+        )
+        filename_counts = Counter(
+            value for item in clusters for value in self._collect_cluster_values(item, "filenames")
+        )
+        remote_ip_counts = Counter(
+            value for item in clusters for value in self._collect_cluster_values(item, "remote_ips")
+        )
+        severity_counts = Counter(str(item.get("severity") or "") for item in clusters if str(item.get("severity") or ""))
+        return {
+            "lineage_roots": self._facet_bucket_payload(lineage_root_counts, limit=max(len(lineage_root_counts), 1)),
+            "lineage_processes": self._facet_bucket_payload(lineage_process_counts, limit=max(len(lineage_process_counts), 1)),
+            "device_ids": self._facet_bucket_payload(device_id_counts, limit=max(len(device_id_counts), 1)),
+            "process_names": self._facet_bucket_payload(process_name_counts, limit=max(len(process_name_counts), 1)),
+            "parent_process_names": self._facet_bucket_payload(parent_process_name_counts, limit=max(len(parent_process_name_counts), 1)),
+            "actor_process_names": self._facet_bucket_payload(actor_process_name_counts, limit=max(len(actor_process_name_counts), 1)),
+            "filenames": self._facet_bucket_payload(filename_counts, limit=max(len(filename_counts), 1)),
+            "remote_ips": self._facet_bucket_payload(remote_ip_counts, limit=max(len(remote_ip_counts), 1)),
+            "severities": self._facet_bucket_payload(severity_counts, limit=max(len(severity_counts), 1)),
+        }
+
+    def _build_endpoint_lineage_timeline(
+        self,
+        clusters: Sequence[Mapping[str, object]],
+        *,
+        start_at: datetime | None,
+        end_at: datetime | None,
+    ) -> dict[str, object]:
+        cluster_times = [
+            parsed
+            for item in clusters
+            for parsed in [self._cluster_datetime(item.get("last_seen_at"))]
+            if parsed is not None
+        ]
+        if not cluster_times:
+            return {
+                "bucket_unit": "day",
+                "start_at": start_at.isoformat() if start_at is not None else None,
+                "end_at": end_at.isoformat() if end_at is not None else None,
+                "buckets": [],
+            }
+        window_start = start_at or min(cluster_times)
+        window_end = end_at or max(cluster_times)
+        bucket_unit = "hour" if (window_end - window_start) <= timedelta(hours=48) else "day"
+        counts: Counter[str] = Counter()
+        for timestamp in cluster_times:
+            if bucket_unit == "hour":
+                bucket = timestamp.replace(minute=0, second=0, microsecond=0).isoformat()
+            else:
+                bucket = timestamp.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+            counts[bucket] += 1
+        return {
+            "bucket_unit": bucket_unit,
+            "start_at": window_start.isoformat(),
+            "end_at": window_end.isoformat(),
+            "buckets": [{"start_at": bucket, "count": count} for bucket, count in sorted(counts.items())],
+        }
+
+    @staticmethod
+    def _cluster_datetime(value: object) -> datetime | None:
+        if not isinstance(value, str) or not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
+
+    def summarize_endpoint_telemetry(
+        self,
+        *,
+        device_id: str | None = None,
+        process_name: str | None = None,
+        process_guid: str | None = None,
+        remote_ip: str | None = None,
+        signer_name: str | None = None,
+        sha256: str | None = None,
+        flow_id: str | None = None,
+        service_name: str | None = None,
+        application_protocol: str | None = None,
+        filename: str | None = None,
+        artifact_path: str | None = None,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+        facet_limit: int = 5,
+        limit: int = 250,
+    ) -> dict[str, object]:
+        return self._build_telemetry_summary(
+            telemetry_kind="endpoint",
+            event_types=(
+                "endpoint.telemetry.process",
+                "endpoint.telemetry.file",
+                "endpoint.telemetry.connection",
+            ),
+            device_id=device_id,
+            process_name=process_name,
+            process_guid=process_guid,
+            remote_ip=remote_ip,
+            signer_name=signer_name,
+            sha256=sha256,
+            flow_id=flow_id,
+            service_name=service_name,
+            application_protocol=application_protocol,
+            filename=filename,
+            artifact_path=artifact_path,
+            start_at=start_at,
+            end_at=end_at,
+            facet_limit=facet_limit,
+            limit=limit,
+        )
+
+    def summarize_endpoint_lineage(
+        self,
+        *,
+        device_id: str | None = None,
+        process_name: str | None = None,
+        process_guid: str | None = None,
+        remote_ip: str | None = None,
+        signer_name: str | None = None,
+        sha256: str | None = None,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+        facet_limit: int = 5,
+        limit: int = 250,
+    ) -> dict[str, object]:
+        bounded_limit = max(limit, 1)
+        clusters = self.list_endpoint_lineage_clusters(
+            limit=bounded_limit,
+            device_id=device_id,
+            process_name=process_name,
+            process_guid=process_guid,
+            remote_ip=remote_ip,
+            signer_name=signer_name,
+            sha256=sha256,
+            start_at=start_at,
+            end_at=end_at,
+        )
+        normalized_start_at = self._normalize_query_datetime(start_at)
+        normalized_end_at = self._normalize_query_datetime(end_at)
+        return {
+            "telemetry": "endpoint_lineage",
+            "filters": {
+                "device_id": device_id,
+                "process_name": process_name,
+                "process_guid": process_guid,
+                "remote_ip": remote_ip,
+                "signer_name": signer_name,
+                "sha256": sha256,
+                "start_at": normalized_start_at.isoformat() if normalized_start_at is not None else None,
+                "end_at": normalized_end_at.isoformat() if normalized_end_at is not None else None,
+                "facet_limit": facet_limit,
+                "limit": bounded_limit,
+            },
+            "match_count": len(clusters),
+            "facets": self._build_endpoint_lineage_facets(clusters, limit=facet_limit),
+            "timeline": self._build_endpoint_lineage_timeline(
+                clusters,
+                start_at=normalized_start_at,
+                end_at=normalized_end_at,
+            ),
+            "summaries": self._build_endpoint_lineage_summaries(clusters),
+            "clusters": clusters,
+        }
+
+    def summarize_network_telemetry(
+        self,
+        *,
+        process_name: str | None = None,
+        remote_ip: str | None = None,
+        flow_id: str | None = None,
+        service_name: str | None = None,
+        application_protocol: str | None = None,
+        local_ip: str | None = None,
+        local_port: str | None = None,
+        remote_port: str | None = None,
+        protocol: str | None = None,
+        state: str | None = None,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+        facet_limit: int = 5,
+        limit: int = 250,
+    ) -> dict[str, object]:
+        return self._build_telemetry_summary(
+            telemetry_kind="network",
+            event_types=("network.telemetry.connection", "network.telemetry.flow"),
+            process_name=process_name,
+            remote_ip=remote_ip,
+            flow_id=flow_id,
+            service_name=service_name,
+            application_protocol=application_protocol,
+            local_ip=local_ip,
+            local_port=local_port,
+            remote_port=remote_port,
+            protocol=protocol,
+            state=state,
+            start_at=start_at,
+            end_at=end_at,
+            facet_limit=facet_limit,
+            limit=limit,
+            retention_hours=settings.soc_network_telemetry_retention_hours,
+        )
+
+    def summarize_packet_telemetry(
+        self,
+        *,
+        remote_ip: str | None = None,
+        session_key: str | None = None,
+        local_ip: str | None = None,
+        local_port: str | None = None,
+        remote_port: str | None = None,
+        protocol: str | None = None,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+        facet_limit: int = 5,
+        limit: int = 250,
+    ) -> dict[str, object]:
+        return self._build_telemetry_summary(
+            telemetry_kind="packet",
+            event_types=("packet.telemetry.session",),
+            remote_ip=remote_ip,
+            session_key=session_key,
+            local_ip=local_ip,
+            local_port=local_port,
+            remote_port=remote_port,
+            protocol=protocol,
+            start_at=start_at,
+            end_at=end_at,
+            facet_limit=facet_limit,
+            limit=limit,
+            retention_hours=settings.soc_packet_telemetry_retention_hours,
+        )
+
+    def list_hunt_telemetry_clusters(
+        self,
+        *,
+        cluster_by: str = "remote_ip",
+        device_id: str | None = None,
+        process_name: str | None = None,
+        process_guid: str | None = None,
+        remote_ip: str | None = None,
+        signer_name: str | None = None,
+        sha256: str | None = None,
+        flow_id: str | None = None,
+        service_name: str | None = None,
+        application_protocol: str | None = None,
+        filename: str | None = None,
+        artifact_path: str | None = None,
+        session_key: str | None = None,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, object]]:
+        if cluster_by not in {"remote_ip", "device_id", "process_guid"}:
+            raise ValueError("cluster_by must be 'remote_ip', 'device_id', or 'process_guid'")
+        telemetry_events = self._query_events_across_types(
+            event_types=self._HUNT_TELEMETRY_EVENT_TYPES,
+            device_id=device_id,
+            process_name=process_name,
+            process_guid=process_guid,
+            remote_ip=remote_ip,
+            signer_name=signer_name,
+            sha256=sha256,
+            flow_id=flow_id,
+            service_name=service_name,
+            application_protocol=application_protocol,
+            filename=filename,
+            artifact_path=artifact_path,
+            session_key=session_key,
+            start_at=start_at,
+            end_at=end_at,
+            sort="created_asc",
+            limit=min(max(limit * 4, limit), 500),
+        )
+        grouped: dict[str, dict[str, object]] = {}
+        for event in telemetry_events:
+            cluster_key = self._event_detail_string(event, cluster_by)
+            if not cluster_key:
+                continue
+            entry = grouped.setdefault(
+                cluster_key,
+                {
+                    "cluster_by": cluster_by,
+                    "cluster_key": cluster_key,
+                    "label": self._hunt_telemetry_cluster_label(event, cluster_by=cluster_by, cluster_key=cluster_key),
+                    "event_count": 0,
+                    "event_ids": [],
+                    "event_types": {},
+                    "document_types": {},
+                    "telemetry_kinds": {},
+                    "device_ids": [],
+                    "process_names": [],
+                    "process_guids": [],
+                    "remote_ips": [],
+                    "filenames": [],
+                    "session_keys": [],
+                    "signers": [],
+                    "first_seen_at": event.created_at.isoformat(),
+                    "last_seen_at": event.created_at.isoformat(),
+                    "severity": event.severity.value,
+                },
+            )
+            entry["event_count"] = self._int_field(entry.get("event_count")) + 1
+            cast(list[str], entry["event_ids"]).append(event.event_id)
+            event_types = cast(dict[str, int], entry["event_types"])
+            event_types[event.event_type] = event_types.get(event.event_type, 0) + 1
+            document_types = cast(dict[str, int], entry["document_types"])
+            document_type = self._event_detail_string(event, "document_type")
+            if document_type:
+                document_types[document_type] = document_types.get(document_type, 0) + 1
+            telemetry_kinds = cast(dict[str, int], entry["telemetry_kinds"])
+            telemetry_kind = self._telemetry_kind_for_event(event)
+            telemetry_kinds[telemetry_kind] = telemetry_kinds.get(telemetry_kind, 0) + 1
+            self._append_unique_value(entry, "device_ids", self._event_detail_string(event, "device_id"))
+            self._append_unique_value(entry, "process_names", self._event_detail_string(event, "process_name"))
+            self._append_unique_value(entry, "process_guids", self._event_detail_string(event, "process_guid"))
+            self._append_unique_value(entry, "remote_ips", self._event_detail_string(event, "remote_ip"))
+            self._append_unique_value(entry, "filenames", self._event_detail_string(event, "filename"))
+            self._append_unique_value(entry, "session_keys", self._event_detail_string(event, "session_key"))
+            self._append_unique_value(entry, "signers", self._event_detail_string(event, "signer_name"))
+            first_seen_at = str(entry["first_seen_at"])
+            last_seen_at = str(entry["last_seen_at"])
+            created_at = event.created_at.isoformat()
+            if created_at < first_seen_at:
+                entry["first_seen_at"] = created_at
+            if created_at > last_seen_at:
+                entry["last_seen_at"] = created_at
+            entry["severity"] = self._max_severity(self._parse_severity(str(entry["severity"])), event.severity).value
+        clusters: list[dict[str, object]] = []
+        for entry in grouped.values():
+            cluster_events = self._events_for_ids(cast(list[str], entry["event_ids"]))
+            related_alert_ids = self.resolve_network_evidence_alert_ids(cluster_events)
+            related_cases = self.resolve_network_evidence_cases(cluster_events)
+            entry["related_alert_ids"] = related_alert_ids
+            entry["related_case_ids"] = [case.case_id for case in related_cases]
+            entry["open_case_ids"] = [case.case_id for case in related_cases if case.status is not SocCaseStatus.closed]
+            entry["open_case_count"] = len(cast(list[str], entry["open_case_ids"]))
+            clusters.append(entry)
+        clusters.sort(
+            key=lambda item: (
+                str(item.get("last_seen_at") or ""),
+                self._int_field(item.get("event_count")),
+                str(item.get("cluster_key") or ""),
+            ),
+            reverse=True,
+        )
+        return clusters[:limit]
+
+    def resolve_hunt_telemetry_cluster(
+        self,
+        *,
+        cluster_by: str,
+        cluster_key: str,
+        device_id: str | None = None,
+        process_name: str | None = None,
+        process_guid: str | None = None,
+        remote_ip: str | None = None,
+        signer_name: str | None = None,
+        sha256: str | None = None,
+        flow_id: str | None = None,
+        service_name: str | None = None,
+        application_protocol: str | None = None,
+        filename: str | None = None,
+        artifact_path: str | None = None,
+        session_key: str | None = None,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+        limit: int = 500,
+    ) -> dict[str, object]:
+        clusters = self.list_hunt_telemetry_clusters(
+            cluster_by=cluster_by,
+            device_id=device_id,
+            process_name=process_name,
+            process_guid=process_guid,
+            remote_ip=remote_ip,
+            signer_name=signer_name,
+            sha256=sha256,
+            flow_id=flow_id,
+            service_name=service_name,
+            application_protocol=application_protocol,
+            filename=filename,
+            artifact_path=artifact_path,
+            session_key=session_key,
+            start_at=start_at,
+            end_at=end_at,
+            limit=limit,
+        )
+        for cluster in clusters:
+            if str(cluster.get("cluster_key") or "") == cluster_key:
+                detail = dict(cluster)
+                detail["events"] = [
+                    item.model_dump(mode="json")
+                    for item in self._events_for_ids(cast(list[str], cluster.get("event_ids") or []))
+                ]
+                return detail
+        raise KeyError(f"Telemetry cluster not found: {cluster_by}:{cluster_key}")
+
+    def _build_telemetry_summary(
+        self,
+        *,
+        telemetry_kind: str,
+        event_types: Sequence[str],
+        device_id: str | None = None,
+        process_name: str | None = None,
+        process_guid: str | None = None,
+        remote_ip: str | None = None,
+        signer_name: str | None = None,
+        sha256: str | None = None,
+        flow_id: str | None = None,
+        service_name: str | None = None,
+        application_protocol: str | None = None,
+        filename: str | None = None,
+        artifact_path: str | None = None,
+        session_key: str | None = None,
+        local_ip: str | None = None,
+        local_port: str | None = None,
+        remote_port: str | None = None,
+        protocol: str | None = None,
+        state: str | None = None,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+        facet_limit: int = 5,
+        limit: int = 250,
+        retention_hours: float | None = None,
+    ) -> dict[str, object]:
+        bounded_limit = max(limit, 1)
+        events = self._query_events_across_types(
+            event_types=event_types,
+            device_id=device_id,
+            process_name=process_name,
+            process_guid=process_guid,
+            remote_ip=remote_ip,
+            signer_name=signer_name,
+            sha256=sha256,
+            flow_id=flow_id,
+            service_name=service_name,
+            application_protocol=application_protocol,
+            filename=filename,
+            artifact_path=artifact_path,
+            session_key=session_key,
+            local_ip=local_ip,
+            local_port=local_port,
+            remote_port=remote_port,
+            protocol=protocol,
+            state=state,
+            start_at=start_at,
+            end_at=end_at,
+            limit=bounded_limit,
+        )
+        normalized_start_at = self._normalize_query_datetime(start_at)
+        normalized_end_at = self._normalize_query_datetime(end_at)
+        return {
+            "telemetry": telemetry_kind,
+            "event_types": list(event_types),
+            "filters": {
+                "device_id": device_id,
+                "process_name": process_name,
+                "process_guid": process_guid,
+                "remote_ip": remote_ip,
+                "signer_name": signer_name,
+                "sha256": sha256,
+                "filename": filename,
+                "artifact_path": artifact_path,
+                "session_key": session_key,
+                "local_ip": local_ip,
+                "local_port": local_port,
+                "remote_port": remote_port,
+                "protocol": protocol,
+                "state": state,
+                "start_at": normalized_start_at.isoformat() if normalized_start_at is not None else None,
+                "end_at": normalized_end_at.isoformat() if normalized_end_at is not None else None,
+                "facet_limit": facet_limit,
+                "limit": bounded_limit,
+            },
+            "match_count": len(events),
+            "retention_hours": retention_hours,
+            "facets": self._build_hunt_facets(events, limit=facet_limit),
+            "timeline": self._build_hunt_timeline(events, start_at=normalized_start_at, end_at=normalized_end_at),
+            "summaries": self._build_hunt_summaries(events),
+        }
+
+    def _query_events_across_types(
+        self,
+        *,
+        event_types: Sequence[str],
+        device_id: str | None = None,
+        process_name: str | None = None,
+        process_guid: str | None = None,
+        remote_ip: str | None = None,
+        signer_name: str | None = None,
+        sha256: str | None = None,
+        flow_id: str | None = None,
+        service_name: str | None = None,
+        application_protocol: str | None = None,
+        filename: str | None = None,
+        artifact_path: str | None = None,
+        session_key: str | None = None,
+        local_ip: str | None = None,
+        local_port: str | None = None,
+        remote_port: str | None = None,
+        protocol: str | None = None,
+        state: str | None = None,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+        sort: str = "created_desc",
+        limit: int = 250,
+    ) -> list[SocEventRecord]:
+        deduped: dict[str, SocEventRecord] = {}
+        per_type_limit = min(max(limit, 1), 500)
+        for event_type in event_types:
+            for event in self.query_events(
+                event_type=event_type,
+                device_id=device_id,
+                process_name=process_name,
+                process_guid=process_guid,
+                remote_ip=remote_ip,
+                signer_name=signer_name,
+                sha256=sha256,
+                flow_id=flow_id,
+                service_name=service_name,
+                application_protocol=application_protocol,
+                filename=filename,
+                artifact_path=artifact_path,
+                session_key=session_key,
+                local_ip=local_ip,
+                local_port=local_port,
+                remote_port=remote_port,
+                protocol=protocol,
+                state=state,
+                start_at=start_at,
+                end_at=end_at,
+                sort=sort,
+                limit=per_type_limit,
+            ):
+                deduped[event.event_id] = event
+        events = list(deduped.values())
+        self._sort_events(events, sort)
+        return events[:limit]
+
+    def build_telemetry_cluster_case_payload(
+        self,
+        payload: SocTelemetryClusterCaseRequest,
+    ) -> SocCaseCreate:
+        cluster = self.resolve_hunt_telemetry_cluster(
+            cluster_by=payload.cluster_by,
+            cluster_key=payload.cluster_key,
+            device_id=payload.device_id,
+            process_name=payload.process_name,
+            process_guid=payload.process_guid,
+            remote_ip=payload.remote_ip,
+            signer_name=payload.signer_name,
+            sha256=payload.sha256,
+            filename=payload.filename,
+            artifact_path=payload.artifact_path,
+            session_key=payload.session_key,
+            start_at=payload.start_at,
+            end_at=payload.end_at,
+        )
+        events = [
+            self.get_event(str(item.get("event_id")))
+            for item in cast(list[dict[str, object]], cluster.get("events") or [])
+            if str(item.get("event_id") or "")
+        ]
+        if not events:
+            raise ValueError("No telemetry events matched the requested cluster.")
+        related_alert_ids = self.resolve_network_evidence_alert_ids(events)
+        observables = self._merge_observables(
+            [],
+            [
+                f"cluster:{payload.cluster_by}:{payload.cluster_key}",
+                *(f"device:{item}" for item in self._collect_endpoint_timeline_values(events, "device_id")),
+                *(f"process_name:{item}" for item in self._collect_endpoint_timeline_values(events, "process_name")),
+                *(f"process_guid:{item}" for item in self._collect_endpoint_timeline_values(events, "process_guid")),
+                *(f"remote_ip:{item}" for item in self._collect_endpoint_timeline_values(events, "remote_ip")),
+                *(f"filename:{item}" for item in self._collect_endpoint_timeline_values(events, "filename")),
+                *(f"sha256:{item}" for item in self._collect_endpoint_timeline_values(events, "sha256")),
+                *(f"signer:{item}" for item in self._collect_endpoint_timeline_values(events, "signer_name")),
+                *(f"session:{item}" for item in self._collect_endpoint_timeline_values(events, "session_key")),
+                *self._extract_observables_for_case(
+                    source_event_ids=[item.event_id for item in events],
+                    linked_alert_ids=related_alert_ids,
+                ),
+            ],
+        )
+        telemetry_kinds = cast(dict[str, int], cluster.get("telemetry_kinds") or {})
+        kind_summary = ", ".join(sorted(telemetry_kinds)) if telemetry_kinds else "telemetry"
+        first_seen_at = str(cluster.get("first_seen_at") or events[0].created_at.isoformat())
+        last_seen_at = str(cluster.get("last_seen_at") or events[-1].created_at.isoformat())
+        default_title = f"Investigate {payload.cluster_by} cluster {payload.cluster_key}"
+        default_summary = (
+            f"Investigate {len(events)} normalized telemetry records for {payload.cluster_by} "
+            f"{payload.cluster_key}. Sources: {kind_summary}. Window: {first_seen_at} to {last_seen_at}."
+        )
+        return SocCaseCreate(
+            title=payload.title or default_title,
+            summary=payload.summary or default_summary,
+            severity=payload.severity or self._endpoint_timeline_severity(events),
+            source_event_ids=[item.event_id for item in events],
+            linked_alert_ids=related_alert_ids,
+            observables=observables,
+            assignee=payload.assignee,
+        )
+
+    def list_endpoint_timeline(
+        self,
+        *,
+        limit: int = 200,
+        device_id: str | None = None,
+        process_name: str | None = None,
+        process_guid: str | None = None,
+        remote_ip: str | None = None,
+        signer_name: str | None = None,
+        sha256: str | None = None,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+    ) -> list[SocEventRecord]:
+        event_types = (
+            "endpoint.telemetry.process",
+            "endpoint.telemetry.file",
+            "endpoint.telemetry.connection",
+        )
+        candidate_limit = min(max(limit * 4, limit), 500)
+        events: list[SocEventRecord] = []
+        for event_type in event_types:
+            events.extend(
+                self.query_events(
+                    event_type=event_type,
+                    device_id=device_id,
+                    remote_ip=remote_ip,
+                    signer_name=signer_name,
+                    start_at=start_at,
+                    end_at=end_at,
+                    sort="created_asc",
+                    limit=candidate_limit,
+                )
+            )
+        deduped = {event.event_id: event for event in events}
+        identity_candidates: set[str] = set()
+        if process_guid:
+            normalized_guid = process_guid.strip()
+            for event in deduped.values():
+                event_process_guid = self._event_detail_string(event, "process_guid")
+                if event_process_guid != normalized_guid:
+                    continue
+                for candidate in (
+                    self._event_detail_string(event, "process_guid"),
+                    self._event_detail_string(event, "sha256"),
+                    self._event_detail_string(event, "process_name"),
+                ):
+                    if candidate:
+                        identity_candidates.add(candidate.casefold())
+        filtered = [
+            event
+            for event in deduped.values()
+            if self._endpoint_timeline_matches_filters(
+                event,
+                process_name=process_name,
+                process_guid=process_guid,
+                sha256=sha256,
+                identity_candidates=identity_candidates,
+            )
+        ]
+        return sorted(filtered, key=lambda item: item.created_at)[:limit]
+
+    def query_endpoint_telemetry(
+        self,
+        *,
+        limit: int = 200,
+        device_id: str | None = None,
+        process_name: str | None = None,
+        process_guid: str | None = None,
+        remote_ip: str | None = None,
+        signer_name: str | None = None,
+        sha256: str | None = None,
+        filename: str | None = None,
+        artifact_path: str | None = None,
+        local_ip: str | None = None,
+        local_port: str | None = None,
+        remote_port: str | None = None,
+        protocol: str | None = None,
+        state: str | None = None,
+        document_type: str | None = None,
+        parent_process_name: str | None = None,
+        reputation: str | None = None,
+        risk_flag: str | None = None,
+        verdict: str | None = None,
+        operation: str | None = None,
+        file_extension: str | None = None,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+    ) -> dict[str, object]:
+        filtered = self._query_endpoint_telemetry_events(
+            limit=limit,
+            device_id=device_id,
+            process_name=process_name,
+            process_guid=process_guid,
+            remote_ip=remote_ip,
+            signer_name=signer_name,
+            sha256=sha256,
+            filename=filename,
+            artifact_path=artifact_path,
+            local_ip=local_ip,
+            local_port=local_port,
+            remote_port=remote_port,
+            protocol=protocol,
+            state=state,
+            document_type=document_type,
+            parent_process_name=parent_process_name,
+            reputation=reputation,
+            risk_flag=risk_flag,
+            verdict=verdict,
+            operation=operation,
+            file_extension=file_extension,
+            start_at=start_at,
+            end_at=end_at,
+        )
+        normalized_start_at = self._normalize_query_datetime(start_at)
+        normalized_end_at = self._normalize_query_datetime(end_at)
+        return {
+            "filters": {
+                "device_id": device_id,
+                "process_name": process_name,
+                "process_guid": process_guid,
+                "remote_ip": remote_ip,
+                "signer_name": signer_name,
+                "sha256": sha256,
+                "filename": filename,
+                "artifact_path": artifact_path,
+                "local_ip": local_ip,
+                "local_port": local_port,
+                "remote_port": remote_port,
+                "protocol": protocol,
+                "state": state,
+                "document_type": document_type,
+                "parent_process_name": parent_process_name,
+                "reputation": reputation,
+                "risk_flag": risk_flag,
+                "verdict": verdict,
+                "operation": operation,
+                "file_extension": file_extension,
+                "start_at": normalized_start_at.isoformat() if normalized_start_at is not None else None,
+                "end_at": normalized_end_at.isoformat() if normalized_end_at is not None else None,
+                "limit": limit,
+            },
+            "match_count": len(filtered),
+            "events": self._serialize_endpoint_query_events(filtered[:limit]),
+        }
+
+    def cluster_endpoint_timeline(
+        self,
+        *,
+        cluster_by: str = "process",
+        limit: int = 200,
+        device_id: str | None = None,
+        process_name: str | None = None,
+        process_guid: str | None = None,
+        remote_ip: str | None = None,
+        signer_name: str | None = None,
+        sha256: str | None = None,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+    ) -> list[dict[str, object]]:
+        if cluster_by not in {"process", "remote_ip"}:
+            raise ValueError("cluster_by must be 'process' or 'remote_ip'")
+        events = self.list_endpoint_timeline(
+            limit=limit,
+            device_id=device_id,
+            process_name=process_name,
+            process_guid=process_guid,
+            remote_ip=remote_ip,
+            signer_name=signer_name,
+            sha256=sha256,
+            start_at=start_at,
+            end_at=end_at,
+        )
+        grouped: dict[str, dict[str, object]] = {}
+        process_aliases: dict[tuple[str, str], str] = {}
+        if cluster_by == "process":
+            for event in events:
+                event_device_id = self._event_detail_string(event, "device_id")
+                canonical_identity = (
+                    self._event_detail_string(event, "process_guid")
+                    or self._event_detail_string(event, "sha256")
+                    or self._event_detail_string(event, "process_name")
+                )
+                if not event_device_id or not canonical_identity:
+                    continue
+                for candidate in self._endpoint_timeline_identity_candidates(event):
+                    process_aliases.setdefault((event_device_id, candidate.casefold()), canonical_identity)
+        for event in events:
+            cluster_key = self._endpoint_timeline_cluster_key(
+                event,
+                cluster_by=cluster_by,
+                process_aliases=process_aliases,
+            )
+            if not cluster_key:
+                continue
+            entry = grouped.setdefault(
+                cluster_key,
+                {
+                    "cluster_by": cluster_by,
+                    "cluster_key": cluster_key,
+                    "label": self._endpoint_timeline_cluster_label(event, cluster_by=cluster_by),
+                    "event_count": 0,
+                    "event_ids": [],
+                    "event_types": {},
+                    "device_ids": [],
+                    "process_names": [],
+                    "process_guids": [],
+                    "remote_ips": [],
+                    "filenames": [],
+                    "first_seen_at": event.created_at.isoformat(),
+                    "last_seen_at": event.created_at.isoformat(),
+                },
+            )
+            event_count = entry.get("event_count")
+            entry["event_count"] = (event_count if isinstance(event_count, int) else 0) + 1
+            cast(list[str], entry["event_ids"]).append(event.event_id)
+            event_types = cast(dict[str, int], entry["event_types"])
+            event_types[event.event_type] = event_types.get(event.event_type, 0) + 1
+            self._append_unique_value(entry, "device_ids", self._event_detail_string(event, "device_id"))
+            self._append_unique_value(entry, "process_names", self._event_detail_string(event, "process_name"))
+            self._append_unique_value(entry, "process_guids", self._event_detail_string(event, "process_guid"))
+            self._append_unique_value(entry, "remote_ips", self._event_detail_string(event, "remote_ip"))
+            self._append_unique_value(entry, "filenames", self._event_detail_string(event, "filename"))
+            first_seen_at = str(entry["first_seen_at"])
+            last_seen_at = str(entry["last_seen_at"])
+            created_at = event.created_at.isoformat()
+            if created_at < first_seen_at:
+                entry["first_seen_at"] = created_at
+            if created_at > last_seen_at:
+                entry["last_seen_at"] = created_at
+
+        clusters: list[dict[str, object]] = []
+        for entry in grouped.values():
+            cluster_events = [self.get_event(event_id) for event_id in cast(list[str], entry["event_ids"])]
+            related_alert_ids = self.resolve_network_evidence_alert_ids(cluster_events)
+            related_cases = self.resolve_network_evidence_cases(cluster_events)
+            entry["related_alert_ids"] = related_alert_ids
+            entry["related_case_ids"] = [case.case_id for case in related_cases]
+            entry["open_case_ids"] = [case.case_id for case in related_cases if case.status is not SocCaseStatus.closed]
+            entry["open_case_count"] = len(cast(list[str], entry["open_case_ids"]))
+            clusters.append(entry)
+        clusters.sort(
+            key=lambda item: (
+                str(item.get("last_seen_at") or ""),
+                item.get("event_count") if isinstance(item.get("event_count"), int) else 0,
+                str(item.get("cluster_key") or ""),
+            ),
+            reverse=True,
+        )
+        return clusters[:limit]
+
+    def list_endpoint_lineage_clusters(
+        self,
+        *,
+        limit: int = 200,
+        device_id: str | None = None,
+        process_name: str | None = None,
+        process_guid: str | None = None,
+        remote_ip: str | None = None,
+        signer_name: str | None = None,
+        sha256: str | None = None,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+    ) -> list[dict[str, object]]:
+        events = self.list_endpoint_timeline(
+            limit=limit,
+            device_id=device_id,
+            process_name=process_name,
+            process_guid=process_guid,
+            remote_ip=remote_ip,
+            signer_name=signer_name,
+            sha256=sha256,
+            start_at=start_at,
+            end_at=end_at,
+        )
+        process_aliases: dict[tuple[str, str], str] = {}
+        lineage_roots: dict[tuple[str, str], str] = {}
+        for event in events:
+            event_device_id = self._event_detail_string(event, "device_id")
+            canonical_identity = self._endpoint_lineage_process_identity(event)
+            if not event_device_id or not canonical_identity:
+                continue
+            lineage_root = self._endpoint_lineage_root_identity(event) or canonical_identity
+            for candidate in self._endpoint_timeline_identity_candidates(event):
+                key = (event_device_id, candidate.casefold())
+                process_aliases.setdefault(key, canonical_identity)
+                lineage_roots.setdefault(key, lineage_root)
+        grouped: dict[str, dict[str, object]] = {}
+        for event in events:
+            lineage_context = self._endpoint_lineage_context(
+                event,
+                process_aliases=process_aliases,
+                lineage_roots=lineage_roots,
+            )
+            if lineage_context is None:
+                continue
+            cluster_key = lineage_context["cluster_key"]
+            entry = grouped.setdefault(
+                cluster_key,
+                {
+                    "cluster_key": cluster_key,
+                    "label": self._endpoint_lineage_cluster_label(lineage_context),
+                    "lineage_root": lineage_context["lineage_root"],
+                    "lineage_process": lineage_context["lineage_process"],
+                    "event_count": 0,
+                    "event_ids": [],
+                    "event_types": {},
+                    "device_ids": [],
+                    "process_names": [],
+                    "process_guids": [],
+                    "parent_process_names": [],
+                    "parent_process_guids": [],
+                    "actor_process_names": [],
+                    "remote_ips": [],
+                    "filenames": [],
+                    "artifact_paths": [],
+                    "first_seen_at": event.created_at.isoformat(),
+                    "last_seen_at": event.created_at.isoformat(),
+                    "severity": event.severity.value,
+                },
+            )
+            entry["event_count"] = self._int_field(entry.get("event_count")) + 1
+            cast(list[str], entry["event_ids"]).append(event.event_id)
+            event_types = cast(dict[str, int], entry["event_types"])
+            event_types[event.event_type] = event_types.get(event.event_type, 0) + 1
+            self._append_unique_value(entry, "device_ids", self._event_detail_string(event, "device_id"))
+            self._append_unique_value(entry, "process_names", self._event_detail_string(event, "process_name"))
+            self._append_unique_value(entry, "process_guids", self._event_detail_string(event, "process_guid"))
+            self._append_unique_value(entry, "parent_process_names", self._endpoint_lineage_field_string(event, "parent_process_name"))
+            self._append_unique_value(entry, "parent_process_guids", self._endpoint_lineage_field_string(event, "parent_process_guid"))
+            self._append_unique_value(entry, "actor_process_names", self._endpoint_lineage_field_string(event, "actor_process_name"))
+            self._append_unique_value(entry, "remote_ips", self._event_detail_string(event, "remote_ip"))
+            self._append_unique_value(entry, "filenames", self._event_detail_string(event, "filename"))
+            self._append_unique_value(entry, "artifact_paths", self._event_detail_string(event, "artifact_path"))
+            first_seen_at = str(entry["first_seen_at"])
+            last_seen_at = str(entry["last_seen_at"])
+            created_at = event.created_at.isoformat()
+            if created_at < first_seen_at:
+                entry["first_seen_at"] = created_at
+            if created_at > last_seen_at:
+                entry["last_seen_at"] = created_at
+            entry["severity"] = self._max_severity(self._parse_severity(str(entry["severity"])), event.severity).value
+        clusters: list[dict[str, object]] = []
+        for entry in grouped.values():
+            cluster_events = self._events_for_ids(cast(list[str], entry["event_ids"]))
+            related_alert_ids = self.resolve_network_evidence_alert_ids(cluster_events)
+            related_cases = self.resolve_network_evidence_cases(cluster_events)
+            entry["related_alert_ids"] = related_alert_ids
+            entry["related_case_ids"] = [case.case_id for case in related_cases]
+            entry["open_case_ids"] = [case.case_id for case in related_cases if case.status is not SocCaseStatus.closed]
+            entry["open_case_count"] = len(cast(list[str], entry["open_case_ids"]))
+            clusters.append(entry)
+        clusters.sort(
+            key=lambda item: (
+                str(item.get("last_seen_at") or ""),
+                self._int_field(item.get("event_count")),
+                str(item.get("cluster_key") or ""),
+            ),
+            reverse=True,
+        )
+        return clusters[:limit]
+
+    def resolve_endpoint_lineage_cluster(
+        self,
+        cluster_key: str,
+        *,
+        limit: int = 500,
+        device_id: str | None = None,
+        process_name: str | None = None,
+        process_guid: str | None = None,
+        remote_ip: str | None = None,
+        signer_name: str | None = None,
+        sha256: str | None = None,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+    ) -> dict[str, object]:
+        clusters = self.list_endpoint_lineage_clusters(
+            limit=limit,
+            device_id=device_id,
+            process_name=process_name,
+            process_guid=process_guid,
+            remote_ip=remote_ip,
+            signer_name=signer_name,
+            sha256=sha256,
+            start_at=start_at,
+            end_at=end_at,
+        )
+        for cluster in clusters:
+            if str(cluster.get("cluster_key") or "") == cluster_key:
+                detail = dict(cluster)
+                detail["events"] = [
+                    item.model_dump(mode="json")
+                    for item in self._events_for_ids(cast(list[str], cluster.get("event_ids") or []))
+                ]
+                return detail
+        raise KeyError(f"Endpoint lineage cluster not found: {cluster_key}")
+
+    def list_detection_rules(self) -> list[SocDetectionRuleRecord]:
+        return [self._enrich_detection_rule(rule) for rule in self._detection_engine.list_rules()]
+
+    def get_detection_rule(self, rule_id: str) -> SocDetectionRuleRecord:
+        return self._enrich_detection_rule(self._detection_engine.get_rule(rule_id))
+
+    def update_detection_rule(self, rule_id: str, payload: SocDetectionRuleUpdate) -> SocDetectionRuleRecord:
+        updated = self._detection_engine.update_rule(rule_id, payload)
+        self._audit.log(
+            "soc.detection_rule.updated",
+            {
+                "rule_id": updated.rule_id,
+                "enabled": updated.enabled,
+                "parameters": updated.parameters,
+            },
+        )
+        return self._enrich_detection_rule(updated)
+
     def emit_operational_notifications(self, *, state_path: str | Path | None = None) -> dict[str, object]:
         dashboard = self.dashboard()
         routes = self._build_operational_routes(dashboard)
@@ -528,6 +2985,9 @@ class SecurityOperationsManager:
                 "soc.operational.notification",
                 {"route_id": route_id, "fingerprint": fingerprint, "context": route["context"]},
             )
+            operational_alert = self._upsert_operational_route_alert(route)
+            if bool(route.get("auto_case")):
+                self._ensure_operational_route_case(route, operational_alert)
             emitted += 1
 
         for route_id, prior in previous.items():
@@ -542,10 +3002,124 @@ class SecurityOperationsManager:
                 )
             )
             self._audit.log("soc.operational.notification.resolved", {"route_id": route_id})
+            self._close_operational_route_alert(route_id)
             current[route_id] = {"active": False, "fingerprint": str(prior.get("fingerprint", ""))}
 
         self._write_notification_state(path, current)
         return {"enabled": True, "routes": len(routes), "emitted": emitted}
+
+    def _upsert_operational_route_alert(self, route: Mapping[str, object]) -> SocAlertRecord:
+        route_id = str(route["route_id"])
+        created_at = _utc_now()
+        with self._lock:
+            alerts = self._store.alert_store.read()
+            for index, existing in enumerate(alerts):
+                if (
+                    existing.category == "operational"
+                    and existing.correlation_rule == "operational_route"
+                    and existing.correlation_key == route_id
+                    and existing.status is not SocAlertStatus.closed
+                ):
+                    updated = existing.model_copy(
+                        update={
+                            "title": str(route["title"]),
+                            "summary": str(route["message"]),
+                            "severity": _alert_level_to_severity(cast(AlertLevel, route["level"])),
+                            "updated_at": created_at,
+                        }
+                    )
+                    alerts[index] = updated
+                    self._store.alert_store.write(alerts)
+                    self._audit.log(
+                        "soc.alert.operational",
+                        {"alert_id": updated.alert_id, "route_id": route_id, "updated": True},
+                    )
+                    return updated
+
+            alert = SocAlertRecord(
+                alert_id=f"alert-{uuid4().hex[:12]}",
+                title=str(route["title"]),
+                summary=str(route["message"]),
+                severity=_alert_level_to_severity(cast(AlertLevel, route["level"])),
+                category="operational",
+                status=SocAlertStatus.open,
+                source_event_ids=[],
+                correlation_rule="operational_route",
+                correlation_key=route_id,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+            alerts.append(alert)
+            self._store.alert_store.write(alerts)
+        self._audit.log(
+            "soc.alert.operational",
+            {"alert_id": alert.alert_id, "route_id": route_id, "updated": False},
+        )
+        return alert
+
+    def _close_operational_route_alert(self, route_id: str) -> None:
+        with self._lock:
+            alerts = self._store.alert_store.read()
+            changed = False
+            for index, existing in enumerate(alerts):
+                if (
+                    existing.category == "operational"
+                    and existing.correlation_rule == "operational_route"
+                    and existing.correlation_key == route_id
+                    and existing.status is not SocAlertStatus.closed
+                ):
+                    notes = list(existing.notes)
+                    notes.append("Operational pressure resolved automatically.")
+                    alerts[index] = existing.model_copy(
+                        update={
+                            "status": SocAlertStatus.closed,
+                            "notes": notes,
+                            "updated_at": _utc_now(),
+                        }
+                    )
+                    changed = True
+            if changed:
+                self._store.alert_store.write(alerts)
+
+    def _ensure_operational_route_case(self, route: Mapping[str, object], alert: SocAlertRecord) -> SocCaseRecord | None:
+        route_id = str(route["route_id"])
+        with self._lock:
+            for case in self._store.case_store.read():
+                if alert.alert_id in case.linked_alert_ids and case.status is not SocCaseStatus.closed:
+                    return case
+        context = cast(dict[str, object], route.get("context") or {})
+        node_name = str(context.get("node_name") or "").strip()
+        if not node_name:
+            return None
+        try:
+            node_payload = self._resolve_remote_node_by_name(node_name)
+        except KeyError:
+            return None
+        case = self.create_case(
+            self.build_remote_node_case_payload(
+                node_payload,
+                payload=SocRemoteNodeCaseRequest(
+                    title=str(route["title"]),
+                    summary=str(route["message"]),
+                    severity=_alert_level_to_severity(cast(AlertLevel, route["level"])),
+                ),
+            ).model_copy(update={"linked_alert_ids": [alert.alert_id]})
+        )
+        self._audit.log(
+            "soc.case.operational",
+            {"case_id": case.case_id, "route_id": route_id, "alert_id": alert.alert_id},
+        )
+        return case
+
+    def _resolve_remote_node_by_name(self, node_name: str) -> dict[str, object]:
+        dashboard = self.dashboard()
+        platform = cast(dict[str, object], dashboard.get("platform") or {})
+        topology = cast(dict[str, object], platform.get("topology") or {})
+        remote_nodes = cast(list[dict[str, object]], topology.get("remote_nodes") or [])
+        for item in remote_nodes:
+            if str(item.get("node_name") or "") == node_name:
+                return item
+        raise KeyError(f"Remote node not found: {node_name}")
 
     def _build_alert_for_event(
         self,
@@ -566,61 +3140,1622 @@ class SecurityOperationsManager:
             updated_at=created_at,
         )
 
+    def build_packet_session_case_payload(
+        self,
+        session_payload: dict[str, object],
+        *,
+        payload: SocPacketSessionCaseRequest | None = None,
+    ) -> SocCaseCreate:
+        def _string_list(values: object, *, limit: int | None = None) -> list[str]:
+            if not isinstance(values, list):
+                return []
+            converted = [str(item).strip() for item in values if str(item).strip()]
+            unique = list(dict.fromkeys(converted))
+            return unique[:limit] if limit is not None else unique
+
+        def _int_list(values: object, *, limit: int | None = None) -> list[int]:
+            if not isinstance(values, list):
+                return []
+            converted: list[int] = []
+            for item in values:
+                if isinstance(item, bool):
+                    continue
+                if isinstance(item, int):
+                    converted.append(item)
+                elif isinstance(item, str):
+                    try:
+                        converted.append(int(item))
+                    except ValueError:
+                        continue
+            return converted[:limit] if limit is not None else converted
+
+        def _int_value(value: object) -> int:
+            if isinstance(value, bool):
+                return 0
+            if isinstance(value, int):
+                return value
+            if isinstance(value, str):
+                try:
+                    return int(value)
+                except ValueError:
+                    return 0
+            return 0
+
+        remote_ip = str(session_payload.get("remote_ip") or "unknown-remote")
+        session_key = str(session_payload.get("session_key") or f"packet-session:{remote_ip}")
+        source_events = self.resolve_packet_session_events(session_payload)
+        sensitive_ports = _int_list(session_payload.get("sensitive_ports"))
+        default_severity = SocSeverity.critical if sensitive_ports else SocSeverity.high
+        packet_count = _int_value(session_payload.get("total_packets")) or _int_value(session_payload.get("last_packet_count"))
+        protocol_evidence = cast(dict[str, object], session_payload.get("protocol_evidence") or {})
+        service_names = _string_list(session_payload.get("service_names"))
+        application_protocols = list(
+            dict.fromkeys(
+                [
+                    *_string_list(session_payload.get("application_protocols")),
+                    *_string_list(protocol_evidence.get("application_protocols")),
+                ]
+            )
+        )
+        transport_families = _string_list(session_payload.get("transport_families"))
+        flow_ids = _string_list(session_payload.get("flow_ids"), limit=10)
+        protocol_hosts = _string_list(protocol_evidence.get("hostnames"), limit=10)
+        protocol_indicators = _string_list(protocol_evidence.get("indicators"), limit=10)
+        observables: list[str] = [remote_ip, session_key]
+        observables.extend(f"protocol:{item}" for item in cast(list[object], session_payload.get("protocols") or []))
+        observables.extend(f"local_port:{item}" for item in _int_list(session_payload.get("local_ports")))
+        observables.extend(f"remote_port:{item}" for item in _int_list(session_payload.get("remote_ports"), limit=10))
+        observables.extend(f"service:{item}" for item in service_names)
+        observables.extend(f"application_protocol:{item}" for item in application_protocols)
+        observables.extend(f"transport_family:{item}" for item in transport_families)
+        observables.extend(f"flow_id:{item}" for item in flow_ids)
+        observables.extend(f"host:{item}" for item in protocol_hosts)
+        observables.extend(f"protocol_indicator:{item}" for item in protocol_indicators)
+        service_summary = f" Services: {', '.join(service_names)}." if service_names else ""
+        application_summary = (
+            f" Application protocols: {', '.join(application_protocols)}."
+            if application_protocols
+            else ""
+        )
+        host_summary = f" Hosts: {', '.join(protocol_hosts)}." if protocol_hosts else ""
+        indicator_summary = (
+            f" Indicators: {', '.join(protocol_indicators)}."
+            if protocol_indicators
+            else ""
+        )
+        return SocCaseCreate(
+            title=(payload.title if payload and payload.title else f"Investigate packet session {remote_ip}"),
+            summary=(
+                payload.summary
+                if payload and payload.summary
+                else (
+                    f"Investigate compact packet session evidence for {remote_ip}. Total packets observed: {packet_count}."
+                    f"{service_summary}{application_summary}{host_summary}{indicator_summary}"
+                )
+            ),
+            severity=payload.severity if payload and payload.severity is not None else default_severity,
+            source_event_ids=[item.event_id for item in source_events],
+            observables=observables,
+            assignee=payload.assignee if payload else None,
+        )
+
+    def build_packet_capture_case_payload(
+        self,
+        capture_payload: dict[str, object],
+        *,
+        payload: SocPacketCaptureCaseRequest | None = None,
+    ) -> SocCaseCreate:
+        capture_id = str(capture_payload.get("capture_id") or "")
+        session_rows = [
+            item
+            for item in cast(list[object], capture_payload.get("session_observations") or [])
+            if isinstance(item, dict)
+        ]
+        selected_session: dict[str, object] | None = None
+        requested_session_key = str(payload.session_key or "").strip() if payload else ""
+        if requested_session_key:
+            selected_session = next(
+                (
+                    item
+                    for item in session_rows
+                    if str(item.get("session_key") or "") == requested_session_key
+                ),
+                None,
+            )
+            if selected_session is None:
+                raise KeyError(f"Packet capture session not found: {requested_session_key}")
+        elif session_rows:
+            selected_session = cast(dict[str, object], session_rows[0])
+
+        if selected_session is not None:
+            session_request = SocPacketSessionCaseRequest(
+                session_key=str(selected_session.get("session_key") or ""),
+                title=payload.title if payload else None,
+                summary=payload.summary if payload else None,
+                severity=payload.severity if payload else None,
+                assignee=payload.assignee if payload else None,
+            )
+            case_payload = self.build_packet_session_case_payload(selected_session, payload=session_request)
+            observables = list(case_payload.observables)
+            if capture_id:
+                observables.append(f"packet_capture:{capture_id}")
+            return case_payload.model_copy(update={"observables": observables})
+
+        remote_ip = str(capture_payload.get("primary_remote_ip") or "unknown-remote")
+        protocols = [str(item) for item in cast(list[object], capture_payload.get("protocols") or []) if str(item)]
+        protocol_evidence = cast(dict[str, object], capture_payload.get("protocol_evidence") or {})
+        application_protocols = [
+            str(item).strip()
+            for item in cast(list[object], protocol_evidence.get("application_protocols") or [])
+            if str(item).strip()
+        ]
+        protocol_hosts = [
+            str(item).strip()
+            for item in cast(list[object], protocol_evidence.get("hostnames") or [])
+            if str(item).strip()
+        ]
+        protocol_indicators = [
+            str(item).strip()
+            for item in cast(list[object], protocol_evidence.get("indicators") or [])
+            if str(item).strip()
+        ]
+        local_ports = [
+            int(item)
+            for item in cast(list[object], capture_payload.get("local_ports") or [])
+            if isinstance(item, int) or (isinstance(item, str) and item.isdigit())
+        ]
+        remote_ports = [
+            int(item)
+            for item in cast(list[object], capture_payload.get("remote_ports") or [])
+            if isinstance(item, int) or (isinstance(item, str) and item.isdigit())
+        ]
+        source_events = self.resolve_packet_capture_events(capture_payload)
+        observables = [remote_ip]
+        if capture_id:
+            observables.append(f"packet_capture:{capture_id}")
+        observables.extend(f"protocol:{item}" for item in protocols)
+        observables.extend(f"local_port:{item}" for item in local_ports[:10])
+        observables.extend(f"remote_port:{item}" for item in remote_ports[:10])
+        observables.extend(f"application_protocol:{item}" for item in application_protocols[:10])
+        observables.extend(f"host:{item}" for item in protocol_hosts[:10])
+        observables.extend(f"protocol_indicator:{item}" for item in protocol_indicators[:10])
+        application_summary = (
+            f" Application protocols: {', '.join(application_protocols[:10])}."
+            if application_protocols
+            else ""
+        )
+        host_summary = f" Hosts: {', '.join(protocol_hosts[:10])}." if protocol_hosts else ""
+        indicator_summary = (
+            f" Indicators: {', '.join(protocol_indicators[:10])}."
+            if protocol_indicators
+            else ""
+        )
+        return SocCaseCreate(
+            title=(
+                payload.title
+                if payload and payload.title
+                else f"Investigate packet capture {capture_id or remote_ip}"
+            ),
+            summary=(
+                payload.summary
+                if payload and payload.summary
+                else (
+                    f"Investigate retained packet capture {capture_id or '-'} for {remote_ip}."
+                    f"{application_summary}{host_summary}{indicator_summary}"
+                )
+            ),
+            severity=payload.severity if payload and payload.severity is not None else SocSeverity.high,
+            source_event_ids=[item.event_id for item in source_events],
+            observables=observables,
+            assignee=payload.assignee if payload else None,
+        )
+
+    def resolve_packet_session_events(self, session_payload: dict[str, object]) -> list[SocEventRecord]:
+        remote_ip = str(session_payload.get("remote_ip") or "")
+        session_key = str(session_payload.get("session_key") or "")
+        if not remote_ip and not session_key:
+            return []
+        related_events: list[SocEventRecord] = []
+        for item in self.list_events(limit=500):
+            if item.event_type not in {
+                "packet.monitor.finding",
+                "packet.monitor.recovered",
+                "network.monitor.finding",
+                "network.monitor.recovered",
+            }:
+                continue
+            details = item.details.get("details")
+            if not isinstance(details, dict):
+                continue
+            if session_key and details.get("session_key") == session_key:
+                related_events.append(item)
+                continue
+            if remote_ip and details.get("remote_ip") == remote_ip:
+                related_events.append(item)
+        return related_events
+
+    def resolve_packet_capture_events(self, capture_payload: dict[str, object]) -> list[SocEventRecord]:
+        capture_id = str(capture_payload.get("capture_id") or "")
+        related_events: list[SocEventRecord] = []
+        seen_event_ids: set[str] = set()
+        session_rows = [
+            item
+            for item in cast(list[object], capture_payload.get("session_observations") or [])
+            if isinstance(item, dict)
+        ]
+        for session_payload in session_rows:
+            for event in self.resolve_packet_session_events(cast(dict[str, object], session_payload)):
+                if event.event_id not in seen_event_ids:
+                    related_events.append(event)
+                    seen_event_ids.add(event.event_id)
+        if capture_id:
+            for item in self.list_events(limit=500):
+                details = item.details.get("details")
+                if not isinstance(details, dict):
+                    continue
+                retained_capture = details.get("retained_capture")
+                if not isinstance(retained_capture, dict):
+                    continue
+                if str(retained_capture.get("capture_id") or "") != capture_id:
+                    continue
+                if item.event_id not in seen_event_ids:
+                    related_events.append(item)
+                    seen_event_ids.add(item.event_id)
+        return related_events
+
+    def build_network_evidence_case_payload(
+        self,
+        evidence_payload: dict[str, object],
+        *,
+        payload: SocNetworkEvidenceCaseRequest | None = None,
+    ) -> SocCaseCreate:
+        def _int_value(value: object) -> int:
+            if isinstance(value, bool):
+                return 0
+            if isinstance(value, int):
+                return value
+            if isinstance(value, str):
+                try:
+                    return int(value)
+                except ValueError:
+                    return 0
+            return 0
+
+        def _int_list(values: object, *, limit: int | None = None) -> list[int]:
+            if not isinstance(values, list):
+                return []
+            converted: list[int] = []
+            for item in values:
+                if isinstance(item, bool):
+                    continue
+                if isinstance(item, int):
+                    converted.append(item)
+                elif isinstance(item, str):
+                    try:
+                        converted.append(int(item))
+                    except ValueError:
+                        continue
+            return converted[:limit] if limit is not None else converted
+
+        def _string_list(values: object, *, limit: int | None = None) -> list[str]:
+            if not isinstance(values, list):
+                return []
+            converted = [str(item).strip() for item in values if str(item).strip()]
+            unique = list(dict.fromkeys(converted))
+            return unique[:limit] if limit is not None else unique
+
+        remote_ip = str(evidence_payload.get("remote_ip") or "unknown-remote")
+        observation = cast(dict[str, object], evidence_payload.get("observation") or {})
+        packet_session = cast(dict[str, object], evidence_payload.get("packet_session") or {})
+        source_events = self.resolve_network_evidence_events(evidence_payload)
+        linked_alert_ids = self.resolve_network_evidence_alert_ids(source_events)
+        local_ports = list(
+            dict.fromkeys(
+                [
+                    *_int_list(observation.get("local_ports")),
+                    *_int_list(packet_session.get("local_ports")),
+                ]
+            )
+        )
+        remote_ports = list(
+            dict.fromkeys(
+                [
+                    *_int_list(observation.get("remote_ports"), limit=10),
+                    *_int_list(packet_session.get("remote_ports"), limit=10),
+                ]
+            )
+        )[:10]
+        sensitive_ports = list(
+            dict.fromkeys(
+                [
+                    *_int_list(observation.get("sensitive_ports")),
+                    *_int_list(packet_session.get("sensitive_ports")),
+                ]
+            )
+        )
+        protocols = list(
+            dict.fromkeys(
+                [
+                    *_string_list(packet_session.get("protocols")),
+                    *(
+                        str(sample.get("protocol")).strip()
+                        for sample in cast(list[object], observation.get("sample_connections") or [])
+                        if isinstance(sample, dict) and str(sample.get("protocol") or "").strip()
+                    ),
+                    *(
+                        str(sample.get("protocol")).strip()
+                        for sample in cast(list[object], packet_session.get("sample_packet_endpoints") or [])
+                        if isinstance(sample, dict) and str(sample.get("protocol") or "").strip()
+                    ),
+                ]
+            )
+        )
+        service_names = list(
+            dict.fromkeys(
+                [
+                    *_string_list(packet_session.get("service_names")),
+                    *(
+                        str(sample.get("service_name")).strip()
+                        for sample in cast(list[object], observation.get("sample_connections") or [])
+                        if isinstance(sample, dict) and str(sample.get("service_name") or "").strip()
+                    ),
+                ]
+            )
+        )
+        application_protocols = list(
+            dict.fromkeys(
+                [
+                    *_string_list(packet_session.get("application_protocols")),
+                    *_string_list(
+                        cast(dict[str, object], packet_session.get("protocol_evidence") or {}).get("application_protocols")
+                    ),
+                    *_string_list(evidence_payload.get("application_protocols")),
+                    *(
+                        str(sample.get("application_protocol")).strip()
+                        for sample in cast(list[object], observation.get("sample_connections") or [])
+                        if isinstance(sample, dict) and str(sample.get("application_protocol") or "").strip()
+                    ),
+                ]
+            )
+        )
+        flow_ids = list(
+            dict.fromkeys(
+                [
+                    *_string_list(packet_session.get("flow_ids"), limit=10),
+                    *(
+                        str(sample.get("flow_id")).strip()
+                        for sample in cast(list[object], observation.get("sample_connections") or [])
+                        if isinstance(sample, dict) and str(sample.get("flow_id") or "").strip()
+                    ),
+                ]
+            )
+        )[:10]
+        transport_families = list(
+            dict.fromkeys(
+                [
+                    *_string_list(packet_session.get("transport_families")),
+                    *_string_list(evidence_payload.get("transport_families")),
+                    *(
+                        str(sample.get("transport_family")).strip()
+                        for sample in cast(list[object], observation.get("sample_connections") or [])
+                        if isinstance(sample, dict) and str(sample.get("transport_family") or "").strip()
+                    ),
+                ]
+            )
+        )
+        protocol_hosts = list(
+            dict.fromkeys(
+                [
+                    *_string_list(evidence_payload.get("protocol_hosts"), limit=10),
+                    *_string_list(
+                        cast(dict[str, object], packet_session.get("protocol_evidence") or {}).get("hostnames"),
+                        limit=10,
+                    ),
+                ]
+            )
+        )[:10]
+        protocol_indicators = list(
+            dict.fromkeys(
+                [
+                    *_string_list(evidence_payload.get("protocol_indicators"), limit=10),
+                    *_string_list(
+                        cast(dict[str, object], packet_session.get("protocol_evidence") or {}).get("indicators"),
+                        limit=10,
+                    ),
+                ]
+            )
+        )[:10]
+        total_hits = _int_value(observation.get("total_hits"))
+        total_packets = _int_value(packet_session.get("total_packets")) or _int_value(packet_session.get("last_packet_count"))
+        default_severity = SocSeverity.critical if sensitive_ports else SocSeverity.high
+        observables: list[str] = [remote_ip]
+        session_key = str(packet_session.get("session_key") or "")
+        if session_key:
+            observables.append(session_key)
+        observables.extend(f"local_port:{item}" for item in local_ports)
+        observables.extend(f"remote_port:{item}" for item in remote_ports)
+        observables.extend(f"sensitive_port:{item}" for item in sensitive_ports)
+        observables.extend(f"protocol:{item}" for item in protocols)
+        observables.extend(f"service:{item}" for item in service_names)
+        observables.extend(f"application_protocol:{item}" for item in application_protocols)
+        observables.extend(f"transport_family:{item}" for item in transport_families)
+        observables.extend(f"flow_id:{item}" for item in flow_ids)
+        observables.extend(f"host:{item}" for item in protocol_hosts)
+        observables.extend(f"protocol_indicator:{item}" for item in protocol_indicators)
+        service_summary = f" Services: {', '.join(service_names)}." if service_names else ""
+        application_summary = (
+            f" Application protocols: {', '.join(application_protocols)}."
+            if application_protocols
+            else ""
+        )
+        host_summary = f" Hosts: {', '.join(protocol_hosts)}." if protocol_hosts else ""
+        indicator_summary = (
+            f" Indicators: {', '.join(protocol_indicators)}."
+            if protocol_indicators
+            else ""
+        )
+        return SocCaseCreate(
+            title=(payload.title if payload and payload.title else f"Investigate network evidence {remote_ip}"),
+            summary=(
+                payload.summary
+                if payload and payload.summary
+                else (
+                    f"Investigate combined network evidence for {remote_ip}. "
+                    f"Observation hits: {total_hits}. Packet count: {total_packets}."
+                    f"{service_summary}{application_summary}{host_summary}{indicator_summary}"
+                )
+            ),
+            severity=payload.severity if payload and payload.severity is not None else default_severity,
+            source_event_ids=[item.event_id for item in source_events],
+            linked_alert_ids=linked_alert_ids,
+            observables=observables,
+            assignee=payload.assignee if payload else None,
+        )
+
+    def build_remote_node_case_payload(
+        self,
+        node_payload: Mapping[str, Any],
+        *,
+        payload: SocRemoteNodeCaseRequest | None = None,
+    ) -> SocCaseCreate:
+        node_name = str(node_payload.get("node_name") or "").strip()
+        node_role = str(node_payload.get("node_role") or "unknown").strip() or "unknown"
+        status = str(node_payload.get("status") or "unknown").strip() or "unknown"
+        last_seen_at = str(node_payload.get("last_seen_at") or "")
+        service_health = cast(dict[str, Any], node_payload.get("service_health") or {})
+        services = cast(dict[str, Any], service_health.get("services") or {})
+        degraded_services = [
+            name
+            for name, details in services.items()
+            if isinstance(details, Mapping)
+            and bool(details.get("enabled"))
+            and str(details.get("status") or "") in {"degraded", "pending"}
+        ]
+        metadata = cast(dict[str, Any], node_payload.get("metadata") or {})
+        default_summary = (
+            f"Investigate remote node {node_name} with role {node_role}. "
+            f"Current status is {status}. Last seen at {last_seen_at or 'unknown'}."
+        )
+        if degraded_services:
+            default_summary += f" Affected services: {', '.join(sorted(degraded_services))}."
+        acknowledged_by = str(metadata.get("acknowledged_by") or "").strip()
+        if acknowledged_by:
+            default_summary += f" Acknowledged by {acknowledged_by}."
+        observables = [
+            f"node:{node_name}",
+            f"role:{node_role}",
+            f"node_status:{status}",
+        ]
+        observables.extend(f"service:{name}" for name in sorted(degraded_services))
+        return SocCaseCreate(
+            title=payload.title if payload and payload.title else f"Investigate remote node {node_name}",
+            summary=payload.summary if payload and payload.summary else default_summary,
+            severity=(
+                payload.severity
+                if payload and payload.severity is not None
+                else (SocSeverity.high if status in {"degraded", "stale"} else SocSeverity.medium)
+            ),
+            observables=observables,
+            assignee=payload.assignee if payload else None,
+        )
+
+    def build_endpoint_timeline_case_payload(
+        self,
+        payload: SocEndpointTimelineCaseRequest,
+    ) -> SocCaseCreate:
+        events = self.list_endpoint_timeline(
+            limit=payload.limit,
+            device_id=payload.device_id,
+            process_name=payload.process_name,
+            process_guid=payload.process_guid,
+            remote_ip=payload.remote_ip,
+            signer_name=payload.signer_name,
+            sha256=payload.sha256,
+        )
+        if not events:
+            raise ValueError("No endpoint timeline events matched the requested slice.")
+        related_alert_ids = self.resolve_network_evidence_alert_ids(events)
+        observables = self._merge_observables(
+            [],
+            [
+                *(f"device:{item}" for item in self._collect_endpoint_timeline_values(events, "device_id")),
+                *(f"process_name:{item}" for item in self._collect_endpoint_timeline_values(events, "process_name")),
+                *(f"process_guid:{item}" for item in self._collect_endpoint_timeline_values(events, "process_guid")),
+                *(f"remote_ip:{item}" for item in self._collect_endpoint_timeline_values(events, "remote_ip")),
+                *(f"filename:{item}" for item in self._collect_endpoint_timeline_values(events, "filename")),
+                *(f"sha256:{item}" for item in self._collect_endpoint_timeline_values(events, "sha256")),
+                *(f"signer:{item}" for item in self._collect_endpoint_timeline_values(events, "signer_name")),
+                *self._extract_observables_for_case(
+                    source_event_ids=[item.event_id for item in events],
+                    linked_alert_ids=related_alert_ids,
+                ),
+            ],
+        )
+        first_seen_at = events[0].created_at.isoformat()
+        last_seen_at = events[-1].created_at.isoformat()
+        device_label = payload.device_id or next(iter(self._collect_endpoint_timeline_values(events, "device_id")), "unknown-device")
+        process_label = (
+            payload.process_guid
+            or payload.process_name
+            or payload.sha256
+            or next(iter(self._collect_endpoint_timeline_values(events, "process_guid")), "")
+            or next(iter(self._collect_endpoint_timeline_values(events, "process_name")), "")
+            or next(iter(self._collect_endpoint_timeline_values(events, "sha256")), "")
+        )
+        remote_label = payload.remote_ip or next(iter(self._collect_endpoint_timeline_values(events, "remote_ip")), "")
+        default_title = f"Investigate endpoint timeline {device_label}"
+        if process_label:
+            default_title = f"{default_title} / {process_label}"
+        elif remote_label:
+            default_title = f"{default_title} / {remote_label}"
+        default_summary = (
+            f"Investigate {len(events)} endpoint timeline records for {device_label}. "
+            f"Window: {first_seen_at} to {last_seen_at}."
+        )
+        if process_label:
+            default_summary += f" Process identity: {process_label}."
+        if remote_label:
+            default_summary += f" Remote IP: {remote_label}."
+        return SocCaseCreate(
+            title=payload.title or default_title,
+            summary=payload.summary or default_summary,
+            severity=payload.severity or self._endpoint_timeline_severity(events),
+            source_event_ids=[item.event_id for item in events],
+            linked_alert_ids=related_alert_ids,
+            observables=observables,
+            assignee=payload.assignee,
+        )
+
+    def build_endpoint_query_case_payload(
+        self,
+        payload: SocEndpointQueryCaseRequest,
+    ) -> SocCaseCreate:
+        events = self._query_endpoint_telemetry_events(
+            limit=payload.limit,
+            device_id=payload.device_id,
+            process_name=payload.process_name,
+            process_guid=payload.process_guid,
+            remote_ip=payload.remote_ip,
+            signer_name=payload.signer_name,
+            sha256=payload.sha256,
+            filename=payload.filename,
+            artifact_path=payload.artifact_path,
+            local_ip=payload.local_ip,
+            local_port=payload.local_port,
+            remote_port=payload.remote_port,
+            protocol=payload.protocol,
+            state=payload.state,
+            document_type=payload.document_type,
+            parent_process_name=payload.parent_process_name,
+            reputation=payload.reputation,
+            risk_flag=payload.risk_flag,
+            verdict=payload.verdict,
+            operation=payload.operation,
+            file_extension=payload.file_extension,
+            start_at=payload.start_at,
+            end_at=payload.end_at,
+        )
+        if not events:
+            raise ValueError("No endpoint telemetry events matched the requested query.")
+        related_alert_ids = self.resolve_network_evidence_alert_ids(events)
+        observables = self._merge_observables(
+            [],
+            [
+                *(f"device:{item}" for item in self._collect_endpoint_timeline_values(events, "device_id")),
+                *(f"process_name:{item}" for item in self._collect_endpoint_timeline_values(events, "process_name")),
+                *(f"process_guid:{item}" for item in self._collect_endpoint_timeline_values(events, "process_guid")),
+                *(f"remote_ip:{item}" for item in self._collect_endpoint_timeline_values(events, "remote_ip")),
+                *(f"filename:{item}" for item in self._collect_endpoint_timeline_values(events, "filename")),
+                *(f"sha256:{item}" for item in self._collect_endpoint_timeline_values(events, "sha256")),
+                *(f"signer:{item}" for item in self._collect_endpoint_timeline_values(events, "signer_name")),
+                *(f"artifact_path:{item}" for item in self._collect_endpoint_timeline_values(events, "artifact_path")),
+                *(f"local_ip:{item}" for item in self._collect_endpoint_timeline_values(events, "local_ip")),
+                *(f"local_port:{item}" for item in self._collect_endpoint_timeline_values(events, "local_port")),
+                *(f"remote_port:{item}" for item in self._collect_endpoint_timeline_values(events, "remote_port")),
+                *(f"protocol:{item}" for item in self._collect_endpoint_timeline_values(events, "protocol")),
+                *self._extract_observables_for_case(
+                    source_event_ids=[item.event_id for item in events],
+                    linked_alert_ids=related_alert_ids,
+                ),
+            ],
+        )
+        first_seen_at = min(item.created_at for item in events).isoformat()
+        last_seen_at = max(item.created_at for item in events).isoformat()
+        filters: list[str] = []
+        for value in (
+            payload.device_id,
+            payload.process_guid,
+            payload.process_name,
+            payload.remote_ip,
+            payload.filename,
+            payload.artifact_path,
+            payload.sha256,
+            payload.document_type,
+        ):
+            if value:
+                filters.append(value)
+        filter_label = " / ".join(filters[:3])
+        default_title = "Investigate endpoint query results"
+        if filter_label:
+            default_title = f"{default_title} / {filter_label}"
+        default_summary = (
+            f"Investigate {len(events)} endpoint telemetry records matched by the requested query. "
+            f"Window: {first_seen_at} to {last_seen_at}."
+        )
+        if filter_label:
+            default_summary += f" Filters: {filter_label}."
+        return SocCaseCreate(
+            title=payload.title or default_title,
+            summary=payload.summary or default_summary,
+            severity=payload.severity or self._endpoint_timeline_severity(events),
+            source_event_ids=[item.event_id for item in events],
+            linked_alert_ids=related_alert_ids,
+            observables=observables,
+            assignee=payload.assignee,
+        )
+
+    def build_endpoint_lineage_cluster_case_payload(
+        self,
+        payload: SocEndpointLineageClusterCaseRequest,
+    ) -> SocCaseCreate:
+        cluster = self.resolve_endpoint_lineage_cluster(
+            payload.cluster_key,
+            device_id=payload.device_id,
+            process_name=payload.process_name,
+            process_guid=payload.process_guid,
+            remote_ip=payload.remote_ip,
+            signer_name=payload.signer_name,
+            sha256=payload.sha256,
+        )
+        device_ids = cast(list[str], cluster.get("device_ids") or [])
+        process_guids = cast(list[str], cluster.get("process_guids") or [])
+        process_names = cast(list[str], cluster.get("process_names") or [])
+        request_payload = SocEndpointTimelineCaseRequest(
+            device_id=payload.device_id or (device_ids[0] if device_ids else None),
+            process_name=payload.process_name or (None if process_guids else (process_names[0] if process_names else None)),
+            process_guid=payload.process_guid or (process_guids[0] if process_guids else None),
+            signer_name=payload.signer_name,
+            sha256=payload.sha256,
+            limit=max(self._int_field(cluster.get("event_count", 0)), 1),
+            title=payload.title or f"Investigate endpoint lineage {cluster.get('label', payload.cluster_key)}",
+            summary=payload.summary or f"Investigate endpoint lineage cluster {cluster.get('label', payload.cluster_key)}.",
+            severity=payload.severity,
+            assignee=payload.assignee,
+        )
+        return self.build_endpoint_timeline_case_payload(request_payload)
+
+    def build_case_endpoint_timeline_cluster_case_payload(
+        self,
+        case_id: str,
+        payload: SocCaseEndpointTimelineClusterCaseRequest,
+    ) -> SocCaseCreate:
+        case = self.get_case(case_id)
+        source_events = self.resolve_case_source_events(case_id)
+        base_filters = self._case_endpoint_timeline_filters(case, source_events, cluster_by=payload.cluster_by)
+        cluster = self.resolve_case_endpoint_timeline_cluster(
+            case_id,
+            cluster_by=payload.cluster_by,
+            cluster_key=payload.cluster_key,
+        )
+        cluster_filters: dict[str, str] = {}
+        device_ids = cast(list[str], cluster.get("device_ids") or [])
+        process_guids = cast(list[str], cluster.get("process_guids") or [])
+        process_names = cast(list[str], cluster.get("process_names") or [])
+        remote_ips = cast(list[str], cluster.get("remote_ips") or [])
+        if device_ids:
+            cluster_filters["device_id"] = device_ids[0]
+        if process_guids:
+            cluster_filters["process_guid"] = process_guids[0]
+        elif process_names:
+            cluster_filters["process_name"] = process_names[0]
+        if payload.cluster_by == "remote_ip" and remote_ips:
+            cluster_filters["remote_ip"] = remote_ips[0]
+
+        request_payload = SocEndpointTimelineCaseRequest(
+            device_id=cluster_filters.get("device_id", base_filters.get("device_id")),
+            process_name=cluster_filters.get("process_name", base_filters.get("process_name")),
+            process_guid=cluster_filters.get("process_guid", base_filters.get("process_guid")),
+            remote_ip=cluster_filters.get("remote_ip", base_filters.get("remote_ip")),
+            signer_name=base_filters.get("signer_name"),
+            sha256=base_filters.get("sha256"),
+            limit=max(self._int_field(cluster.get("event_count", 0)), 1),
+            title=payload.title,
+            summary=payload.summary,
+            severity=payload.severity,
+            assignee=payload.assignee,
+        )
+        return self.build_endpoint_timeline_case_payload(request_payload)
+
+    def build_case_endpoint_lineage_cluster_case_payload(
+        self,
+        case_id: str,
+        payload: SocCaseEndpointLineageClusterCaseRequest,
+    ) -> SocCaseCreate:
+        case = self.get_case(case_id)
+        source_events = self.resolve_case_source_events(case_id)
+        base_filters = self._case_endpoint_timeline_filters(case, source_events)
+        cluster = self.resolve_case_endpoint_lineage_cluster(case_id, cluster_key=payload.cluster_key)
+        device_ids = cast(list[str], cluster.get("device_ids") or [])
+        process_guids = cast(list[str], cluster.get("process_guids") or [])
+        process_names = cast(list[str], cluster.get("process_names") or [])
+        request_payload = SocEndpointTimelineCaseRequest(
+            device_id=device_ids[0] if device_ids else base_filters.get("device_id"),
+            process_name=None if process_guids else (process_names[0] if process_names else base_filters.get("process_name")),
+            process_guid=process_guids[0] if process_guids else base_filters.get("process_guid"),
+            signer_name=base_filters.get("signer_name"),
+            sha256=base_filters.get("sha256"),
+            limit=max(self._int_field(cluster.get("event_count", 0)), 1),
+            title=payload.title or f"Investigate endpoint lineage {cluster.get('label', payload.cluster_key)}",
+            summary=payload.summary or f"Investigate case-linked endpoint lineage cluster {cluster.get('label', payload.cluster_key)}.",
+            severity=payload.severity,
+            assignee=payload.assignee,
+        )
+        return self.build_endpoint_timeline_case_payload(request_payload)
+
+    def build_case_rule_alert_group_case_payload(
+        self,
+        case_id: str,
+        payload: SocCaseRuleGroupCaseRequest,
+    ) -> SocCaseCreate:
+        case = self.get_case(case_id)
+        group = self.resolve_case_rule_alert_group(case_id, group_key=payload.group_key)
+        alerts = cast(list[dict[str, object]], group.get("alerts") or [])
+        source_event_ids = [
+            str(event_id)
+            for alert in alerts
+            for event_id in cast(list[object], alert.get("source_event_ids") or [])
+            if str(event_id)
+        ]
+        source_events = self._events_for_ids(source_event_ids)
+        return self._build_case_rule_group_timeline_case_payload(
+            case=case,
+            group_key=payload.group_key,
+            group_events=source_events,
+            title=payload.title,
+            summary=payload.summary,
+            severity=payload.severity,
+            assignee=payload.assignee,
+        )
+
+    def build_case_rule_evidence_group_case_payload(
+        self,
+        case_id: str,
+        payload: SocCaseRuleGroupCaseRequest,
+    ) -> SocCaseCreate:
+        case = self.get_case(case_id)
+        group = self.resolve_case_rule_evidence_group(case_id, group_key=payload.group_key)
+        source_events = [
+            self.get_event(str(item.get("event_id")))
+            for item in cast(list[dict[str, object]], group.get("events") or [])
+            if str(item.get("event_id") or "")
+        ]
+        return self._build_case_rule_group_timeline_case_payload(
+            case=case,
+            group_key=payload.group_key,
+            group_events=source_events,
+            title=payload.title,
+            summary=payload.summary,
+            severity=payload.severity,
+            assignee=payload.assignee,
+        )
+
+    def build_rule_alert_group_case_payload(
+        self,
+        rule_id: str,
+        payload: SocCaseRuleGroupCaseRequest,
+    ) -> SocCaseCreate:
+        group = self.resolve_rule_alert_group(rule_id, group_key=payload.group_key)
+        alerts = cast(list[dict[str, object]], group.get("alerts") or [])
+        source_event_ids = [
+            str(event_id)
+            for alert in alerts
+            for event_id in cast(list[object], alert.get("source_event_ids") or [])
+            if str(event_id)
+        ]
+        source_events = self._events_for_ids(source_event_ids)
+        return self._build_rule_group_timeline_case_payload(
+            group_key=payload.group_key,
+            group_events=source_events,
+            title=payload.title,
+            summary=payload.summary,
+            severity=payload.severity,
+            assignee=payload.assignee,
+        )
+
+    def build_rule_evidence_group_case_payload(
+        self,
+        rule_id: str,
+        payload: SocCaseRuleGroupCaseRequest,
+    ) -> SocCaseCreate:
+        group = self.resolve_rule_evidence_group(rule_id, group_key=payload.group_key)
+        source_events = [
+            self.get_event(str(item.get("event_id")))
+            for item in cast(list[dict[str, object]], group.get("events") or [])
+            if str(item.get("event_id") or "")
+        ]
+        return self._build_rule_group_timeline_case_payload(
+            group_key=payload.group_key,
+            group_events=source_events,
+            title=payload.title,
+            summary=payload.summary,
+            severity=payload.severity,
+            assignee=payload.assignee,
+        )
+
+    def build_case_hunt_telemetry_cluster_case_payload(
+        self,
+        case_id: str,
+        payload: SocCaseTelemetryClusterCaseRequest,
+    ) -> SocCaseCreate:
+        case = self.get_case(case_id)
+        source_events = self.resolve_case_source_events(case_id)
+        filters = self._case_hunt_telemetry_filters(case, source_events, cluster_by=payload.cluster_by)
+        cluster = self.resolve_case_hunt_telemetry_cluster(
+            case_id,
+            cluster_by=payload.cluster_by,
+            cluster_key=payload.cluster_key,
+        )
+        request_payload = SocTelemetryClusterCaseRequest(
+            cluster_by=payload.cluster_by,
+            cluster_key=payload.cluster_key,
+            device_id=filters.get("device_id"),
+            process_name=filters.get("process_name"),
+            process_guid=filters.get("process_guid"),
+            remote_ip=filters.get("remote_ip"),
+            signer_name=filters.get("signer_name"),
+            sha256=filters.get("sha256"),
+            filename=filters.get("filename"),
+            artifact_path=filters.get("artifact_path"),
+            session_key=filters.get("session_key"),
+            title=payload.title or f"Investigate {payload.cluster_by} cluster {cluster.get('label', payload.cluster_key)}",
+            summary=payload.summary or f"Investigate case-linked hunt telemetry cluster {cluster.get('label', payload.cluster_key)}.",
+            severity=payload.severity,
+            assignee=payload.assignee,
+        )
+        return self.build_telemetry_cluster_case_payload(request_payload)
+
+    def _build_case_rule_group_timeline_case_payload(
+        self,
+        *,
+        case: SocCaseRecord,
+        group_key: str,
+        group_events: Sequence[SocEventRecord],
+        title: str | None,
+        summary: str | None,
+        severity: SocSeverity | None,
+        assignee: str | None,
+    ) -> SocCaseCreate:
+        if not group_events:
+            raise ValueError("No endpoint timeline events matched the requested case rule group.")
+        if self._rule_group_prefers_generic_network_case(group_events):
+            return self._build_rule_group_network_case_payload(
+                group_key=group_key,
+                group_events=group_events,
+                title=title,
+                summary=summary or f"Investigate case-linked network detection rule group {group_key}.",
+                severity=severity,
+                assignee=assignee,
+            )
+        filters = self._case_endpoint_timeline_filters(case, group_events)
+        timeline_limit = max(len(group_events), 25)
+        request_payload = SocEndpointTimelineCaseRequest(
+            device_id=filters.get("device_id"),
+            process_name=filters.get("process_name"),
+            process_guid=filters.get("process_guid"),
+            remote_ip=filters.get("remote_ip"),
+            signer_name=filters.get("signer_name"),
+            sha256=filters.get("sha256"),
+            limit=timeline_limit,
+            title=title or f"Investigate endpoint timeline {group_key}",
+            summary=summary or f"Investigate endpoint-backed case rule group {group_key}.",
+            severity=severity,
+            assignee=assignee,
+        )
+        return self.build_endpoint_timeline_case_payload(request_payload)
+
+    def _build_rule_group_timeline_case_payload(
+        self,
+        *,
+        group_key: str,
+        group_events: Sequence[SocEventRecord],
+        title: str | None,
+        summary: str | None,
+        severity: SocSeverity | None,
+        assignee: str | None,
+    ) -> SocCaseCreate:
+        if not group_events:
+            raise ValueError("No endpoint timeline events matched the requested detection rule group.")
+        if self._rule_group_prefers_generic_network_case(group_events):
+            return self._build_rule_group_network_case_payload(
+                group_key=group_key,
+                group_events=group_events,
+                title=title,
+                summary=summary or f"Investigate network-backed detection rule group {group_key}.",
+                severity=severity,
+                assignee=assignee,
+            )
+        filters = self._endpoint_timeline_filters_from_source_events(group_events)
+        if any(filters.get(key) for key in ("process_guid", "process_name", "sha256")):
+            filters.pop("remote_ip", None)
+        timeline_limit = max(len(group_events), 25)
+        request_payload = SocEndpointTimelineCaseRequest(
+            device_id=filters.get("device_id"),
+            process_name=filters.get("process_name"),
+            process_guid=filters.get("process_guid"),
+            remote_ip=filters.get("remote_ip"),
+            signer_name=filters.get("signer_name"),
+            sha256=filters.get("sha256"),
+            limit=timeline_limit,
+            title=title or f"Investigate endpoint timeline {group_key}",
+            summary=summary or f"Investigate endpoint-backed detection rule group {group_key}.",
+            severity=severity,
+            assignee=assignee,
+        )
+        return self.build_endpoint_timeline_case_payload(request_payload)
+
+    @staticmethod
+    def _rule_group_prefers_generic_network_case(group_events: Sequence[SocEventRecord]) -> bool:
+        network_types = {
+            "network.telemetry.dns",
+            "network.telemetry.http",
+            "network.telemetry.tls",
+            "network.telemetry.certificate",
+            "network.telemetry.proxy",
+            "network.telemetry.auth",
+            "network.telemetry.vpn",
+            "network.telemetry.dhcp",
+            "network.telemetry.directory_auth",
+            "network.telemetry.radius",
+            "network.telemetry.nac",
+        }
+        event_types = {item.event_type for item in group_events}
+        return bool(event_types) and event_types.issubset(network_types)
+
+    def _build_rule_group_network_case_payload(
+        self,
+        *,
+        group_key: str,
+        group_events: Sequence[SocEventRecord],
+        title: str | None,
+        summary: str | None,
+        severity: SocSeverity | None,
+        assignee: str | None,
+    ) -> SocCaseCreate:
+        source_events = list(group_events)
+        related_alert_ids = self.resolve_network_evidence_alert_ids(source_events)
+        hostnames = self._merge_case_values(
+            [
+                str(item.details.get("hostname") or "").strip()
+                or str(item.details.get("server_name") or "").strip()
+                for item in source_events
+            ]
+        )
+        remote_ips = self._merge_case_values(
+            [str(item.details.get("remote_ip") or "").strip() for item in source_events]
+        )
+        observables = self._merge_observables(
+            [f"group:{group_key}"],
+            [
+                *(f"hostname:{item}" for item in hostnames),
+                *(f"remote_ip:{item}" for item in remote_ips),
+                *self._extract_observables_for_case(
+                    source_event_ids=[item.event_id for item in source_events],
+                    linked_alert_ids=related_alert_ids,
+                ),
+            ],
+        )
+        calculated_severity = source_events[0].severity if source_events else SocSeverity.medium
+        for event in source_events[1:]:
+            calculated_severity = self._max_severity(calculated_severity, event.severity)
+        default_title = title or f"Investigate network rule group {group_key}"
+        host_summary = ", ".join(hostnames) if hostnames else group_key
+        default_summary = summary or (
+            f"Investigate {len(source_events)} network sensor telemetry records for {host_summary}."
+        )
+        return SocCaseCreate(
+            title=default_title,
+            summary=default_summary,
+            severity=severity or calculated_severity,
+            source_event_ids=[item.event_id for item in source_events],
+            linked_alert_ids=related_alert_ids,
+            observables=observables,
+            assignee=assignee,
+        )
+
+    def _case_endpoint_timeline_filters(
+        self,
+        case: SocCaseRecord,
+        source_events: Sequence[SocEventRecord],
+        *,
+        cluster_by: str | None = None,
+    ) -> dict[str, str]:
+        filters = self._endpoint_timeline_filters_from_case_record(case, source_events)
+        if cluster_by != "remote_ip" and any(filters.get(key) for key in ("process_guid", "process_name", "sha256")):
+            filters.pop("remote_ip", None)
+        return filters
+
+    def _case_hunt_telemetry_filters(
+        self,
+        case: SocCaseRecord,
+        source_events: Sequence[SocEventRecord],
+        *,
+        cluster_by: str | None = None,
+    ) -> dict[str, str]:
+        filters = self._endpoint_timeline_filters_from_case_record(case, source_events)
+        observable_fields = {
+            "filename": "filename",
+            "artifact_path": "artifact_path",
+            "session": "session_key",
+            "session_key": "session_key",
+        }
+        for observable in case.observables:
+            candidate = observable.strip()
+            if not candidate:
+                continue
+            prefix, separator, raw_value = candidate.partition(":")
+            if not separator:
+                continue
+            target_field = observable_fields.get(prefix.strip().casefold())
+            field_value = raw_value.strip()
+            if target_field and field_value and target_field not in filters:
+                filters[target_field] = field_value
+        for event in source_events:
+            for field in ("device_id", "process_name", "process_guid", "remote_ip", "signer_name", "sha256", "filename", "artifact_path", "session_key"):
+                if field in filters:
+                    continue
+                value = self._event_detail_string(event, field)
+                if value:
+                    filters[field] = value
+        if cluster_by == "remote_ip":
+            remote_ip = filters.get("remote_ip")
+            filters = {key: value for key, value in {"remote_ip": remote_ip}.items() if value}
+        elif cluster_by == "device_id":
+            device_id = filters.get("device_id")
+            filters = {key: value for key, value in {"device_id": device_id}.items() if value}
+        elif any(filters.get(key) for key in ("process_guid", "process_name", "sha256")):
+            filters.pop("remote_ip", None)
+        return filters
+
+    def resolve_network_evidence_events(self, evidence_payload: dict[str, object]) -> list[SocEventRecord]:
+        remote_ip = str(evidence_payload.get("remote_ip") or "")
+        packet_session = cast(dict[str, object], evidence_payload.get("packet_session") or {})
+        session_key = str(packet_session.get("session_key") or "")
+        if not remote_ip and not session_key:
+            return []
+        related_events: list[SocEventRecord] = []
+        for item in self.list_events(limit=500):
+            if item.event_type not in {
+                "packet.monitor.finding",
+                "packet.monitor.recovered",
+                "network.monitor.finding",
+                "network.monitor.recovered",
+            }:
+                continue
+            details = item.details.get("details")
+            if not isinstance(details, dict):
+                continue
+            if session_key and details.get("session_key") == session_key:
+                related_events.append(item)
+                continue
+            if remote_ip and details.get("remote_ip") == remote_ip:
+                related_events.append(item)
+        return related_events
+
+    def resolve_network_evidence_alert_ids(self, source_events: list[SocEventRecord]) -> list[str]:
+        source_event_ids = {item.event_id for item in source_events}
+        if not source_event_ids:
+            return []
+        linked_ids: list[str] = []
+        for item in self.list_alerts():
+            if source_event_ids.intersection(item.source_event_ids):
+                linked_ids.append(item.alert_id)
+        return linked_ids
+
+    def resolve_network_evidence_cases(self, source_events: list[SocEventRecord]) -> list[SocCaseRecord]:
+        source_event_ids = {item.event_id for item in source_events}
+        if not source_event_ids:
+            return []
+        return [item for item in self.list_cases() if source_event_ids.intersection(item.source_event_ids)]
+
+    def resolve_remote_node_cases(self, node_payload: Mapping[str, Any]) -> list[SocCaseRecord]:
+        observables = {
+            f"node:{str(node_payload.get('node_name') or '-').strip()}",
+            f"role:{str(node_payload.get('node_role') or '-').strip()}",
+        }
+        related: list[SocCaseRecord] = []
+        for item in self.list_cases():
+            case_observables = {str(candidate) for candidate in item.observables}
+            if observables.intersection(case_observables):
+                related.append(item)
+        return related
+
+    @staticmethod
+    def _event_detail_string(event: SocEventRecord, field: str) -> str | None:
+        value = event.details.get(field)
+        if field == "process_name" and (not isinstance(value, str) or not value):
+            value = event.details.get("actor_process_name")
+        elif field == "sha256" and (not isinstance(value, str) or not value):
+            value = event.details.get("process_sha256")
+            if not isinstance(value, str) or not value:
+                value = event.details.get("actor_process_sha256")
+        return value if isinstance(value, str) and value else None
+
+    @staticmethod
+    def _append_unique_value(entry: dict[str, object], key: str, value: str | None) -> None:
+        if not value:
+            return
+        bucket = cast(list[str], entry[key])
+        if value not in bucket:
+            bucket.append(value)
+
+    def _endpoint_timeline_cluster_key(
+        self,
+        event: SocEventRecord,
+        *,
+        cluster_by: str,
+        process_aliases: Mapping[tuple[str, str], str],
+    ) -> str | None:
+        if cluster_by == "remote_ip":
+            return self._event_detail_string(event, "remote_ip")
+        device_id = self._event_detail_string(event, "device_id")
+        process_identity = None
+        if device_id:
+            for candidate in self._endpoint_timeline_identity_candidates(event):
+                process_identity = process_aliases.get((device_id, candidate.casefold()))
+                if process_identity:
+                    break
+        if not process_identity:
+            process_identity = self._endpoint_timeline_process_identity(event)
+        if not device_id or not process_identity:
+            return None
+        return f"{device_id}:{process_identity}"
+
+    def _endpoint_timeline_cluster_label(self, event: SocEventRecord, *, cluster_by: str) -> str:
+        if cluster_by == "remote_ip":
+            return self._event_detail_string(event, "remote_ip") or "unknown-remote"
+        device_id = self._event_detail_string(event, "device_id") or "unknown-device"
+        process_label = (
+            self._event_detail_string(event, "process_name")
+            or self._event_detail_string(event, "process_guid")
+            or self._event_detail_string(event, "sha256")
+            or "unknown-process"
+        )
+        return f"{device_id} / {process_label}"
+
+    def _endpoint_timeline_process_identity(self, event: SocEventRecord) -> str | None:
+        candidates = self._endpoint_process_identity_candidates(event)
+        return candidates[0] if candidates else None
+
+    @staticmethod
+    def _endpoint_lineage_field_string(event: SocEventRecord, field: str) -> str | None:
+        value = event.details.get(field)
+        return value if isinstance(value, str) and value else None
+
+    def _endpoint_lineage_root_identity(self, event: SocEventRecord) -> str | None:
+        parent_guid = self._endpoint_lineage_field_string(event, "parent_process_guid")
+        if parent_guid:
+            return parent_guid
+        parent_name = self._endpoint_lineage_field_string(event, "parent_process_name")
+        if parent_name:
+            return parent_name
+        parent_chain = event.details.get("parent_chain")
+        if isinstance(parent_chain, list):
+            for item in parent_chain:
+                if isinstance(item, str) and item:
+                    return item
+        return self._endpoint_lineage_process_identity(event)
+
+    def _endpoint_lineage_process_identity(self, event: SocEventRecord) -> str | None:
+        return (
+            self._event_detail_string(event, "process_guid")
+            or self._event_detail_string(event, "sha256")
+            or self._event_detail_string(event, "process_name")
+        )
+
+    def _endpoint_lineage_context(
+        self,
+        event: SocEventRecord,
+        *,
+        process_aliases: Mapping[tuple[str, str], str],
+        lineage_roots: Mapping[tuple[str, str], str],
+    ) -> dict[str, str] | None:
+        device_id = self._event_detail_string(event, "device_id")
+        if not device_id:
+            return None
+        lineage_process = None
+        lineage_root = None
+        for candidate in self._endpoint_timeline_identity_candidates(event):
+            key = (device_id, candidate.casefold())
+            lineage_process = process_aliases.get(key)
+            lineage_root = lineage_roots.get(key)
+            if lineage_process:
+                break
+        if not lineage_process:
+            lineage_process = self._endpoint_lineage_process_identity(event)
+        if not lineage_root:
+            lineage_root = self._endpoint_lineage_root_identity(event)
+        if not lineage_process or not lineage_root:
+            return None
+        return {
+            "device_id": device_id,
+            "lineage_root": lineage_root,
+            "lineage_process": lineage_process,
+            "cluster_key": f"{device_id}::{lineage_root}::{lineage_process}",
+        }
+
+    @staticmethod
+    def _endpoint_lineage_cluster_label(lineage_context: Mapping[str, str]) -> str:
+        device_id = str(lineage_context.get("device_id") or "unknown-device")
+        lineage_root = str(lineage_context.get("lineage_root") or "unknown-root")
+        lineage_process = str(lineage_context.get("lineage_process") or "unknown-process")
+        if lineage_root == lineage_process:
+            return f"{device_id} / {lineage_process}"
+        return f"{device_id} / {lineage_root} > {lineage_process}"
+
+    def _query_endpoint_telemetry_events(
+        self,
+        *,
+        limit: int = 200,
+        device_id: str | None = None,
+        process_name: str | None = None,
+        process_guid: str | None = None,
+        remote_ip: str | None = None,
+        signer_name: str | None = None,
+        sha256: str | None = None,
+        filename: str | None = None,
+        artifact_path: str | None = None,
+        local_ip: str | None = None,
+        local_port: str | None = None,
+        remote_port: str | None = None,
+        protocol: str | None = None,
+        state: str | None = None,
+        document_type: str | None = None,
+        parent_process_name: str | None = None,
+        reputation: str | None = None,
+        risk_flag: str | None = None,
+        verdict: str | None = None,
+        operation: str | None = None,
+        file_extension: str | None = None,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+    ) -> list[SocEventRecord]:
+        events = self._query_events_across_types(
+            event_types=(
+                "endpoint.telemetry.process",
+                "endpoint.telemetry.file",
+                "endpoint.telemetry.connection",
+            ),
+            device_id=device_id,
+            process_name=process_name,
+            process_guid=process_guid,
+            remote_ip=remote_ip,
+            signer_name=signer_name,
+            sha256=sha256,
+            filename=filename,
+            artifact_path=artifact_path,
+            local_ip=local_ip,
+            local_port=local_port,
+            remote_port=remote_port,
+            protocol=protocol,
+            state=state,
+            start_at=start_at,
+            end_at=end_at,
+            limit=max(limit * 4, limit),
+        )
+        filtered = [
+            item
+            for item in events
+            if self._endpoint_telemetry_matches_advanced_filters(
+                item,
+                document_type=document_type,
+                parent_process_name=parent_process_name,
+                reputation=reputation,
+                risk_flag=risk_flag,
+                verdict=verdict,
+                operation=operation,
+                file_extension=file_extension,
+            )
+        ]
+        filtered.sort(key=lambda item: item.created_at, reverse=True)
+        return filtered
+
+    def _serialize_endpoint_query_events(self, events: Sequence[SocEventRecord]) -> list[dict[str, object]]:
+        joins = self._build_endpoint_query_lineage_joins(events)
+        serialized: list[dict[str, object]] = []
+        for event in events:
+            payload = event.model_dump(mode="json")
+            lineage_join = joins.get(event.event_id)
+            if lineage_join is not None:
+                payload["lineage"] = lineage_join
+            serialized.append(payload)
+        return serialized
+
+    def _build_endpoint_query_lineage_joins(
+        self,
+        events: Sequence[SocEventRecord],
+    ) -> dict[str, dict[str, object]]:
+        process_aliases: dict[tuple[str, str], str] = {}
+        lineage_roots: dict[tuple[str, str], str] = {}
+        for event in events:
+            event_device_id = self._event_detail_string(event, "device_id")
+            canonical_identity = self._endpoint_lineage_process_identity(event)
+            if not event_device_id or not canonical_identity:
+                continue
+            lineage_root = self._endpoint_lineage_root_identity(event) or canonical_identity
+            for candidate in self._endpoint_timeline_identity_candidates(event):
+                key = (event_device_id, candidate.casefold())
+                process_aliases.setdefault(key, canonical_identity)
+                lineage_roots.setdefault(key, lineage_root)
+        grouped: dict[str, dict[str, object]] = {}
+        root_groups: dict[str, dict[str, object]] = {}
+        for event in events:
+            lineage_context = self._endpoint_lineage_context(
+                event,
+                process_aliases=process_aliases,
+                lineage_roots=lineage_roots,
+            )
+            if lineage_context is None:
+                continue
+            cluster_key = lineage_context["cluster_key"]
+            entry = grouped.setdefault(
+                cluster_key,
+                {
+                    "device_id": lineage_context["device_id"],
+                    "cluster_key": cluster_key,
+                    "lineage_root": lineage_context["lineage_root"],
+                    "lineage_process": lineage_context["lineage_process"],
+                    "event_ids": [],
+                    "process_names": [],
+                    "process_guids": [],
+                    "parent_process_names": [],
+                    "parent_process_guids": [],
+                    "actor_process_names": [],
+                    "remote_ips": [],
+                    "filenames": [],
+                    "artifact_paths": [],
+                },
+            )
+            root_key = f"{lineage_context['device_id']}::{lineage_context['lineage_root']}"
+            root_entry = root_groups.setdefault(
+                root_key,
+                {
+                    "process_names": [],
+                    "process_guids": [],
+                },
+            )
+            cast(list[str], entry["event_ids"]).append(event.event_id)
+            self._append_unique_value(entry, "process_names", self._event_detail_string(event, "process_name"))
+            self._append_unique_value(entry, "process_guids", self._event_detail_string(event, "process_guid"))
+            self._append_unique_value(entry, "parent_process_names", self._endpoint_lineage_field_string(event, "parent_process_name"))
+            self._append_unique_value(entry, "parent_process_guids", self._endpoint_lineage_field_string(event, "parent_process_guid"))
+            self._append_unique_value(entry, "actor_process_names", self._endpoint_lineage_field_string(event, "actor_process_name"))
+            self._append_unique_value(entry, "remote_ips", self._event_detail_string(event, "remote_ip"))
+            self._append_unique_value(entry, "filenames", self._event_detail_string(event, "filename"))
+            self._append_unique_value(entry, "artifact_paths", self._event_detail_string(event, "artifact_path"))
+            self._append_unique_value(root_entry, "process_names", self._event_detail_string(event, "process_name"))
+            self._append_unique_value(root_entry, "process_guids", self._event_detail_string(event, "process_guid"))
+        joins: dict[str, dict[str, object]] = {}
+        for event in events:
+            lineage_context = self._endpoint_lineage_context(
+                event,
+                process_aliases=process_aliases,
+                lineage_roots=lineage_roots,
+            )
+            if lineage_context is None:
+                continue
+            cluster = grouped.get(lineage_context["cluster_key"])
+            if cluster is None:
+                continue
+            root_group = root_groups.get(f"{lineage_context['device_id']}::{lineage_context['lineage_root']}", {})
+            current_process_name = self._event_detail_string(event, "process_name")
+            current_process_guid = self._event_detail_string(event, "process_guid")
+            parent_process_name = self._endpoint_lineage_field_string(event, "parent_process_name")
+            parent_process_guid = self._endpoint_lineage_field_string(event, "parent_process_guid")
+            joins[event.event_id] = {
+                "device_id": cluster["device_id"],
+                "cluster_key": cluster["cluster_key"],
+                "lineage_root": cluster["lineage_root"],
+                "lineage_process": cluster["lineage_process"],
+                "event_count": len(cast(list[str], cluster["event_ids"])),
+                "parent_process_name": parent_process_name,
+                "parent_process_guid": parent_process_guid,
+                "actor_process_name": self._endpoint_lineage_field_string(event, "actor_process_name"),
+                "child_process_names": [
+                    item
+                    for item in cast(list[str], root_group.get("process_names") or [])
+                    if item not in {current_process_name, parent_process_name}
+                ],
+                "child_process_guids": [
+                    item
+                    for item in cast(list[str], root_group.get("process_guids") or [])
+                    if item not in {current_process_guid, parent_process_guid}
+                ],
+                "related_process_names": cast(list[str], cluster["process_names"]),
+                "related_process_guids": cast(list[str], cluster["process_guids"]),
+                "related_remote_ips": cast(list[str], cluster["remote_ips"]),
+                "related_filenames": cast(list[str], cluster["filenames"]),
+                "related_artifact_paths": cast(list[str], cluster["artifact_paths"]),
+                "related_event_ids": cast(list[str], cluster["event_ids"]),
+            }
+        return joins
+
+    def _endpoint_timeline_identity_candidates(self, event: SocEventRecord) -> list[str]:
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for candidate in self._endpoint_process_identity_candidates(event):
+            normalized = candidate.casefold()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            ordered.append(candidate)
+        return ordered
+
+    @staticmethod
+    def _endpoint_process_identity_candidates(event: SocEventRecord) -> list[str]:
+        document_type = event.details.get("document_type")
+        candidates: list[str | None] = [
+            event.details.get("process_guid") if isinstance(event.details.get("process_guid"), str) else None,
+            event.details.get("actor_process_guid") if isinstance(event.details.get("actor_process_guid"), str) else None,
+            event.details.get("process_sha256") if isinstance(event.details.get("process_sha256"), str) else None,
+            event.details.get("actor_process_sha256") if isinstance(event.details.get("actor_process_sha256"), str) else None,
+            event.details.get("process_name") if isinstance(event.details.get("process_name"), str) else None,
+            event.details.get("actor_process_name") if isinstance(event.details.get("actor_process_name"), str) else None,
+        ]
+        if document_type != "endpoint_file":
+            candidates.insert(
+                3,
+                event.details.get("sha256") if isinstance(event.details.get("sha256"), str) else None,
+            )
+        return [candidate for candidate in candidates if candidate]
+
+    def _endpoint_timeline_matches_filters(
+        self,
+        event: SocEventRecord,
+        *,
+        process_name: str | None,
+        process_guid: str | None,
+        sha256: str | None,
+        identity_candidates: set[str],
+    ) -> bool:
+        if process_name:
+            event_process_name = self._event_detail_string(event, "process_name")
+            if event_process_name is None or event_process_name.casefold() != process_name.strip().casefold():
+                return False
+        if process_guid:
+            event_process_guid = self._event_detail_string(event, "process_guid")
+            if event_process_guid != process_guid:
+                event_identity = self._endpoint_timeline_process_identity(event)
+                if not identity_candidates or event_identity is None or event_identity.casefold() not in identity_candidates:
+                    return False
+        if sha256:
+            event_sha256 = self._event_detail_string(event, "sha256")
+            if event_sha256 is None or event_sha256.casefold() != sha256.strip().casefold():
+                return False
+        return True
+
+    @staticmethod
+    def _collect_endpoint_timeline_values(events: list[SocEventRecord], field: str) -> list[str]:
+        values: list[str] = []
+        seen: set[str] = set()
+        for event in events:
+            value = event.details.get(field)
+            if not isinstance(value, str) or not value:
+                continue
+            normalized = value.casefold()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            values.append(value)
+        return values
+
+    @staticmethod
+    def _endpoint_timeline_severity(events: list[SocEventRecord]) -> SocSeverity:
+        for event in events:
+            verdict = str(event.details.get("verdict") or "").casefold()
+            if verdict in {"malicious", "quarantined"}:
+                return SocSeverity.critical
+            reputation = str(event.details.get("reputation") or "").casefold()
+            if reputation == "malicious":
+                return SocSeverity.critical
+            risk_flags = event.details.get("risk_flags")
+            if isinstance(risk_flags, list) and risk_flags:
+                return SocSeverity.high
+        return SocSeverity.high if any(item.event_type == "endpoint.telemetry.connection" for item in events) else SocSeverity.medium
+
+    @staticmethod
+    def _max_severity(left: SocSeverity, right: SocSeverity) -> SocSeverity:
+        severity_rank = {
+            SocSeverity.low: 0,
+            SocSeverity.medium: 1,
+            SocSeverity.high: 2,
+            SocSeverity.critical: 3,
+        }
+        return left if severity_rank[left] >= severity_rank[right] else right
+
+    @staticmethod
+    def _parse_severity(value: str) -> SocSeverity:
+        try:
+            return SocSeverity(value)
+        except ValueError:
+            return SocSeverity.low
+
+    @staticmethod
+    def _telemetry_kind_for_event(event: SocEventRecord) -> str:
+        if event.event_type.startswith("endpoint.telemetry."):
+            return "endpoint"
+        if event.event_type.startswith("network.telemetry."):
+            return "network"
+        if event.event_type.startswith("packet.telemetry."):
+            return "packet"
+        return "other"
+
+    def _hunt_telemetry_cluster_label(
+        self,
+        event: SocEventRecord,
+        *,
+        cluster_by: str,
+        cluster_key: str,
+    ) -> str:
+        if cluster_by == "device_id":
+            process_name = self._event_detail_string(event, "process_name")
+            return f"{cluster_key} / {process_name}" if process_name else cluster_key
+        if cluster_by == "process_guid":
+            device_id = self._event_detail_string(event, "device_id")
+            process_name = self._event_detail_string(event, "process_name")
+            prefix = f"{device_id} / " if device_id else ""
+            suffix = f" ({process_name})" if process_name else ""
+            return f"{prefix}{cluster_key}{suffix}"
+        return cluster_key
+
+    def _enrich_detection_rule(self, rule: SocDetectionRuleRecord) -> SocDetectionRuleRecord:
+        correlated_alerts = [
+            item
+            for item in self._store.alert_store.read()
+            if item.category == "correlation" and item.correlation_rule == rule.rule_id
+        ]
+        last_match_at = max((item.updated_at for item in correlated_alerts), default=None)
+        return rule.model_copy(
+            update={
+                "hit_count": len(correlated_alerts),
+                "open_alert_count": sum(1 for item in correlated_alerts if item.status is not SocAlertStatus.closed),
+                "last_match_at": last_match_at,
+            }
+        )
+
     def _apply_correlation_rules(self, event: SocEventRecord) -> None:
-        self._correlate_endpoint_high_risk_device(event)
-        self._correlate_repeated_tracker_activity(event)
-
-    def _correlate_endpoint_high_risk_device(self, event: SocEventRecord) -> None:
-        device_id = event.details.get("device_id")
-        if not isinstance(device_id, str) or not device_id:
-            return
-        relevant_types = {"endpoint.telemetry_posture", "policy.access_decision"}
-        if event.event_type not in relevant_types:
-            return
-        window_start = event.created_at - timedelta(hours=24)
-        related_events = [
-            item
-            for item in self.list_events(limit=250)
-            if item.created_at >= window_start
-            and item.details.get("device_id") == device_id
-            and item.event_type in relevant_types
-        ]
-        event_types = {item.event_type for item in related_events}
-        if event_types != relevant_types:
-            return
-        self._upsert_correlation_alert(
-            rule="endpoint_high_risk_device",
-            key=device_id,
-            title=f"Correlated endpoint risk for {device_id}",
-            summary="The same endpoint reported posture issues and also triggered a risky access workflow.",
-            severity=SocSeverity.critical,
-            related_events=related_events,
+        findings = self._detection_engine.evaluate(
+            event=event,
+            list_events=lambda limit: self.list_events(limit=limit),
         )
-
-    def _correlate_repeated_tracker_activity(self, event: SocEventRecord) -> None:
-        if event.event_type != "privacy.tracker_block":
-            return
-        hostname = event.details.get("hostname")
-        if not isinstance(hostname, str) or not hostname:
-            return
-        window_start = event.created_at - timedelta(hours=1)
-        related_events = [
-            item
-            for item in self.list_events(limit=250)
-            if item.created_at >= window_start
-            and item.event_type == "privacy.tracker_block"
-            and item.details.get("hostname") == hostname
-        ]
-        if len(related_events) < 3:
-            return
-        self._upsert_correlation_alert(
-            rule="repeated_tracker_activity",
-            key=hostname,
-            title=f"Repeated tracker activity for {hostname}",
-            summary="Multiple tracker-block events hit the same hostname within one hour.",
-            severity=SocSeverity.high,
-            related_events=related_events,
-        )
+        for finding in findings:
+            self._upsert_correlation_alert(
+                rule=finding.rule_id,
+                key=finding.key,
+                title=finding.title,
+                summary=finding.summary,
+                severity=finding.severity,
+                related_events=list(finding.related_events),
+            )
 
     def _upsert_correlation_alert(
         self,
@@ -751,6 +4886,184 @@ class SecurityOperationsManager:
 
         return self._merge_observables([], observables)
 
+    def _endpoint_timeline_filters_from_case_record(
+        self,
+        case: SocCaseRecord,
+        source_events: Sequence[SocEventRecord],
+    ) -> dict[str, str]:
+        filters: dict[str, str] = {}
+        observable_fields = {
+            "device": "device_id",
+            "process_name": "process_name",
+            "process_guid": "process_guid",
+            "remote_ip": "remote_ip",
+            "signer": "signer_name",
+            "sha256": "sha256",
+        }
+        for observable in case.observables:
+            candidate = observable.strip()
+            if not candidate:
+                continue
+            prefix, separator, raw_value = candidate.partition(":")
+            if separator:
+                target_field = observable_fields.get(prefix.strip().casefold())
+                field_value = raw_value.strip()
+                if target_field and field_value and target_field not in filters:
+                    filters[target_field] = field_value
+                    continue
+            try:
+                remote_ip = str(ip_address(candidate))
+            except ValueError:
+                continue
+            filters.setdefault("remote_ip", remote_ip)
+        for event in source_events:
+            if not event.event_type.startswith("endpoint.telemetry."):
+                continue
+            for field in ("device_id", "process_guid", "process_name", "remote_ip", "signer_name", "sha256"):
+                if field in filters:
+                    continue
+                value = self._event_detail_string(event, field)
+                if value:
+                    filters[field] = value
+        return filters
+
+    def _endpoint_timeline_filters_from_source_events(
+        self,
+        source_events: Sequence[SocEventRecord],
+    ) -> dict[str, str]:
+        filters: dict[str, str] = {}
+        for event in source_events:
+            if not event.event_type.startswith("endpoint.telemetry."):
+                continue
+            for field in ("device_id", "process_guid", "process_name", "remote_ip", "signer_name", "sha256"):
+                if field in filters:
+                    continue
+                value = self._event_detail_string(event, field)
+                if value:
+                    filters[field] = value
+        return filters
+
+    def _group_alert_records(self, alerts: Sequence[SocAlertRecord]) -> list[dict[str, object]]:
+        grouped: dict[str, dict[str, object]] = {}
+        for alert in alerts:
+            group_key = self._rule_alert_group_key(alert)
+            entry = grouped.setdefault(
+                group_key,
+                {
+                    "group_key": group_key,
+                    "alert_count": 0,
+                    "severity": alert.severity.value,
+                    "title": group_key,
+                    "alerts": [],
+                    "related_case_ids": [],
+                    "open_case_ids": [],
+                    "open_case_count": 0,
+                },
+            )
+            alert_count = entry.get("alert_count", 0)
+            entry["alert_count"] = (alert_count if isinstance(alert_count, int) else 0) + 1
+            cast(list[dict[str, object]], entry["alerts"]).append(alert.model_dump(mode="json"))
+            if self._severity_rank(alert.severity.value) > self._severity_rank(str(entry.get("severity", "low"))):
+                entry["severity"] = alert.severity.value
+            related_case_ids = sorted(
+                {
+                    item.linked_case_id
+                    for item in alerts
+                    if item.linked_case_id and self._rule_alert_group_key(item) == group_key
+                }
+            )
+            open_case_ids = [
+                case_id
+                for case_id in related_case_ids
+                if self.get_case(case_id).status is not SocCaseStatus.closed
+            ]
+            entry["related_case_ids"] = related_case_ids
+            entry["open_case_ids"] = open_case_ids
+            entry["open_case_count"] = len(open_case_ids)
+            entry["title"] = f"{group_key} (open cases: {len(open_case_ids)})" if open_case_ids else group_key
+        groups = list(grouped.values())
+        groups.sort(
+            key=lambda item: (
+                -self._severity_rank(str(item.get("severity", "low"))),
+                -self._int_field(item.get("alert_count", 0)),
+                str(item.get("group_key", "")),
+            )
+        )
+        return groups
+
+    def _group_evidence_records(self, source_events: Sequence[SocEventRecord]) -> list[dict[str, object]]:
+        grouped: dict[str, dict[str, object]] = {}
+        for event in source_events:
+            group_key = self._rule_evidence_group_key(event)
+            entry = grouped.setdefault(
+                group_key,
+                {
+                    "group_key": group_key,
+                    "event_count": 0,
+                    "severity": event.severity.value,
+                    "title": event.title,
+                    "events": [],
+                    "related_case_ids": [],
+                    "open_case_ids": [],
+                    "open_case_count": 0,
+                },
+            )
+            event_count = entry.get("event_count", 0)
+            entry["event_count"] = (event_count if isinstance(event_count, int) else 0) + 1
+            cast(list[dict[str, object]], entry["events"]).append(event.model_dump(mode="json"))
+            if self._severity_rank(event.severity.value) > self._severity_rank(str(entry.get("severity", "low"))):
+                entry["severity"] = event.severity.value
+            group_events = [self.get_event(event_id) for event_id in [str(item.get("event_id")) for item in cast(list[dict[str, object]], entry["events"])] if event_id]
+            related_cases = self.resolve_network_evidence_cases(group_events)
+            entry["related_case_ids"] = [case.case_id for case in related_cases]
+            entry["open_case_ids"] = [case.case_id for case in related_cases if case.status is not SocCaseStatus.closed]
+            entry["open_case_count"] = len(cast(list[str], entry["open_case_ids"]))
+            entry["title"] = f"{group_key} (open cases: {entry['open_case_count']})" if entry["open_case_count"] else group_key
+        groups = list(grouped.values())
+        groups.sort(
+            key=lambda item: (
+                -self._severity_rank(str(item.get("severity", "low"))),
+                -self._int_field(item.get("event_count", 0)),
+                str(item.get("group_key", "")),
+            )
+        )
+        return groups
+
+    @staticmethod
+    def _rule_alert_group_key(alert: SocAlertRecord) -> str:
+        return alert.correlation_key or alert.linked_case_id or alert.correlation_rule or alert.alert_id or "ungrouped"
+
+    @staticmethod
+    def _int_field(value: object) -> int:
+        return value if isinstance(value, int) else 0
+
+    def _events_for_ids(self, event_ids: Sequence[str]) -> list[SocEventRecord]:
+        if not event_ids:
+            return []
+        events_by_id = {event.event_id: event for event in self.list_events(limit=1000)}
+        return [events_by_id[event_id] for event_id in event_ids if event_id in events_by_id]
+
+    @staticmethod
+    def _rule_evidence_group_key(event: SocEventRecord) -> str:
+        details = event.details
+        nested = details.get("details") if isinstance(details, dict) else None
+        if isinstance(nested, dict):
+            for key in ("remote_ip", "hostname", "filename", "artifact_path", "session_key", "key"):
+                value = nested.get(key)
+                if isinstance(value, str) and value:
+                    return value
+        if isinstance(details, dict):
+            for key in ("source_ip", "hostname", "filename", "device_id", "resource"):
+                value = details.get(key)
+                if isinstance(value, str) and value:
+                    return value
+        return event.event_type or "ungrouped"
+
+    @staticmethod
+    def _severity_rank(value: str) -> int:
+        order = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+        return order.get(value.casefold(), 0)
+
     @staticmethod
     def _merge_observables(existing: list[str], discovered: list[str]) -> list[str]:
         merged: list[str] = []
@@ -765,6 +5078,21 @@ class SecurityOperationsManager:
             seen.add(normalized)
             merged.append(candidate)
         return merged[:64]
+
+    @staticmethod
+    def _merge_case_values(values: Sequence[str]) -> list[str]:
+        merged: list[str] = []
+        seen: set[str] = set()
+        for item in values:
+            candidate = item.strip()
+            if not candidate:
+                continue
+            normalized = candidate.casefold()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            merged.append(candidate)
+        return merged
 
     @staticmethod
     def _build_aging_buckets(records: list[SocAlertRecord] | list[SocCaseRecord]) -> dict[str, int]:
@@ -833,6 +5161,9 @@ class SecurityOperationsManager:
     def _build_operational_routes(self, dashboard: dict[str, object]) -> list[dict[str, object]]:
         workload = cast(dict[str, object], dashboard.get("workload") or {})
         assignee_workload = cast(list[dict[str, object]], dashboard.get("assignee_workload") or [])
+        platform = cast(dict[str, object], dashboard.get("platform") or {})
+        topology = cast(dict[str, object], platform.get("topology") or {})
+        remote_nodes = cast(list[dict[str, object]], topology.get("remote_nodes") or [])
         routes: list[dict[str, object]] = []
         stale_assigned = self._coerce_int(workload.get("stale_assigned_alerts", 0))
         stale_cases = self._coerce_int(workload.get("stale_active_cases", 0))
@@ -887,7 +5218,246 @@ class SecurityOperationsManager:
                     "context": item,
                 }
             )
+        for item in remote_nodes:
+            node_name = str(item.get("node_name") or "").strip()
+            node_status = str(item.get("status") or "unknown")
+            if not node_name:
+                continue
+            action_failures = [str(action) for action in cast(list[object], item.get("action_failures") or []) if str(action)]
+            suppression = cast(dict[str, object], item.get("suppression") or {})
+            active_scopes = {str(scope) for scope in cast(list[object], suppression.get("active_scopes") or []) if str(scope)}
+            routes.extend(self._build_remote_node_action_pattern_routes(item, active_scopes=active_scopes))
+            if action_failures and "remote_node_action_failed" not in active_scopes:
+                routes.append(
+                    {
+                        "route_id": f"remote-node:action-failed:{node_name}",
+                        "fingerprint": "|".join([node_name, *sorted(action_failures)]),
+                        "level": AlertLevel.warning,
+                        "auto_case": True,
+                        "title": f"Remote node action failed: {node_name}",
+                        "message": f"Remote node {node_name} failed to execute: {', '.join(sorted(action_failures))}.",
+                        "context": {
+                            "node_name": node_name,
+                            "node_role": str(item.get("node_role") or "unknown"),
+                            "status": node_status,
+                            "action_failures": sorted(action_failures),
+                        },
+                    }
+                )
+            if node_status not in {"degraded", "stale"}:
+                continue
+            maintenance = cast(dict[str, object], item.get("maintenance") or {})
+            drain = cast(dict[str, object], item.get("drain") or {})
+            route_scope = "remote_node_degraded" if node_status == "degraded" else "remote_node_stale"
+            health_scope = "remote_node_health"
+            maintenance_services = {
+                str(service)
+                for service in cast(list[object], maintenance.get("maintenance_services") or [])
+                if str(service)
+            }
+            service_health = cast(dict[str, object], item.get("service_health") or {})
+            services = cast(dict[str, dict[str, object]], service_health.get("services") or {})
+            degraded_services = {
+                name
+                for name, details in services.items()
+                if bool(details.get("enabled")) and str(details.get("status") or "") in {"degraded", "pending"}
+            }
+            maintenance_covers_route = bool(maintenance.get("active")) and node_status == "degraded" and (
+                not maintenance_services or degraded_services.issubset(maintenance_services)
+            )
+            if route_scope in active_scopes or health_scope in active_scopes or maintenance_covers_route or bool(drain.get("active")):
+                continue
+            role = str(item.get("node_role") or "unknown")
+            last_seen_at = str(item.get("last_seen_at") or "-")
+            route_level = AlertLevel.warning if node_status == "degraded" else AlertLevel.info
+            message = (
+                f"Remote node {node_name} ({role}) is reporting degraded service health."
+                if node_status == "degraded"
+                else f"Remote node {node_name} ({role}) has gone stale."
+            )
+            routes.append(
+                {
+                    "route_id": f"remote-node:{route_scope}:{node_name}",
+                    "fingerprint": f"{route_scope}|{node_status}|{last_seen_at}|{service_health.get('overall_status', 'unknown')}",
+                    "level": route_level,
+                    "title": f"Remote node {node_status}: {node_name}",
+                    "message": message,
+                    "context": {
+                        "node_name": node_name,
+                        "node_role": role,
+                        "status": node_status,
+                        "last_seen_at": last_seen_at,
+                        "service_health": service_health,
+                        "suppression": suppression,
+                        "maintenance": maintenance,
+                        "drain": drain,
+                        "route_scope": route_scope,
+                    },
+                }
+            )
         return routes
+
+    def _build_remote_node_action_pattern_routes(
+        self,
+        item: dict[str, object],
+        *,
+        active_scopes: set[str],
+    ) -> list[dict[str, object]]:
+        node_name = str(item.get("node_name") or "").strip()
+        if not node_name:
+            return []
+        node_role = str(item.get("node_role") or "unknown")
+        now = _utc_now()
+        history_cutoff = now - timedelta(hours=max(settings.soc_remote_node_action_history_window_hours, 0.0))
+        recent_history = [
+            entry
+            for entry in self._remote_node_action_history(item)
+            if (timestamp := self._parse_datetime(entry.get("at"))) is not None and timestamp >= history_cutoff
+        ]
+        routes: list[dict[str, object]] = []
+
+        repeated_failures: list[tuple[str, int]] = []
+        failure_threshold = max(settings.soc_remote_node_action_failure_repeat_threshold, 1)
+        failed_counts = Counter(
+            str(entry.get("action") or "").strip()
+            for entry in recent_history
+            if str(entry.get("transition") or "").strip().casefold() == "failed"
+            and str(entry.get("action") or "").strip()
+        )
+        repeated_failures = sorted(
+            [(action, count) for action, count in failed_counts.items() if count >= failure_threshold],
+            key=lambda item: (-item[1], item[0]),
+        )
+        if repeated_failures and "remote_node_action_repeated_failures" not in active_scopes:
+            failure_labels = [f"{action} x{count}" for action, count in repeated_failures]
+            routes.append(
+                {
+                    "route_id": f"remote-node:action-failure-pattern:{node_name}",
+                    "fingerprint": "|".join(
+                        [node_name, *(f"{action}:{count}" for action, count in repeated_failures)]
+                    ),
+                    "level": AlertLevel.warning,
+                    "auto_case": True,
+                    "title": f"Remote node repeated action failures: {node_name}",
+                    "message": f"Remote node {node_name} has repeated action failures: {', '.join(failure_labels)}.",
+                    "context": {
+                        "node_name": node_name,
+                        "node_role": node_role,
+                        "failure_counts": {action: count for action, count in repeated_failures},
+                        "history_window_hours": settings.soc_remote_node_action_history_window_hours,
+                    },
+                }
+            )
+
+        retry_threshold = max(settings.soc_remote_node_action_retry_threshold, 1)
+        retried_counts = Counter(
+            str(entry.get("action") or "").strip()
+            for entry in recent_history
+            if str(entry.get("transition") or "").strip().casefold() == "retried"
+            and str(entry.get("action") or "").strip()
+        )
+        retry_pressure = sorted(
+            [(action, count) for action, count in retried_counts.items() if count >= retry_threshold],
+            key=lambda item: (-item[1], item[0]),
+        )
+        if retry_pressure and "remote_node_action_retry_pressure" not in active_scopes:
+            retry_labels = [f"{action} x{count}" for action, count in retry_pressure]
+            routes.append(
+                {
+                    "route_id": f"remote-node:action-retry-pressure:{node_name}",
+                    "fingerprint": "|".join([node_name, *(f"{action}:{count}" for action, count in retry_pressure)]),
+                    "level": AlertLevel.info,
+                    "title": f"Remote node retry pressure: {node_name}",
+                    "message": f"Remote node {node_name} has repeated action retries: {', '.join(retry_labels)}.",
+                    "context": {
+                        "node_name": node_name,
+                        "node_role": node_role,
+                        "retry_counts": {action: count for action, count in retry_pressure},
+                        "history_window_hours": settings.soc_remote_node_action_history_window_hours,
+                    },
+                }
+            )
+
+        stuck_actions = self._collect_stuck_remote_node_actions(item, now=now)
+        if stuck_actions and "remote_node_action_stuck" not in active_scopes:
+            stuck_labels = [f"{entry['action']} ({entry['status']}, {entry['age_minutes']}m)" for entry in stuck_actions]
+            routes.append(
+                {
+                    "route_id": f"remote-node:action-stuck:{node_name}",
+                    "fingerprint": "|".join(
+                        [
+                            node_name,
+                            *(
+                                ":".join(
+                                    [
+                                        str(entry["action"]),
+                                        str(entry["status"]),
+                                        str(entry.get("requested_at") or ""),
+                                        str(entry.get("acknowledged_at") or ""),
+                                    ]
+                                )
+                                for entry in stuck_actions
+                            ),
+                        ]
+                    ),
+                    "level": AlertLevel.warning,
+                    "auto_case": True,
+                    "title": f"Remote node action stuck: {node_name}",
+                    "message": f"Remote node {node_name} has overdue actions: {', '.join(stuck_labels)}.",
+                    "context": {
+                        "node_name": node_name,
+                        "node_role": node_role,
+                        "stuck_actions": stuck_actions,
+                        "stuck_minutes_threshold": settings.soc_remote_node_action_stuck_minutes,
+                    },
+                }
+            )
+        return routes
+
+    def _collect_stuck_remote_node_actions(
+        self,
+        item: dict[str, object],
+        *,
+        now: datetime,
+    ) -> list[dict[str, object]]:
+        threshold = max(settings.soc_remote_node_action_stuck_minutes, 0.0)
+        candidates = [
+            ("refresh", cast(dict[str, object], item.get("refresh") or {})),
+            ("maintenance", cast(dict[str, object], item.get("maintenance") or {})),
+            ("drain", cast(dict[str, object], item.get("drain") or {})),
+        ]
+        stuck_actions: list[dict[str, object]] = []
+        for action_name, payload in candidates:
+            status = str(payload.get("status") or "").strip().casefold()
+            if status not in {"requested", "acknowledged"}:
+                continue
+            started_at = self._parse_datetime(payload.get(f"{action_name}_acknowledged_at")) or self._parse_datetime(
+                payload.get(f"{action_name}_requested_at")
+            )
+            if started_at is None:
+                continue
+            age_minutes = round((now - started_at).total_seconds() / 60.0, 1)
+            if age_minutes < threshold:
+                continue
+            stuck_actions.append(
+                {
+                    "action": action_name,
+                    "status": status,
+                    "age_minutes": age_minutes,
+                    "requested_at": payload.get(f"{action_name}_requested_at"),
+                    "acknowledged_at": payload.get(f"{action_name}_acknowledged_at"),
+                }
+            )
+        stuck_actions.sort(key=lambda entry: (-cast(float, entry["age_minutes"]), str(entry["action"])))
+        return stuck_actions
+
+    @staticmethod
+    def _remote_node_action_history(item: dict[str, object]) -> list[dict[str, object]]:
+        direct_history = cast(list[object], item.get("action_history") or [])
+        if direct_history:
+            return [dict(entry) for entry in direct_history if isinstance(entry, Mapping)]
+        metadata = cast(dict[str, object], item.get("metadata") or {})
+        return [dict(entry) for entry in cast(list[object], metadata.get("action_history") or []) if isinstance(entry, Mapping)]
 
     @staticmethod
     def _read_notification_state(path: Path) -> dict[str, dict[str, object]]:
@@ -916,6 +5486,15 @@ class SecurityOperationsManager:
             except ValueError:
                 return 0
         return 0
+
+    @staticmethod
+    def _parse_datetime(value: object) -> datetime | None:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
 
     @classmethod
     def _extract_observables_from_mapping(cls, payload: dict[str, object]) -> list[str]:
@@ -947,6 +5526,50 @@ class SecurityOperationsManager:
         return observables
 
     @staticmethod
+    def _event_matches_text(event: SocEventRecord, query: str) -> bool:
+        haystacks = [
+            event.event_id,
+            event.event_type,
+            event.source,
+            event.title,
+            event.summary,
+            *event.tags,
+            *event.artifacts,
+            json.dumps(event.details, sort_keys=True),
+        ]
+        return any(query in value.casefold() for value in haystacks)
+
+    @staticmethod
+    def _alert_matches_text(alert: SocAlertRecord, query: str) -> bool:
+        haystacks = [
+            alert.alert_id,
+            alert.title,
+            alert.summary,
+            alert.category,
+            alert.correlation_rule or "",
+            alert.correlation_key or "",
+            alert.assignee or "",
+            alert.linked_case_id or "",
+            *alert.source_event_ids,
+            *alert.notes,
+        ]
+        return any(query in value.casefold() for value in haystacks)
+
+    @staticmethod
+    def _case_matches_text(case: SocCaseRecord, query: str) -> bool:
+        haystacks = [
+            case.case_id,
+            case.title,
+            case.summary,
+            case.assignee or "",
+            *case.source_event_ids,
+            *case.linked_alert_ids,
+            *case.observables,
+            *case.notes,
+        ]
+        return any(query in value.casefold() for value in haystacks)
+
+    @staticmethod
     def _sort_alerts(alerts: list[SocAlertRecord], sort: str) -> None:
         severity_rank = {
             SocSeverity.low: 0,
@@ -962,6 +5585,23 @@ class SecurityOperationsManager:
             alerts.sort(key=lambda item: (severity_rank[item.severity], item.updated_at))
         else:
             alerts.sort(key=lambda item: item.updated_at, reverse=True)
+
+    @staticmethod
+    def _sort_events(events: list[SocEventRecord], sort: str) -> None:
+        severity_rank = {
+            SocSeverity.low: 0,
+            SocSeverity.medium: 1,
+            SocSeverity.high: 2,
+            SocSeverity.critical: 3,
+        }
+        if sort == "created_asc":
+            events.sort(key=lambda item: item.created_at)
+        elif sort == "severity_desc":
+            events.sort(key=lambda item: (severity_rank[item.severity], item.created_at), reverse=True)
+        elif sort == "severity_asc":
+            events.sort(key=lambda item: (severity_rank[item.severity], item.created_at))
+        else:
+            events.sort(key=lambda item: item.created_at, reverse=True)
 
     @staticmethod
     def _sort_cases(cases: list[SocCaseRecord], sort: str) -> None:
@@ -981,9 +5621,35 @@ class SecurityOperationsManager:
             cases.sort(key=lambda item: item.updated_at, reverse=True)
 
     def _append_event(self, event: SocEventRecord) -> None:
-        line = event.model_dump_json()
-        with self._event_log_path.open("a", encoding="utf-8") as handle:
-            handle.write(line + "\n")
+        self._store.event_store.append(event)
+        self._store.event_index_store.append(event, event_store=self._store.event_store)
+
+    def _prune_telemetry_events_locked(self) -> None:
+        events = self._store.event_store.list()
+        if not events:
+            return
+        now = _utc_now()
+        kept_events: list[SocEventRecord] = []
+        pruned = 0
+        for event in events:
+            retention_hours = self._retention_hours_for_event_type(event.event_type)
+            if retention_hours is not None and event.created_at < now - timedelta(hours=retention_hours):
+                pruned += 1
+                continue
+            kept_events.append(event)
+        if pruned:
+            self._store.replace_events(kept_events)
+            self._audit.log("soc.telemetry.pruned", {"pruned_events": pruned})
+
+    @classmethod
+    def _retention_hours_for_event_type(cls, event_type: str) -> float | None:
+        setting_name = cls._TELEMETRY_RETENTION_HOURS.get(event_type)
+        if not setting_name:
+            return None
+        value = getattr(settings, setting_name, None)
+        if value is None:
+            return None
+        return float(value)
 
     @staticmethod
     def _read_records(path: Path, model_type: type[SocAlertRecord] | type[SocCaseRecord]) -> list:

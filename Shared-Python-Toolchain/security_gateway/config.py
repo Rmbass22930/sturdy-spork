@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import secrets
 import sys
+import tempfile
 from functools import lru_cache
 from pathlib import Path
 from typing import List, Optional, cast
@@ -12,9 +13,44 @@ from pydantic import Field, HttpUrl
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _runtime_root_candidates(base_dir: Path) -> list[Path]:
+    return [
+        base_dir / "SecurityGateway",
+        Path(tempfile.gettempdir()) / "SecurityGateway-runtime",
+    ]
+
+
+def _runtime_root_is_writable(path: Path) -> bool:
+    logs_dir = path / "logs"
+    probe_path = logs_dir / f".write-test-{os.getpid()}.tmp"
+    try:
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        for existing_path in logs_dir.iterdir():
+            if not existing_path.is_file():
+                continue
+            with existing_path.open("a", encoding="utf-8"):
+                pass
+        probe_path.write_text("ok", encoding="utf-8")
+        probe_path.unlink(missing_ok=True)
+        return True
+    except OSError:
+        try:
+            probe_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+
+
 def _default_runtime_data_dir() -> Path:
+    runtime_data_override = os.environ.get("SECURITY_GATEWAY_RUNTIME_DATA_DIR")
+    if runtime_data_override:
+        return Path(runtime_data_override)
     if getattr(sys, "frozen", False):
-        return Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "SecurityGateway"
+        base_dir = Path(os.environ.get("LOCALAPPDATA", str(Path.home())))
+        for candidate in _runtime_root_candidates(base_dir):
+            if _runtime_root_is_writable(candidate):
+                return candidate
+        return _runtime_root_candidates(base_dir)[0]
     return Path(".")
 
 
@@ -51,15 +87,45 @@ class Settings(BaseSettings):
     environment: str = Field("dev", description="Deployment environment tag")
     audit_log_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "audit.jsonl"))
     soc_event_log_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "soc_events.jsonl"))
+    soc_event_index_backend: str = "sqlite"
+    soc_event_index_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "soc_event_index.db"))
     soc_alert_store_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "soc_alerts.json"))
     soc_case_store_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "soc_cases.json"))
+    soc_detection_catalog_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "soc_detection_catalog.json"))
+    soc_dashboard_view_state_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "soc_dashboard_view_state.json"))
+    linear_asks_forms_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "linear_asks_forms.json"))
+    toolchain_updates_state_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "toolchain_updates.json"))
+    toolchain_cache_state_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "toolchain_cache.json"))
+    toolchain_secret_override_state_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "toolchain_secret_overrides.json"))
+    toolchain_scheduler_state_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "toolchain_scheduler.json"))
+    toolchain_scheduler_run_on_startup: bool = True
+    toolchain_scheduler_background_enabled: bool = False
+    toolchain_scheduler_poll_seconds: float = 60.0
+    toolchain_policy_gate_fail_on_block: bool = False
+    platform_node_name: Optional[str] = None
+    platform_node_role: str = "standalone"
+    platform_deployment_mode: str = "single-node"
+    platform_node_registry_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "platform_nodes.json"))
+    platform_node_stale_minutes: int = 15
+    platform_manager_url: Optional[str] = None
+    platform_manager_bearer_token: Optional[str] = None
+    platform_manager_heartbeat_enabled: bool = True
+    platform_manager_heartbeat_every_ticks: int = 2
+    platform_manager_timeout_seconds: float = 5.0
+    platform_local_action_state_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "platform_local_actions.json"))
     soc_notification_state_path: str = Field(
         default_factory=lambda: _default_runtime_path("logs", "soc_operational_notifications.json")
     )
     soc_operational_notifications_enabled: bool = True
+    soc_network_telemetry_retention_hours: float = 168.0
+    soc_packet_telemetry_retention_hours: float = 168.0
     soc_stale_after_hours: float = 24.0
     soc_assignee_open_alert_threshold: int = 5
     soc_assignee_active_case_threshold: int = 3
+    soc_remote_node_action_history_window_hours: float = 24.0
+    soc_remote_node_action_failure_repeat_threshold: int = 2
+    soc_remote_node_action_retry_threshold: int = 2
+    soc_remote_node_action_stuck_minutes: float = 15.0
     ip_blocklist_path: str = Field(default_factory=lambda: _default_runtime_path("logs", "blocked_ips.json"))
     report_output_dir: str = Field(default_factory=_default_report_output_dir)
     hashicorp_vault_url: Optional[str] = None
@@ -111,6 +177,11 @@ class Settings(BaseSettings):
     packet_monitor_anomaly_multiplier: float = 2.0
     packet_monitor_learning_samples: int = 3
     packet_monitor_capture_bytes: int = 128
+    packet_monitor_capture_retention_enabled: bool = False
+    packet_monitor_capture_retention_path: str = Field(
+        default_factory=lambda: _default_runtime_path("logs", "packet_captures")
+    )
+    packet_monitor_capture_retention_limit: int = 20
     packet_monitor_sensitive_ports: List[int] = Field(default_factory=lambda: [22, 23, 135, 139, 445, 3389, 5900, 5985, 5986])
     stream_monitor_enabled: bool = True
     stream_monitor_every_ticks: int = 3

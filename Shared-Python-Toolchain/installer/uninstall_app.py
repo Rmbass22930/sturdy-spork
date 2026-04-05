@@ -6,25 +6,64 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import winreg
 from ctypes import wintypes
 from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT_TEXT = str(PROJECT_ROOT)
+if PROJECT_ROOT_TEXT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT_TEXT)
+
+from toolchain_resources.runtime import load_toolchain_runtime  # noqa: E402
+
+load_toolchain_runtime(sync_updates=False)
 
 
 APP_NAME = "Security Gateway"
 APP_EXE_NAME = "SecurityGateway.exe"
 UNINSTALL_EXE_NAME = "SecurityGateway-Uninstall.exe"
 UNINSTALL_SCRIPT_NAME = "Uninstall-SecurityGateway.ps1"
+UNINSTALL_SUBDIR_NAME = "uninstall"
 PATH_BACKUP_NAME = "user_path_backup.txt"
-TASK_NAME = "SecurityGatewayAutomation"
+DEFAULT_INSTALL_ROOT = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "SecurityGateway"
+TASK_NAME = "SecurityGatewayMonitor"
+LEGACY_TASK_NAMES = ("SecurityGatewayAutomation",)
 SYSTEM_DATA_DIR = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "SecurityGateway"
 USER_DATA_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "SecurityGateway"
 CSIDL_DESKTOPDIRECTORY = 0x0010
 SHGFP_TYPE_CURRENT = 0
+UNINSTALL_REGISTRY_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\SecurityGateway"
+APP_REGISTRY_KEY = r"Software\SecurityGateway"
 
 
 def ensure_admin() -> None:
     if not ctypes.windll.shell32.IsUserAnAdmin():  # type: ignore[attr-defined]
         raise PermissionError("Please run this uninstaller as Administrator.")
+
+
+def is_machine_install(install_root: Path) -> bool:
+    try:
+        resolved_install_root = install_root.resolve()
+    except OSError:
+        resolved_install_root = install_root
+    try:
+        resolved_default_root = DEFAULT_INSTALL_ROOT.resolve()
+    except OSError:
+        resolved_default_root = DEFAULT_INSTALL_ROOT
+    return resolved_install_root == resolved_default_root
+
+
+def resolve_system_data_root(install_root: Path) -> Path:
+    if is_machine_install(install_root):
+        return SYSTEM_DATA_DIR
+    return install_root / "system-data"
+
+
+def resolve_user_data_root(install_root: Path) -> Path:
+    if is_machine_install(install_root):
+        return USER_DATA_DIR
+    return install_root / "user-data"
 
 
 def desktop_from_shell() -> Path | None:
@@ -54,6 +93,47 @@ def desktop_shortcut_paths() -> list[Path]:
     return [desktop / "SecurityGateway.lnk" for desktop in desktop_candidates()]
 
 
+def start_menu_shortcut_paths() -> list[Path]:
+    candidates: list[Path] = []
+    appdata = os.environ.get("APPDATA")
+    program_data = os.environ.get("ProgramData")
+    if appdata:
+        candidates.extend(
+            [
+                Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Security Gateway" / "SecurityGateway.lnk",
+                Path(appdata)
+                / "Microsoft"
+                / "Windows"
+                / "Start Menu"
+                / "Programs"
+                / "Security Gateway"
+                / "SecurityGateway SOC Dashboard.lnk",
+            ]
+        )
+    if program_data:
+        candidates.extend(
+            [
+                Path(program_data) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Security Gateway" / "SecurityGateway.lnk",
+                Path(program_data)
+                / "Microsoft"
+                / "Windows"
+                / "Start Menu"
+                / "Programs"
+                / "Security Gateway"
+                / "SecurityGateway SOC Dashboard.lnk",
+            ]
+        )
+    return candidates
+
+
+def shortcut_paths() -> list[Path]:
+    return [
+        *desktop_shortcut_paths(),
+        *(desktop.parent / "SecurityGateway SOC Dashboard.lnk" for desktop in desktop_shortcut_paths()),
+        *start_menu_shortcut_paths(),
+    ]
+
+
 def remove_file(path: Path) -> None:
     try:
         path.unlink(missing_ok=True)
@@ -69,15 +149,11 @@ def remove_tree(path: Path) -> None:
 
 
 def restore_user_path(previous: str) -> None:
-    import winreg
-
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_ALL_ACCESS) as key:
         winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, previous)
 
 
 def remove_path_entry(dir_path: Path) -> None:
-    import winreg
-
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_ALL_ACCESS) as key:
         try:
             path_value, _ = winreg.QueryValueEx(key, "Path")
@@ -97,12 +173,33 @@ def restore_path_from_backup(install_root: Path) -> None:
 
 
 def unregister_automation_task() -> None:
-    subprocess.run(
-        ["schtasks", "/Delete", "/TN", TASK_NAME, "/F"],
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    for task_name in (TASK_NAME, *LEGACY_TASK_NAMES):
+        subprocess.run(
+            ["schtasks", "/Delete", "/TN", task_name, "/F"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+
+def _delete_registry_tree(root: int, subkey: str) -> None:
+    try:
+        with winreg.OpenKey(root, subkey, 0, winreg.KEY_ALL_ACCESS) as key:
+            child_count = winreg.QueryInfoKey(key)[0]
+            children = [winreg.EnumKey(key, index) for index in range(child_count)]
+        for child in children:
+            _delete_registry_tree(root, f"{subkey}\\{child}")
+        winreg.DeleteKey(root, subkey)
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+
+
+def remove_registry_entries() -> None:
+    for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        _delete_registry_tree(root, APP_REGISTRY_KEY)
+        _delete_registry_tree(root, UNINSTALL_REGISTRY_KEY)
 
 
 def schedule_self_delete(exe_path: Path, install_root: Path) -> None:
@@ -112,7 +209,8 @@ def schedule_self_delete(exe_path: Path, install_root: Path) -> None:
         "ping 127.0.0.1 -n 3 > nul\n"
         f'del /f /q "{exe_path}"\n'
         f'if exist "{install_root}" rmdir /s /q "{install_root}"\n'
-        f'del /f /q "{script_path}"\n',
+        f'start "" /b cmd /c "ping 127.0.0.1 -n 2 > nul & del /f /q ""{script_path}"""' "\n"
+        "exit /b 0\n",
         encoding="utf-8",
     )
     subprocess.Popen(["cmd.exe", "/c", str(script_path)], close_fds=True)
@@ -124,23 +222,48 @@ def remove_install_payload(install_root: Path, current_exe_path: Path | None = N
         if current_exe_path is not None and target.resolve() == current_exe_path.resolve():
             continue
         remove_file(target)
+    uninstall_dir = install_root / UNINSTALL_SUBDIR_NAME
+    if current_exe_path is not None and current_exe_path.parent.resolve() == uninstall_dir.resolve():
+        for child in uninstall_dir.iterdir():
+            if child.resolve() == current_exe_path.resolve():
+                continue
+            if child.is_dir():
+                remove_tree(child)
+            else:
+                remove_file(child)
+    else:
+        remove_tree(uninstall_dir)
+
+
+def resolve_install_root(current_exe_path: Path) -> Path:
+    if current_exe_path.parent.name == UNINSTALL_SUBDIR_NAME:
+        return current_exe_path.parent.parent
+    if current_exe_path.parent == DEFAULT_INSTALL_ROOT:
+        return DEFAULT_INSTALL_ROOT
+    if DEFAULT_INSTALL_ROOT.exists():
+        return DEFAULT_INSTALL_ROOT
+    return current_exe_path.parent
 
 
 def main() -> int:
-    ensure_admin()
     exe_path = Path(sys.argv[0]).resolve()
-    install_root = exe_path.parent
+    install_root = resolve_install_root(exe_path)
+    machine_install = is_machine_install(install_root)
+    if machine_install:
+        ensure_admin()
 
     print(f"Removing {APP_NAME} from {install_root}")
 
-    for shortcut in desktop_shortcut_paths():
+    for shortcut in shortcut_paths():
         remove_file(shortcut)
 
-    unregister_automation_task()
-    restore_path_from_backup(install_root)
+    if machine_install:
+        unregister_automation_task()
+        restore_path_from_backup(install_root)
+        remove_registry_entries()
     remove_install_payload(install_root, current_exe_path=exe_path)
-    remove_tree(SYSTEM_DATA_DIR)
-    remove_tree(USER_DATA_DIR)
+    remove_tree(resolve_system_data_root(install_root))
+    remove_tree(resolve_user_data_root(install_root))
     schedule_self_delete(exe_path, install_root)
 
     print("Security Gateway uninstall scheduled.")
